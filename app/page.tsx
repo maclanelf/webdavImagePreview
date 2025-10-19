@@ -37,6 +37,8 @@ import {
   FilterList as FilterListIcon,
   Folder as FolderIcon,
   BarChart as BarChartIcon,
+  Fullscreen as FullscreenIcon,
+  FullscreenExit as FullscreenExitIcon,
 } from '@mui/icons-material'
 import { useRouter } from 'next/navigation'
 
@@ -68,6 +70,7 @@ export default function HomePage() {
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all')
   const [allFiles, setAllFiles] = useState<MediaFile[]>([])
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [fullscreen, setFullscreen] = useState(false)
 
   useEffect(() => {
     // 从localStorage加载配置
@@ -237,6 +240,10 @@ export default function HomePage() {
     setDrawerOpen(open)
   }
 
+  const toggleFullscreen = () => {
+    setFullscreen(!fullscreen)
+  }
+
   if (!config) {
     return (
       <Container maxWidth="md" sx={{ py: 8 }}>
@@ -262,6 +269,92 @@ export default function HomePage() {
   }
 
   const filteredStats = getFilteredStats()
+
+  // 全屏模式
+  if (fullscreen && currentFile && mediaUrl) {
+    return (
+      <Box
+        sx={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: '#000',
+          zIndex: 2000,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        {/* 全屏媒体展示 */}
+        {isImage(currentFile.filename) && (
+          <Box
+            component="img"
+            src={mediaUrl}
+            alt={currentFile.basename}
+            sx={{
+              maxWidth: '100%',
+              maxHeight: '100%',
+              width: 'auto',
+              height: 'auto',
+              objectFit: 'contain',
+            }}
+          />
+        )}
+        {isVideo(currentFile.filename) && (
+          <Box
+            component="video"
+            src={mediaUrl}
+            controls
+            autoPlay
+            sx={{
+              maxWidth: '100%',
+              maxHeight: '100%',
+              width: 'auto',
+              height: 'auto',
+            }}
+          />
+        )}
+
+        {/* 退出全屏按钮 */}
+        <Tooltip title="退出全屏" placement="left">
+          <Fab
+            color="secondary"
+            onClick={toggleFullscreen}
+            sx={{
+              position: 'fixed',
+              top: 24,
+              right: 24,
+            }}
+          >
+            <FullscreenExitIcon />
+          </Fab>
+        </Tooltip>
+
+        {/* 换一个按钮 */}
+        <Tooltip title={loading ? '加载中...' : '换一个'} placement="left">
+          <Fab
+            color="primary"
+            aria-label="换一个"
+            onClick={loadRandomMedia}
+            disabled={loading}
+            sx={{
+              position: 'fixed',
+              bottom: 24,
+              right: 24,
+            }}
+          >
+            {loading ? (
+              <CircularProgress size={24} color="inherit" />
+            ) : (
+              <ShuffleIcon />
+            )}
+          </Fab>
+        </Tooltip>
+      </Box>
+    )
+  }
 
   return (
     <Box sx={{ minHeight: '100vh', backgroundColor: '#f5f5f5' }}>
@@ -345,6 +438,26 @@ export default function HomePage() {
                   }}
                 />
               )}
+              
+              {/* 全屏按钮 */}
+              <Tooltip title="全屏查看" placement="left">
+                <Fab
+                  size="small"
+                  color="default"
+                  onClick={toggleFullscreen}
+                  sx={{
+                    position: 'absolute',
+                    top: 16,
+                    right: 16,
+                    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+                    '&:hover': {
+                      backgroundColor: 'rgba(255, 255, 255, 1)',
+                    },
+                  }}
+                >
+                  <FullscreenIcon />
+                </Fab>
+              </Tooltip>
             </Box>
             
             {/* 文件信息 - 紧凑显示 */}
