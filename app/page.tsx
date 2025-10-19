@@ -352,6 +352,9 @@ export default function HomePage() {
               <Typography variant="body1" fontWeight="medium" noWrap>
                 {currentFile.basename}
               </Typography>
+              <Typography variant="body2" color="text.secondary" noWrap sx={{ mt: 0.5 }}>
+                {currentFile.filename}
+              </Typography>
               <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', mt: 0.5 }}>
                 <Typography variant="caption" color="text.secondary">
                   {formatFileSize(currentFile.size)}
