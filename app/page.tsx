@@ -39,6 +39,10 @@ import {
   BarChart as BarChartIcon,
   Fullscreen as FullscreenIcon,
   FullscreenExit as FullscreenExitIcon,
+  Collections as CollectionsIcon,
+  ArrowBack as ArrowBackIcon,
+  ArrowForward as ArrowForwardIcon,
+  SkipNext as SkipNextIcon,
 } from '@mui/icons-material'
 import { useRouter } from 'next/navigation'
 
@@ -58,6 +62,12 @@ interface MediaFile {
 }
 
 type MediaFilter = 'all' | 'images' | 'videos'
+type ViewMode = 'random' | 'gallery' // random: 随机模式, gallery: 图组模式
+
+interface MediaGroup {
+  folderPath: string
+  files: MediaFile[]
+}
 
 export default function HomePage() {
   const router = useRouter()
@@ -71,6 +81,9 @@ export default function HomePage() {
   const [allFiles, setAllFiles] = useState<MediaFile[]>([])
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [fullscreen, setFullscreen] = useState(false)
+  const [viewMode, setViewMode] = useState<ViewMode>('random')
+  const [currentGroup, setCurrentGroup] = useState<MediaFile[]>([])
+  const [currentGroupIndex, setCurrentGroupIndex] = useState(0)
 
   useEffect(() => {
     // 从localStorage加载配置
@@ -140,12 +153,125 @@ export default function HomePage() {
     return allFiles
   }
 
+  // 按文件夹分组
+  const groupFilesByFolder = (files: MediaFile[]): MediaGroup[] => {
+    const groups = new Map<string, MediaFile[]>()
+    
+    files.forEach(file => {
+      // 获取文件所在文件夹路径
+      const folderPath = file.filename.substring(0, file.filename.lastIndexOf('/'))
+      
+      if (!groups.has(folderPath)) {
+        groups.set(folderPath, [])
+      }
+      groups.get(folderPath)!.push(file)
+    })
+    
+    // 转换为数组并按文件数量排序（优先显示文件多的组）
+    return Array.from(groups.entries())
+      .map(([folderPath, files]) => ({ folderPath, files }))
+      .sort((a, b) => b.files.length - a.files.length)
+  }
+
+  // 随机选择一个图组
+  const loadRandomGroup = () => {
+    const filteredFiles = getFilteredFiles()
+    
+    if (filteredFiles.length === 0) {
+      setError('没有找到媒体文件')
+      return
+    }
+    
+    const groups = groupFilesByFolder(filteredFiles)
+    
+    if (groups.length === 0) {
+      setError('没有找到文件组')
+      return
+    }
+    
+    // 随机选择一个图组（优先选择文件多的）
+    const randomGroup = groups[Math.floor(Math.random() * Math.min(groups.length, 20))]
+    setCurrentGroup(randomGroup.files)
+    setCurrentGroupIndex(0)
+    
+    // 加载该组的第一个文件
+    loadFileFromGroup(randomGroup.files, 0)
+  }
+
+  // 加载图组中的指定文件
+  const loadFileFromGroup = async (group: MediaFile[], index: number) => {
+    if (index < 0 || index >= group.length) return
+    
+    setLoading(true)
+    setError(null)
+    
+    try {
+      const file = group[index]
+      setCurrentFile(file)
+      setCurrentGroupIndex(index)
+
+      // 获取文件流
+      const streamResponse = await fetch('/api/webdav/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...config,
+          filepath: file.filename,
+        }),
+      })
+
+      if (!streamResponse.ok) throw new Error('获取文件流失败')
+
+      const blob = await streamResponse.blob()
+      const url = URL.createObjectURL(blob)
+      
+      // 清理旧的URL
+      if (mediaUrl) {
+        URL.revokeObjectURL(mediaUrl)
+      }
+      
+      setMediaUrl(url)
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // 图组模式：下一张
+  const nextInGroup = () => {
+    if (currentGroupIndex < currentGroup.length - 1) {
+      loadFileFromGroup(currentGroup, currentGroupIndex + 1)
+    } else {
+      // 最后一张，加载新图组
+      loadRandomGroup()
+    }
+  }
+
+  // 图组模式：上一张
+  const previousInGroup = () => {
+    if (currentGroupIndex > 0) {
+      loadFileFromGroup(currentGroup, currentGroupIndex - 1)
+    }
+  }
+
   const loadRandomMedia = async () => {
     if (!config) {
       setError('请先配置WebDAV连接')
       return
     }
 
+    // 图组模式
+    if (viewMode === 'gallery') {
+      if (currentGroup.length === 0) {
+        loadRandomGroup()
+      } else {
+        nextInGroup()
+      }
+      return
+    }
+
+    // 随机模式
     const filteredFiles = getFilteredFiles()
     
     if (filteredFiles.length === 0) {
@@ -332,8 +458,84 @@ export default function HomePage() {
           </Fab>
         </Tooltip>
 
-        {/* 换一个按钮 */}
-        <Tooltip title={loading ? '加载中...' : '换一个'} placement="left">
+        {/* 图组模式控制按钮 */}
+        {viewMode === 'gallery' && currentGroup.length > 0 && (
+          <>
+            {/* 上一张 */}
+            {currentGroupIndex > 0 && (
+              <Tooltip title="上一张" placement="left">
+                <Fab
+                  color="default"
+                  onClick={previousInGroup}
+                  disabled={loading}
+                  sx={{
+                    position: 'fixed',
+                    bottom: 100,
+                    left: 24,
+                    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+                  }}
+                >
+                  <ArrowBackIcon />
+                </Fab>
+              </Tooltip>
+            )}
+
+            {/* 下一张 */}
+            <Tooltip title="下一张" placement="right">
+              <Fab
+                color="default"
+                onClick={nextInGroup}
+                disabled={loading}
+                sx={{
+                  position: 'fixed',
+                  bottom: 100,
+                  right: 24,
+                  backgroundColor: 'rgba(255, 255, 255, 0.9)',
+                }}
+              >
+                <ArrowForwardIcon />
+              </Fab>
+            </Tooltip>
+
+            {/* 进度指示 */}
+            <Box
+              sx={{
+                position: 'fixed',
+                bottom: 24,
+                left: '50%',
+                transform: 'translateX(-50%)',
+                backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                color: 'white',
+                px: 2,
+                py: 1,
+                borderRadius: 2,
+              }}
+            >
+              <Typography variant="body2">
+                {currentGroupIndex + 1} / {currentGroup.length}
+              </Typography>
+            </Box>
+
+            {/* 换组按钮 */}
+            <Tooltip title="换下一组" placement="left">
+              <Fab
+                color="secondary"
+                onClick={loadRandomGroup}
+                disabled={loading}
+                sx={{
+                  position: 'fixed',
+                  bottom: 180,
+                  right: 24,
+                }}
+              >
+                <SkipNextIcon />
+              </Fab>
+            </Tooltip>
+          </>
+        )}
+
+        {/* 换一个按钮（随机模式或图组模式下的默认按钮） */}
+        <Tooltip title={loading ? '加载中...' : (viewMode === 'gallery' ? '下一张' : '换一个')} placement="left">
           <Fab
             color="primary"
             aria-label="换一个"
@@ -348,7 +550,7 @@ export default function HomePage() {
             {loading ? (
               <CircularProgress size={24} color="inherit" />
             ) : (
-              <ShuffleIcon />
+              viewMode === 'gallery' ? <ArrowForwardIcon /> : <ShuffleIcon />
             )}
           </Fab>
         </Tooltip>
@@ -462,9 +664,18 @@ export default function HomePage() {
             
             {/* 文件信息 - 紧凑显示 */}
             <CardContent sx={{ py: 1.5 }}>
-              <Typography variant="body1" fontWeight="medium" noWrap>
-                {currentFile.basename}
-              </Typography>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Typography variant="body1" fontWeight="medium" noWrap sx={{ flex: 1 }}>
+                  {currentFile.basename}
+                </Typography>
+                {viewMode === 'gallery' && currentGroup.length > 0 && (
+                  <Chip 
+                    label={`${currentGroupIndex + 1}/${currentGroup.length}`} 
+                    size="small" 
+                    color="primary"
+                  />
+                )}
+              </Box>
               <Typography variant="body2" color="text.secondary" noWrap sx={{ mt: 0.5 }}>
                 {currentFile.filename}
               </Typography>
@@ -478,6 +689,36 @@ export default function HomePage() {
               </Box>
             </CardContent>
           </Card>
+        )}
+
+        {/* 图组模式导航按钮（正常模式） */}
+        {!fullscreen && viewMode === 'gallery' && currentGroup.length > 0 && currentFile && (
+          <Box sx={{ display: 'flex', justifyContent: 'center', gap: 2, mt: 2 }}>
+            <Button
+              variant="outlined"
+              startIcon={<ArrowBackIcon />}
+              onClick={previousInGroup}
+              disabled={currentGroupIndex === 0 || loading}
+            >
+              上一张
+            </Button>
+            <Button
+              variant="outlined"
+              startIcon={<SkipNextIcon />}
+              onClick={loadRandomGroup}
+              disabled={loading}
+            >
+              换下一组
+            </Button>
+            <Button
+              variant="contained"
+              endIcon={<ArrowForwardIcon />}
+              onClick={nextInGroup}
+              disabled={loading}
+            >
+              下一张
+            </Button>
+          </Box>
         )}
 
         {!currentFile && !loading && (
@@ -557,6 +798,58 @@ export default function HomePage() {
             <IconButton onClick={toggleDrawer(false)} size="small">
               <CloseIcon />
             </IconButton>
+          </Box>
+
+          <Divider sx={{ mb: 3 }} />
+
+          {/* 浏览模式 */}
+          <Box sx={{ mb: 3 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+              <CollectionsIcon color="primary" />
+              <Typography variant="subtitle1" fontWeight="medium">
+                浏览模式
+              </Typography>
+            </Box>
+            
+            <ToggleButtonGroup
+              value={viewMode}
+              exclusive
+              onChange={(e, newMode) => {
+                if (newMode) {
+                  setViewMode(newMode)
+                  // 切换到图组模式时，清空当前组
+                  if (newMode === 'gallery') {
+                    setCurrentGroup([])
+                    setCurrentGroupIndex(0)
+                  }
+                }
+              }}
+              orientation="vertical"
+              fullWidth
+            >
+              <ToggleButton value="random">
+                <ShuffleIcon sx={{ mr: 1 }} />
+                随机模式
+              </ToggleButton>
+              <ToggleButton value="gallery">
+                <CollectionsIcon sx={{ mr: 1 }} />
+                图组模式
+              </ToggleButton>
+            </ToggleButtonGroup>
+            
+            {viewMode === 'gallery' && currentGroup.length > 0 && (
+              <Paper variant="outlined" sx={{ mt: 2, p: 1.5 }}>
+                <Typography variant="caption" color="text.secondary" display="block">
+                  当前图组
+                </Typography>
+                <Typography variant="body2" fontWeight="medium">
+                  {currentGroupIndex + 1} / {currentGroup.length} 张
+                </Typography>
+                <Typography variant="caption" color="text.secondary" noWrap>
+                  {currentFile?.filename.substring(0, currentFile.filename.lastIndexOf('/'))}
+                </Typography>
+              </Paper>
+            )}
           </Box>
 
           <Divider sx={{ mb: 3 }} />
