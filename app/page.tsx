@@ -9,15 +9,13 @@ import {
   Card,
   CardMedia,
   CardContent,
-  CardActions,
   CircularProgress,
   Alert,
   Paper,
-  Chip,
-  Stack,
-  Accordion,
-  AccordionSummary,
-  AccordionDetails,
+  ToggleButtonGroup,
+  ToggleButton,
+  Tooltip,
+  Fab,
 } from '@mui/material'
 import {
   Shuffle as ShuffleIcon,
@@ -25,8 +23,7 @@ import {
   CloudOff as CloudOffIcon,
   Image as ImageIcon,
   VideoLibrary as VideoIcon,
-  Folder as FolderIcon,
-  ExpandMore as ExpandMoreIcon,
+  PhotoLibrary as PhotoLibraryIcon,
 } from '@mui/icons-material'
 import { useRouter } from 'next/navigation'
 
@@ -45,6 +42,8 @@ interface MediaFile {
   lastmod: string
 }
 
+type MediaFilter = 'all' | 'images' | 'videos'
+
 export default function HomePage() {
   const router = useRouter()
   const [config, setConfig] = useState<WebDAVConfig | null>(null)
@@ -53,6 +52,8 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null)
   const [mediaUrl, setMediaUrl] = useState<string | null>(null)
   const [stats, setStats] = useState({ total: 0, images: 0, videos: 0 })
+  const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all')
+  const [allFiles, setAllFiles] = useState<MediaFile[]>([])
 
   useEffect(() => {
     // 从localStorage加载配置
@@ -73,6 +74,12 @@ export default function HomePage() {
         console.error('加载配置失败:', e)
       }
     }
+
+    // 加载保存的筛选偏好
+    const savedFilter = localStorage.getItem('media_filter')
+    if (savedFilter && (savedFilter === 'all' || savedFilter === 'images' || savedFilter === 'videos')) {
+      setMediaFilter(savedFilter as MediaFilter)
+    }
   }, [])
 
   const loadStats = async (cfg: WebDAVConfig) => {
@@ -87,6 +94,7 @@ export default function HomePage() {
 
       const data = await response.json()
       const files = data.files || []
+      setAllFiles(files)
       
       const imageCount = files.filter((f: MediaFile) => 
         /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.basename)
@@ -106,9 +114,31 @@ export default function HomePage() {
     }
   }
 
+  const getFilteredFiles = () => {
+    if (mediaFilter === 'images') {
+      return allFiles.filter(f => /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.basename))
+    } else if (mediaFilter === 'videos') {
+      return allFiles.filter(f => /\.(mp4|webm|mov|avi|mkv)$/i.test(f.basename))
+    }
+    return allFiles
+  }
+
   const loadRandomMedia = async () => {
     if (!config) {
       setError('请先配置WebDAV连接')
+      return
+    }
+
+    const filteredFiles = getFilteredFiles()
+    
+    if (filteredFiles.length === 0) {
+      setError(
+        mediaFilter === 'images' 
+          ? '没有找到图片文件' 
+          : mediaFilter === 'videos'
+          ? '没有找到视频文件'
+          : '未找到任何媒体文件'
+      )
       return
     }
 
@@ -116,20 +146,9 @@ export default function HomePage() {
     setError(null)
 
     try {
-      // 获取随机文件
-      const response = await fetch('/api/webdav/random', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
-      })
-
-      if (!response.ok) {
-        const data = await response.json()
-        throw new Error(data.error || '获取随机文件失败')
-      }
-
-      const data = await response.json()
-      setCurrentFile(data.file)
+      // 从筛选后的文件中随机选择
+      const randomFile = filteredFiles[Math.floor(Math.random() * filteredFiles.length)]
+      setCurrentFile(randomFile)
 
       // 获取文件流
       const streamResponse = await fetch('/api/webdav/stream', {
@@ -137,7 +156,7 @@ export default function HomePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...config,
-          filepath: data.file.filename,
+          filepath: randomFile.filename,
         }),
       })
 
@@ -159,6 +178,24 @@ export default function HomePage() {
     }
   }
 
+  const handleFilterChange = (event: React.MouseEvent<HTMLElement>, newFilter: MediaFilter | null) => {
+    if (newFilter !== null) {
+      setMediaFilter(newFilter)
+      localStorage.setItem('media_filter', newFilter)
+      
+      // 如果当前显示的文件不符合新筛选条件，清空显示
+      if (currentFile) {
+        const isImage = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(currentFile.basename)
+        const isVideo = /\.(mp4|webm|mov|avi|mkv)$/i.test(currentFile.basename)
+        
+        if ((newFilter === 'images' && !isImage) || (newFilter === 'videos' && !isVideo)) {
+          setCurrentFile(null)
+          setMediaUrl(null)
+        }
+      }
+    }
+  }
+
   const isImage = (filename: string) => {
     return /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(filename)
   }
@@ -171,6 +208,15 @@ export default function HomePage() {
     if (bytes < 1024) return bytes + ' B'
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB'
     return (bytes / (1024 * 1024)).toFixed(2) + ' MB'
+  }
+
+  const getFilteredStats = () => {
+    if (mediaFilter === 'images') {
+      return { total: stats.images, label: '图片' }
+    } else if (mediaFilter === 'videos') {
+      return { total: stats.videos, label: '视频' }
+    }
+    return { total: stats.total, label: '全部' }
   }
 
   if (!config) {
@@ -197,6 +243,8 @@ export default function HomePage() {
     )
   }
 
+  const filteredStats = getFilteredStats()
+
   return (
     <Container maxWidth="lg" sx={{ py: 4 }}>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 4 }}>
@@ -212,53 +260,43 @@ export default function HomePage() {
         </Button>
       </Box>
 
-      {/* 已挂载目录信息 */}
-      <Accordion sx={{ mb: 3 }}>
-        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, width: '100%' }}>
-            <FolderIcon color="primary" />
-            <Typography variant="h6">
-              已挂载 {config.mediaPaths.length} 个目录
-            </Typography>
-          </Box>
-        </AccordionSummary>
-        <AccordionDetails>
-          <Stack spacing={1}>
-            {config.mediaPaths.map((path, index) => (
-              <Chip
-                key={index}
-                icon={<FolderIcon />}
-                label={path}
-                variant="outlined"
-                sx={{ justifyContent: 'flex-start' }}
-              />
-            ))}
-          </Stack>
-        </AccordionDetails>
-      </Accordion>
+      {/* 筛选器 */}
+      <Box sx={{ mb: 3, display: 'flex', justifyContent: 'center' }}>
+        <Paper elevation={2} sx={{ p: 1, display: 'inline-flex', borderRadius: 2 }}>
+          <ToggleButtonGroup
+            value={mediaFilter}
+            exclusive
+            onChange={handleFilterChange}
+            aria-label="媒体类型筛选"
+            size="large"
+          >
+            <ToggleButton value="all" aria-label="全部">
+              <PhotoLibraryIcon sx={{ mr: 1 }} />
+              全部 ({stats.total})
+            </ToggleButton>
+            <ToggleButton value="images" aria-label="仅图片">
+              <ImageIcon sx={{ mr: 1 }} />
+              仅图片 ({stats.images})
+            </ToggleButton>
+            <ToggleButton value="videos" aria-label="仅视频">
+              <VideoIcon sx={{ mr: 1 }} />
+              仅视频 ({stats.videos})
+            </ToggleButton>
+          </ToggleButtonGroup>
+        </Paper>
+      </Box>
 
-      {/* 统计信息 */}
-      <Box sx={{ display: 'flex', gap: 2, mb: 4 }}>
-        <Paper elevation={1} sx={{ flex: 1, p: 2, display: 'flex', alignItems: 'center', gap: 2 }}>
-          <ImageIcon color="primary" sx={{ fontSize: 40 }} />
-          <Box>
-            <Typography variant="h5" fontWeight="bold">{stats.images}</Typography>
-            <Typography variant="body2" color="text.secondary">图片</Typography>
-          </Box>
-        </Paper>
-        <Paper elevation={1} sx={{ flex: 1, p: 2, display: 'flex', alignItems: 'center', gap: 2 }}>
-          <VideoIcon color="secondary" sx={{ fontSize: 40 }} />
-          <Box>
-            <Typography variant="h5" fontWeight="bold">{stats.videos}</Typography>
-            <Typography variant="body2" color="text.secondary">视频</Typography>
-          </Box>
-        </Paper>
-        <Paper elevation={1} sx={{ flex: 1, p: 2, display: 'flex', alignItems: 'center', gap: 2 }}>
-          <Box>
-            <Typography variant="h5" fontWeight="bold">{stats.total}</Typography>
-            <Typography variant="body2" color="text.secondary">总计</Typography>
-          </Box>
-        </Paper>
+      {/* 当前筛选统计 */}
+      <Box sx={{ mb: 4, textAlign: 'center' }}>
+        <Typography variant="h6" color="text.secondary">
+          当前筛选：
+          <Typography component="span" variant="h6" color="primary" sx={{ ml: 1, fontWeight: 'bold' }}>
+            {filteredStats.label}
+          </Typography>
+          <Typography component="span" variant="h6" color="text.secondary" sx={{ ml: 1 }}>
+            共 {filteredStats.total} 个文件
+          </Typography>
+        </Typography>
       </Box>
 
       {error && (
@@ -268,7 +306,7 @@ export default function HomePage() {
       )}
 
       {currentFile && mediaUrl && (
-        <Card elevation={3} sx={{ borderRadius: 3, overflow: 'hidden' }}>
+        <Card elevation={3} sx={{ borderRadius: 3, overflow: 'hidden', mb: 10 }}>
           <Box sx={{ position: 'relative', backgroundColor: '#000' }}>
             {isImage(currentFile.filename) && (
               <CardMedia
@@ -309,18 +347,6 @@ export default function HomePage() {
               修改时间: {new Date(currentFile.lastmod).toLocaleString('zh-CN')}
             </Typography>
           </CardContent>
-          <CardActions>
-            <Button
-              fullWidth
-              variant="contained"
-              size="large"
-              startIcon={loading ? <CircularProgress size={20} color="inherit" /> : <ShuffleIcon />}
-              onClick={loadRandomMedia}
-              disabled={loading}
-            >
-              {loading ? '加载中...' : '换一个'}
-            </Button>
-          </CardActions>
         </Card>
       )}
 
@@ -342,7 +368,7 @@ export default function HomePage() {
             从 {config.mediaPaths.length} 个目录中
           </Typography>
           <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-            随机加载一个图片或视频
+            随机加载{filteredStats.label === '全部' ? '媒体文件' : filteredStats.label}
           </Typography>
           <Button
             variant="contained"
@@ -359,10 +385,32 @@ export default function HomePage() {
         <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 8 }}>
           <CircularProgress size={60} sx={{ mb: 2 }} />
           <Typography variant="body2" color="text.secondary">
-            正在从 {config.mediaPaths.length} 个目录中随机选择...
+            正在从 {config.mediaPaths.length} 个目录中随机选择{filteredStats.label}...
           </Typography>
         </Box>
       )}
+
+      {/* 悬浮按钮 - 固定在右下角 */}
+      <Tooltip title={loading ? '加载中...' : '换一个'} placement="left">
+        <Fab
+          color="primary"
+          aria-label="换一个"
+          onClick={loadRandomMedia}
+          disabled={loading}
+          sx={{
+            position: 'fixed',
+            bottom: 24,
+            right: 24,
+            zIndex: 1000,
+          }}
+        >
+          {loading ? (
+            <CircularProgress size={24} color="inherit" />
+          ) : (
+            <ShuffleIcon />
+          )}
+        </Fab>
+      </Tooltip>
     </Container>
   )
 }
