@@ -16,6 +16,15 @@ import {
   ToggleButton,
   Tooltip,
   Fab,
+  Drawer,
+  IconButton,
+  Divider,
+  List,
+  ListItem,
+  ListItemIcon,
+  ListItemText,
+  Chip,
+  Stack,
 } from '@mui/material'
 import {
   Shuffle as ShuffleIcon,
@@ -24,6 +33,10 @@ import {
   Image as ImageIcon,
   VideoLibrary as VideoIcon,
   PhotoLibrary as PhotoLibraryIcon,
+  Close as CloseIcon,
+  FilterList as FilterListIcon,
+  Folder as FolderIcon,
+  BarChart as BarChartIcon,
 } from '@mui/icons-material'
 import { useRouter } from 'next/navigation'
 
@@ -54,6 +67,7 @@ export default function HomePage() {
   const [stats, setStats] = useState({ total: 0, images: 0, videos: 0 })
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all')
   const [allFiles, setAllFiles] = useState<MediaFile[]>([])
+  const [drawerOpen, setDrawerOpen] = useState(false)
 
   useEffect(() => {
     // 从localStorage加载配置
@@ -219,6 +233,10 @@ export default function HomePage() {
     return { total: stats.total, label: '全部' }
   }
 
+  const toggleDrawer = (open: boolean) => () => {
+    setDrawerOpen(open)
+  }
+
   if (!config) {
     return (
       <Container maxWidth="md" sx={{ py: 8 }}>
@@ -246,149 +264,293 @@ export default function HomePage() {
   const filteredStats = getFilteredStats()
 
   return (
-    <Container maxWidth="lg" sx={{ py: 4 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 4 }}>
-        <Typography variant="h4" component="h1" fontWeight="bold">
-          WebDAV 媒体预览器
-        </Typography>
-        <Button
-          variant="outlined"
-          startIcon={<SettingsIcon />}
-          onClick={() => router.push('/config')}
-        >
-          设置
-        </Button>
-      </Box>
-
-      {/* 筛选器 */}
-      <Box sx={{ mb: 3, display: 'flex', justifyContent: 'center' }}>
-        <Paper elevation={2} sx={{ p: 1, display: 'inline-flex', borderRadius: 2 }}>
-          <ToggleButtonGroup
-            value={mediaFilter}
-            exclusive
-            onChange={handleFilterChange}
-            aria-label="媒体类型筛选"
-            size="large"
-          >
-            <ToggleButton value="all" aria-label="全部">
-              <PhotoLibraryIcon sx={{ mr: 1 }} />
-              全部 ({stats.total})
-            </ToggleButton>
-            <ToggleButton value="images" aria-label="仅图片">
-              <ImageIcon sx={{ mr: 1 }} />
-              仅图片 ({stats.images})
-            </ToggleButton>
-            <ToggleButton value="videos" aria-label="仅视频">
-              <VideoIcon sx={{ mr: 1 }} />
-              仅视频 ({stats.videos})
-            </ToggleButton>
-          </ToggleButtonGroup>
-        </Paper>
-      </Box>
-
-      {/* 当前筛选统计 */}
-      <Box sx={{ mb: 4, textAlign: 'center' }}>
-        <Typography variant="h6" color="text.secondary">
-          当前筛选：
-          <Typography component="span" variant="h6" color="primary" sx={{ ml: 1, fontWeight: 'bold' }}>
-            {filteredStats.label}
+    <Box sx={{ minHeight: '100vh', backgroundColor: '#f5f5f5' }}>
+      {/* 顶部工具栏 - 简洁版 */}
+      <Box
+        sx={{
+          position: 'sticky',
+          top: 0,
+          zIndex: 100,
+          backgroundColor: 'white',
+          borderBottom: '1px solid #e0e0e0',
+          px: 2,
+          py: 1,
+        }}
+      >
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Typography variant="h6" fontWeight="bold">
+            WebDAV 媒体预览器
           </Typography>
-          <Typography component="span" variant="h6" color="text.secondary" sx={{ ml: 1 }}>
-            共 {filteredStats.total} 个文件
-          </Typography>
-        </Typography>
-      </Box>
-
-      {error && (
-        <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
-          {error}
-        </Alert>
-      )}
-
-      {currentFile && mediaUrl && (
-        <Card elevation={3} sx={{ borderRadius: 3, overflow: 'hidden', mb: 10 }}>
-          <Box sx={{ position: 'relative', backgroundColor: '#000' }}>
-            {isImage(currentFile.filename) && (
-              <CardMedia
-                component="img"
-                image={mediaUrl}
-                alt={currentFile.basename}
-                sx={{
-                  width: '100%',
-                  maxHeight: '70vh',
-                  objectFit: 'contain',
-                }}
-              />
-            )}
-            {isVideo(currentFile.filename) && (
-              <CardMedia
-                component="video"
-                src={mediaUrl}
-                controls
-                autoPlay
-                sx={{
-                  width: '100%',
-                  maxHeight: '70vh',
-                }}
-              />
-            )}
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            <Tooltip title="筛选与统计">
+              <IconButton onClick={toggleDrawer(true)} color="primary">
+                <FilterListIcon />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="设置">
+              <IconButton onClick={() => router.push('/config')}>
+                <SettingsIcon />
+              </IconButton>
+            </Tooltip>
           </Box>
-          <CardContent>
-            <Typography variant="h6" gutterBottom>
-              {currentFile.basename}
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              路径: {currentFile.filename}
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              大小: {formatFileSize(currentFile.size)}
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              修改时间: {new Date(currentFile.lastmod).toLocaleString('zh-CN')}
-            </Typography>
-          </CardContent>
-        </Card>
-      )}
-
-      {!currentFile && !loading && (
-        <Paper
-          elevation={2}
-          sx={{
-            p: 8,
-            textAlign: 'center',
-            backgroundColor: 'background.default',
-            borderRadius: 3,
-          }}
-        >
-          <ShuffleIcon sx={{ fontSize: 80, color: 'text.secondary', mb: 2 }} />
-          <Typography variant="h5" gutterBottom>
-            准备好了！
-          </Typography>
-          <Typography variant="body1" color="text.secondary" sx={{ mb: 1 }}>
-            从 {config.mediaPaths.length} 个目录中
-          </Typography>
-          <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-            随机加载{filteredStats.label === '全部' ? '媒体文件' : filteredStats.label}
-          </Typography>
-          <Button
-            variant="contained"
-            size="large"
-            startIcon={<ShuffleIcon />}
-            onClick={loadRandomMedia}
-          >
-            开始预览
-          </Button>
-        </Paper>
-      )}
-
-      {loading && !currentFile && (
-        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 8 }}>
-          <CircularProgress size={60} sx={{ mb: 2 }} />
-          <Typography variant="body2" color="text.secondary">
-            正在从 {config.mediaPaths.length} 个目录中随机选择{filteredStats.label}...
-          </Typography>
         </Box>
-      )}
+      </Box>
+
+      {/* 主内容区 - 专注于媒体展示 */}
+      <Container maxWidth="xl" sx={{ py: 2 }}>
+        {error && (
+          <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+            {error}
+          </Alert>
+        )}
+
+        {currentFile && mediaUrl && (
+          <Card 
+            elevation={0} 
+            sx={{ 
+              borderRadius: 2, 
+              overflow: 'hidden',
+              backgroundColor: 'transparent',
+            }}
+          >
+            <Box 
+              sx={{ 
+                position: 'relative', 
+                backgroundColor: '#000',
+                borderRadius: 2,
+                overflow: 'hidden',
+              }}
+            >
+              {isImage(currentFile.filename) && (
+                <CardMedia
+                  component="img"
+                  image={mediaUrl}
+                  alt={currentFile.basename}
+                  sx={{
+                    width: '100%',
+                    maxHeight: 'calc(100vh - 150px)',
+                    objectFit: 'contain',
+                  }}
+                />
+              )}
+              {isVideo(currentFile.filename) && (
+                <CardMedia
+                  component="video"
+                  src={mediaUrl}
+                  controls
+                  autoPlay
+                  sx={{
+                    width: '100%',
+                    maxHeight: 'calc(100vh - 150px)',
+                  }}
+                />
+              )}
+            </Box>
+            
+            {/* 文件信息 - 紧凑显示 */}
+            <CardContent sx={{ py: 1.5 }}>
+              <Typography variant="body1" fontWeight="medium" noWrap>
+                {currentFile.basename}
+              </Typography>
+              <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', mt: 0.5 }}>
+                <Typography variant="caption" color="text.secondary">
+                  {formatFileSize(currentFile.size)}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {new Date(currentFile.lastmod).toLocaleString('zh-CN')}
+                </Typography>
+              </Box>
+            </CardContent>
+          </Card>
+        )}
+
+        {!currentFile && !loading && (
+          <Paper
+            elevation={0}
+            sx={{
+              p: 8,
+              textAlign: 'center',
+              backgroundColor: 'white',
+              borderRadius: 2,
+              minHeight: 'calc(100vh - 200px)',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'center',
+              alignItems: 'center',
+            }}
+          >
+            <ShuffleIcon sx={{ fontSize: 80, color: 'text.secondary', mb: 2 }} />
+            <Typography variant="h5" gutterBottom>
+              准备好了！
+            </Typography>
+            <Typography variant="body1" color="text.secondary" sx={{ mb: 1 }}>
+              从 {config.mediaPaths.length} 个目录中
+            </Typography>
+            <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
+              随机加载{filteredStats.label === '全部' ? '媒体文件' : filteredStats.label}
+            </Typography>
+            <Typography variant="body2" color="primary" sx={{ mb: 3 }}>
+              当前筛选：{filteredStats.label} - {filteredStats.total} 个文件
+            </Typography>
+            <Button
+              variant="contained"
+              size="large"
+              startIcon={<ShuffleIcon />}
+              onClick={loadRandomMedia}
+            >
+              开始预览
+            </Button>
+          </Paper>
+        )}
+
+        {loading && !currentFile && (
+          <Box 
+            sx={{ 
+              display: 'flex', 
+              flexDirection: 'column', 
+              alignItems: 'center',
+              justifyContent: 'center',
+              minHeight: 'calc(100vh - 200px)',
+            }}
+          >
+            <CircularProgress size={60} sx={{ mb: 2 }} />
+            <Typography variant="body2" color="text.secondary">
+              正在加载{filteredStats.label}...
+            </Typography>
+          </Box>
+        )}
+      </Container>
+
+      {/* 右侧抽屉 - 筛选与统计 */}
+      <Drawer
+        anchor="right"
+        open={drawerOpen}
+        onClose={toggleDrawer(false)}
+        sx={{
+          '& .MuiDrawer-paper': {
+            width: 320,
+            boxSizing: 'border-box',
+          },
+        }}
+      >
+        <Box sx={{ p: 2 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+            <Typography variant="h6" fontWeight="bold">
+              筛选与统计
+            </Typography>
+            <IconButton onClick={toggleDrawer(false)} size="small">
+              <CloseIcon />
+            </IconButton>
+          </Box>
+
+          <Divider sx={{ mb: 3 }} />
+
+          {/* 媒体类型筛选 */}
+          <Box sx={{ mb: 3 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+              <FilterListIcon color="primary" />
+              <Typography variant="subtitle1" fontWeight="medium">
+                媒体类型
+              </Typography>
+            </Box>
+            
+            <ToggleButtonGroup
+              value={mediaFilter}
+              exclusive
+              onChange={handleFilterChange}
+              orientation="vertical"
+              fullWidth
+            >
+              <ToggleButton value="all">
+                <PhotoLibraryIcon sx={{ mr: 1 }} />
+                全部 ({stats.total})
+              </ToggleButton>
+              <ToggleButton value="images">
+                <ImageIcon sx={{ mr: 1 }} />
+                仅图片 ({stats.images})
+              </ToggleButton>
+              <ToggleButton value="videos">
+                <VideoIcon sx={{ mr: 1 }} />
+                仅视频 ({stats.videos})
+              </ToggleButton>
+            </ToggleButtonGroup>
+          </Box>
+
+          <Divider sx={{ mb: 3 }} />
+
+          {/* 统计信息 */}
+          <Box sx={{ mb: 3 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+              <BarChartIcon color="primary" />
+              <Typography variant="subtitle1" fontWeight="medium">
+                文件统计
+              </Typography>
+            </Box>
+
+            <Stack spacing={2}>
+              <Paper variant="outlined" sx={{ p: 2 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                  <ImageIcon color="primary" sx={{ fontSize: 32 }} />
+                  <Box>
+                    <Typography variant="h6">{stats.images}</Typography>
+                    <Typography variant="body2" color="text.secondary">图片</Typography>
+                  </Box>
+                </Box>
+              </Paper>
+
+              <Paper variant="outlined" sx={{ p: 2 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                  <VideoIcon color="secondary" sx={{ fontSize: 32 }} />
+                  <Box>
+                    <Typography variant="h6">{stats.videos}</Typography>
+                    <Typography variant="body2" color="text.secondary">视频</Typography>
+                  </Box>
+                </Box>
+              </Paper>
+
+              <Paper variant="outlined" sx={{ p: 2 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                  <PhotoLibraryIcon sx={{ fontSize: 32 }} />
+                  <Box>
+                    <Typography variant="h6">{stats.total}</Typography>
+                    <Typography variant="body2" color="text.secondary">总计</Typography>
+                  </Box>
+                </Box>
+              </Paper>
+            </Stack>
+          </Box>
+
+          <Divider sx={{ mb: 3 }} />
+
+          {/* 已挂载目录 */}
+          <Box>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+              <FolderIcon color="primary" />
+              <Typography variant="subtitle1" fontWeight="medium">
+                已挂载目录
+              </Typography>
+              <Chip label={config.mediaPaths.length} size="small" color="primary" />
+            </Box>
+
+            <List dense>
+              {config.mediaPaths.map((path, index) => (
+                <ListItem key={index} sx={{ px: 0 }}>
+                  <ListItemIcon sx={{ minWidth: 36 }}>
+                    <FolderIcon fontSize="small" />
+                  </ListItemIcon>
+                  <ListItemText 
+                    primary={path}
+                    primaryTypographyProps={{
+                      variant: 'body2',
+                      noWrap: true,
+                    }}
+                  />
+                </ListItem>
+              ))}
+            </List>
+          </Box>
+        </Box>
+      </Drawer>
 
       {/* 悬浮按钮 - 固定在右下角 */}
       <Tooltip title={loading ? '加载中...' : '换一个'} placement="left">
@@ -411,6 +573,6 @@ export default function HomePage() {
           )}
         </Fab>
       </Tooltip>
-    </Container>
+    </Box>
   )
 }
