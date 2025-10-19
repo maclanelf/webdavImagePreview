@@ -641,25 +641,6 @@ export default function HomePage() {
                 />
               )}
               
-              {/* 全屏按钮 */}
-              <Tooltip title="全屏查看" placement="left">
-                <Fab
-                  size="small"
-                  color="default"
-                  onClick={toggleFullscreen}
-                  sx={{
-                    position: 'absolute',
-                    top: 16,
-                    right: 16,
-                    backgroundColor: 'rgba(255, 255, 255, 0.9)',
-                    '&:hover': {
-                      backgroundColor: 'rgba(255, 255, 255, 1)',
-                    },
-                  }}
-                >
-                  <FullscreenIcon />
-                </Fab>
-              </Tooltip>
             </Box>
             
             {/* 文件信息 - 紧凑显示 */}
@@ -960,6 +941,29 @@ export default function HomePage() {
           </Box>
         </Box>
       </Drawer>
+
+      {/* 全屏按钮 - 固定在右上角 */}
+      {!fullscreen && currentFile && mediaUrl && (
+        <Tooltip title="全屏查看" placement="left">
+          <Fab
+            size="small"
+            color="default"
+            onClick={toggleFullscreen}
+            sx={{
+              position: 'fixed',
+              top: 80,
+              right: 24,
+              zIndex: 1000,
+              backgroundColor: 'rgba(255, 255, 255, 0.9)',
+              '&:hover': {
+                backgroundColor: 'rgba(255, 255, 255, 1)',
+              },
+            }}
+          >
+            <FullscreenIcon />
+          </Fab>
+        </Tooltip>
+      )}
 
       {/* 悬浮按钮 - 固定在右下角 */}
       <Tooltip title={loading ? '加载中...' : '换一个'} placement="left">
