@@ -594,7 +594,9 @@ export default function HomePage() {
         return
       }
 
-      const key = event.key
+      const key = event.key.toLowerCase()
+      
+      // 数字键 1-5：快速评分
       if (key >= '1' && key <= '5') {
         event.preventDefault() // 阻止默认行为
         const rating = parseInt(key)
@@ -611,13 +613,25 @@ export default function HomePage() {
           handleQuickRate(config.rating, config.evaluation)
         }
       }
+      
+      // R 键：打开详细评分对话框
+      if (key === 'r') {
+        event.preventDefault()
+        openRatingDialog('media')
+      }
+      
+      // G 键：图组模式下打开图组评分对话框
+      if (key === 'g' && viewMode === 'gallery' && currentGroup.length > 0) {
+        event.preventDefault()
+        openRatingDialog('group')
+      }
     }
 
     window.addEventListener('keydown', handleKeyPress)
     return () => {
       window.removeEventListener('keydown', handleKeyPress)
     }
-  }, [currentFile, handleQuickRate])
+  }, [currentFile, handleQuickRate, viewMode, currentGroup])
 
   // 清理定时器
   useEffect(() => {
@@ -1174,8 +1188,8 @@ export default function HomePage() {
             
             {/* 快捷键说明 */}
             <Box sx={{ mt: 2, p: 1.5, backgroundColor: 'grey.50', borderRadius: 1 }}>
-              <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
-                快捷键评分：
+              <Typography variant="caption" color="text.secondary" display="block" gutterBottom fontWeight="bold">
+                快捷键：
               </Typography>
               <Typography variant="caption" color="text.secondary" display="block">
                 1键: 1星-丑死了 | 2键: 2星-一般 | 3键: 3星-还行
@@ -1183,7 +1197,13 @@ export default function HomePage() {
               <Typography variant="caption" color="text.secondary" display="block">
                 4键: 4星-非常爽 | 5键: 5星-爽死了
               </Typography>
-              <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+              <Typography variant="caption" color="primary.main" display="block" sx={{ mt: 1, fontWeight: 'medium' }}>
+                R键: 打开详细评分对话框
+              </Typography>
+              <Typography variant="caption" color="secondary.main" display="block" sx={{ fontWeight: 'medium' }}>
+                G键: 图组评分 (仅图组模式)
+              </Typography>
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
                 自动标记：图片0.5秒，视频3分钟
               </Typography>
             </Box>
