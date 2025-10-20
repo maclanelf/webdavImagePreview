@@ -268,6 +268,12 @@ export default function HomePage() {
       }
       
       setMediaUrl(url)
+      
+      // 加载当前文件的评分
+      await loadMediaRating(file.filename)
+      
+      // 启动自动标记已看过的定时器（传递文件参数避免状态更新延迟）
+      startAutoMarkTimer(file)
     } catch (e: any) {
       setError(e.message)
     } finally {
@@ -355,8 +361,8 @@ export default function HomePage() {
       // 加载当前文件的评分
       await loadCurrentRating()
       
-      // 启动自动标记已看过的定时器
-      startAutoMarkTimer()
+      // 启动自动标记已看过的定时器（传递文件参数避免状态更新延迟）
+      startAutoMarkTimer(randomFile)
     } catch (e: any) {
       setError(e.message)
     } finally {
@@ -490,6 +496,22 @@ export default function HomePage() {
     }
   }
 
+  // 加载指定媒体文件的评分（用于图组模式）
+  const loadMediaRating = async (filePath: string) => {
+    try {
+      const response = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(filePath)}`)
+      if (response.ok) {
+        const data = await response.json()
+        setCurrentRating(data.rating || null)
+      } else {
+        setCurrentRating(null)
+      }
+    } catch (error) {
+      console.error('加载媒体评分失败:', error)
+      setCurrentRating(null)
+    }
+  }
+
   // 获取图组路径
   const getGroupPath = (filePath: string): string => {
     const lastSlashIndex = filePath.lastIndexOf('/')
@@ -539,8 +561,10 @@ export default function HomePage() {
   }
 
   // 自动标记已看过
-  const startAutoMarkTimer = () => {
-    if (!currentFile) return
+  const startAutoMarkTimer = (file?: MediaFile) => {
+    // 使用传入的文件或当前文件
+    const targetFile = file || currentFile
+    if (!targetFile) return
 
     // 清除之前的定时器
     if (autoMarkTimer) {
@@ -550,7 +574,7 @@ export default function HomePage() {
     setViewStartTime(Date.now())
 
     // 根据文件类型设置不同的时间
-    const isImageFile = isImage(currentFile.filename)
+    const isImageFile = isImage(targetFile.filename)
     const timeoutDuration = isImageFile ? 500 : 180000 // 图片0.5秒，视频3分钟
 
     const timer = setTimeout(async () => {
