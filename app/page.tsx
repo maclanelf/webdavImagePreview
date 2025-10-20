@@ -427,7 +427,7 @@ export default function HomePage() {
 
   const closeRatingDialog = () => {
     setRatingDialogOpen(false)
-    setCurrentRating(null)
+    // 不清空 currentRating，保持显示数据库中的实际评分状态
   }
 
   const saveRating = async (data: MediaRating | GroupRating) => {
@@ -448,6 +448,12 @@ export default function HomePage() {
           const errorData = await response.json()
           throw new Error(errorData.error || '保存媒体评分失败')
         }
+        
+        // 保存成功后合并更新当前评分状态（保留现有字段）
+        setCurrentRating(prev => ({
+          ...prev,
+          ...data
+        }))
       } else if (ratingType === 'group' && currentGroup.length > 0) {
         const groupPath = getGroupPath(currentGroup[0].filename)
         const groupName = getGroupName(groupPath)
@@ -467,6 +473,12 @@ export default function HomePage() {
           const errorData = await response.json()
           throw new Error(errorData.error || '保存图组评分失败')
         }
+        
+        // 保存成功后合并更新当前评分状态（保留现有字段）
+        setCurrentRating(prev => ({
+          ...prev,
+          ...data
+        }))
       }
     } catch (error: any) {
       throw new Error(error.message)
