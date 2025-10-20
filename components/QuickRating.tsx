@@ -36,33 +36,39 @@ export default function QuickRating({ currentRating, onQuickRate, disabled }: Qu
   return (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
       <Stack direction="row" spacing={0.5} alignItems="center">
-        {quickRatingConfig.map((config) => (
-          <Tooltip 
-            key={config.rating} 
-            title={`快捷键 ${config.rating}: ${config.rating}星 - ${config.evaluation} - 已看过`}
-            placement="top"
-          >
-            <IconButton
-              size="small"
-              onClick={() => handleQuickRate(config.rating, config.evaluation)}
-              disabled={disabled}
-              sx={{
-                color: currentRating === config.rating ? `${config.color}.main` : 'text.secondary',
-                '&:hover': {
-                  backgroundColor: `${config.color}.light`,
-                  color: `${config.color}.main`,
-                },
-                transition: 'all 0.2s ease-in-out',
-              }}
+        {quickRatingConfig.map((config) => {
+          // 判断这颗星是否应该点亮
+          const isLit = currentRating && currentRating >= config.rating
+          
+          return (
+            <Tooltip 
+              key={config.rating} 
+              title={`快捷键 ${config.rating}: ${config.rating}星 - ${config.evaluation} - 已看过`}
+              placement="top"
             >
-              {currentRating && currentRating >= config.rating ? (
-                <Star fontSize="small" />
-              ) : (
-                <StarBorder fontSize="small" />
-              )}
-            </IconButton>
-          </Tooltip>
-        ))}
+              <IconButton
+                size="small"
+                onClick={() => handleQuickRate(config.rating, config.evaluation)}
+                disabled={disabled}
+                sx={{
+                  // 点亮的星星统一使用橙色，未点亮的使用灰色
+                  color: isLit ? 'warning.main' : 'text.secondary',
+                  '&:hover': {
+                    backgroundColor: `${config.color}.light`,
+                    color: `${config.color}.main`,
+                  },
+                  transition: 'all 0.2s ease-in-out',
+                }}
+              >
+                {isLit ? (
+                  <Star fontSize="small" />
+                ) : (
+                  <StarBorder fontSize="small" />
+                )}
+              </IconButton>
+            </Tooltip>
+          )
+        })}
       </Stack>
       
       {currentRating && (
