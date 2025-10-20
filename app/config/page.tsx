@@ -44,6 +44,7 @@ import {
   Add as AddIcon,
   NavigateNext as NavigateNextIcon,
   Home as HomeIcon,
+  ManageAccounts as ManageAccountsIcon,
 } from '@mui/icons-material'
 import { ListItemButton } from '@mui/material'
 import { useRouter } from 'next/navigation'
