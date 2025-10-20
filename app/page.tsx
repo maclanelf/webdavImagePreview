@@ -116,7 +116,7 @@ export default function HomePage() {
   // 自动标记已看过相关状态
   const [viewStartTime, setViewStartTime] = useState<number | null>(null)
   const [autoMarkTimer, setAutoMarkTimer] = useState<NodeJS.Timeout | null>(null)
-  const [hasAutoRated, setHasAutoRated] = useState(false) // 追踪当前文件是否已自动评分
+  const hasAutoRatedRef = useRef(false) // 使用 ref 避免闭包陷阱,追踪当前文件是否已自动评分
   
   // 提示消息相关状态
   const [snackbarOpen, setSnackbarOpen] = useState(false)
@@ -244,6 +244,9 @@ export default function HomePage() {
   const loadFileFromGroup = async (group: MediaFile[], index: number) => {
     if (index < 0 || index >= group.length) return
     
+    // 切换文件时立即重置自动评分标志
+    hasAutoRatedRef.current = false
+    
     setLoading(true)
     setError(null)
     
@@ -333,6 +336,9 @@ export default function HomePage() {
       return
     }
 
+    // 切换文件时立即重置自动评分标志
+    hasAutoRatedRef.current = false
+    
     setLoading(true)
     setError(null)
 
@@ -360,11 +366,11 @@ export default function HomePage() {
       if (mediaUrl) {
         URL.revokeObjectURL(mediaUrl)
       }
-      
+      debugger
       setMediaUrl(url)
       
       // 加载当前文件的评分
-      await loadCurrentRating()
+      await loadCurrentRating(randomFile)
       
       // 启动自动标记已看过的定时器（传递文件参数避免状态更新延迟）
       startAutoMarkTimer(randomFile)
@@ -435,16 +441,17 @@ export default function HomePage() {
     // 不清空 currentRating，保持显示数据库中的实际评分状态
   }
 
-  const saveRating = async (data: MediaRating | GroupRating) => {
+  const saveRating = async (data: MediaRating | GroupRating, file?: MediaFile) => {
     try {
-      if (ratingType === 'media' && currentFile) {
+      const targetFile = file || currentFile
+      if (ratingType === 'media' && targetFile) {
         const response = await fetch('/api/ratings/media', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            filePath: currentFile.filename,
-            fileName: currentFile.basename,
-            fileType: isImage(currentFile.filename) ? 'image' : 'video',
+            filePath: targetFile.filename,
+            fileName: targetFile.basename,
+            fileType: isImage(targetFile.filename) ? 'image' : 'video',
             ...data
           })
         })
@@ -490,12 +497,13 @@ export default function HomePage() {
     }
   }
 
-  const loadCurrentRating = async () => {
-    if (!currentFile && currentGroup.length === 0) return
+  const loadCurrentRating = async (file?: MediaFile) => {
+    const targetFile = file || currentFile
+    if (!targetFile && currentGroup.length === 0) return
 
     try {
-      if (ratingType === 'media' && currentFile) {
-        const response = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(currentFile.filename)}`)
+      if (ratingType === 'media' && targetFile) {
+        const response = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(targetFile.filename)}`)
         if (response.ok) {
           const data = await response.json()
           setCurrentRating(data.rating || null)
@@ -578,10 +586,16 @@ export default function HomePage() {
   }
 
   // 执行自动评分
-  const performAutoRating = useCallback(async () => {
-    if (hasAutoRated || !currentFile) return // 避免重复评分
+  const performAutoRating = useCallback(async (file?: MediaFile) => {
+    // 使用传入的文件或当前文件
+    const targetFile = file || currentFile
+    if (!targetFile) return
     
-    setHasAutoRated(true) // 标记已评分
+    // 同步检查是否已经评分过，避免异步状态更新的竞态条件
+    if (hasAutoRatedRef.current) return // 已经评分过，不再评分
+    
+    // 立即标记为已评分，防止重复调用
+    hasAutoRatedRef.current = true
     
     try {
       // 自动标记为已看过，默认2星，评价"一般"
@@ -591,7 +605,7 @@ export default function HomePage() {
         isViewed: true
       }
 
-      await saveRating(autoRatingData)
+      await saveRating(autoRatingData, targetFile)
       
       // 更新当前评分状态
       setCurrentRating(prev => ({
@@ -601,10 +615,11 @@ export default function HomePage() {
     } catch (error) {
       console.error('自动标记已看过失败:', error)
     }
-  }, [hasAutoRated, currentFile, saveRating])
+  }, [currentFile, saveRating])
 
   // 自动标记已看过
   const startAutoMarkTimer = (file?: MediaFile) => {
+    debugger
     // 使用传入的文件或当前文件
     const targetFile = file || currentFile
     if (!targetFile) return
@@ -615,7 +630,7 @@ export default function HomePage() {
     }
     
     // 重置自动评分标志
-    setHasAutoRated(false)
+    hasAutoRatedRef.current = false
 
     setViewStartTime(Date.now())
 
@@ -624,7 +639,7 @@ export default function HomePage() {
     const timeoutDuration = isImageFile ? 500 : 180000 // 图片0.5秒，视频3分钟
 
     const timer = setTimeout(async () => {
-      await performAutoRating()
+      await performAutoRating(targetFile)
     }, timeoutDuration)
 
     setAutoMarkTimer(timer)
@@ -642,14 +657,14 @@ export default function HomePage() {
   // 视频播放进度监听（播放超过80%时自动标记）
   const handleVideoTimeUpdate = useCallback((event: React.SyntheticEvent<HTMLVideoElement>) => {
     const video = event.currentTarget
-    if (!video.duration || hasAutoRated) return
+    if (!video.duration) return
     
     const progress = video.currentTime / video.duration
-    // 播放超过80%时自动标记
+    // 播放超过80%时自动标记（performAutoRating内部会防止重复评分）
     if (progress >= 0.8) {
       performAutoRating()
     }
-  }, [hasAutoRated, performAutoRating])
+  }, [performAutoRating])
 
   // 视频播放结束监听
   const handleVideoEnded = useCallback(() => {
