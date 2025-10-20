@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   Container,
   Box,
@@ -25,6 +25,7 @@ import {
   ListItemText,
   Chip,
   Stack,
+  Snackbar,
 } from '@mui/material'
 import {
   Shuffle as ShuffleIcon,
@@ -43,8 +44,14 @@ import {
   ArrowBack as ArrowBackIcon,
   ArrowForward as ArrowForwardIcon,
   SkipNext as SkipNextIcon,
+  Star as StarIcon,
+  RateReview as RateReviewIcon,
+  ManageAccounts as ManageAccountsIcon,
 } from '@mui/icons-material'
 import { useRouter } from 'next/navigation'
+import RatingDialog from '@/components/RatingDialog'
+import RatingStatus from '@/components/RatingStatus'
+import QuickRating from '@/components/QuickRating'
 
 interface WebDAVConfig {
   url: string
@@ -69,6 +76,22 @@ interface MediaGroup {
   files: MediaFile[]
 }
 
+interface MediaRating {
+  rating?: number
+  recommendationReason?: string
+  customEvaluation?: string | string[]
+  category?: string | string[]
+  isViewed?: boolean
+}
+
+interface GroupRating {
+  rating?: number
+  recommendationReason?: string
+  customEvaluation?: string | string[]
+  category?: string | string[]
+  isViewed?: boolean
+}
+
 export default function HomePage() {
   const router = useRouter()
   const [config, setConfig] = useState<WebDAVConfig | null>(null)
@@ -84,6 +107,20 @@ export default function HomePage() {
   const [viewMode, setViewMode] = useState<ViewMode>('random')
   const [currentGroup, setCurrentGroup] = useState<MediaFile[]>([])
   const [currentGroupIndex, setCurrentGroupIndex] = useState(0)
+  
+  // 评分相关状态
+  const [ratingDialogOpen, setRatingDialogOpen] = useState(false)
+  const [currentRating, setCurrentRating] = useState<MediaRating | GroupRating | null>(null)
+  const [ratingType, setRatingType] = useState<'media' | 'group'>('media')
+  
+  // 自动标记已看过相关状态
+  const [viewStartTime, setViewStartTime] = useState<number | null>(null)
+  const [autoMarkTimer, setAutoMarkTimer] = useState<NodeJS.Timeout | null>(null)
+  
+  // 提示消息相关状态
+  const [snackbarOpen, setSnackbarOpen] = useState(false)
+  const [snackbarMessage, setSnackbarMessage] = useState('')
+  const [snackbarSeverity, setSnackbarSeverity] = useState<'success' | 'error' | 'info'>('success')
 
   useEffect(() => {
     // 从localStorage加载配置
@@ -314,6 +351,12 @@ export default function HomePage() {
       }
       
       setMediaUrl(url)
+      
+      // 加载当前文件的评分
+      await loadCurrentRating()
+      
+      // 启动自动标记已看过的定时器
+      startAutoMarkTimer()
     } catch (e: any) {
       setError(e.message)
     } finally {
@@ -369,6 +412,221 @@ export default function HomePage() {
   const toggleFullscreen = () => {
     setFullscreen(!fullscreen)
   }
+
+  // 评分相关函数
+  const openRatingDialog = (type: 'media' | 'group') => {
+    setRatingType(type)
+    setRatingDialogOpen(true)
+  }
+
+  const closeRatingDialog = () => {
+    setRatingDialogOpen(false)
+    setCurrentRating(null)
+  }
+
+  const saveRating = async (data: MediaRating | GroupRating) => {
+    try {
+      if (ratingType === 'media' && currentFile) {
+        const response = await fetch('/api/ratings/media', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            filePath: currentFile.filename,
+            fileName: currentFile.basename,
+            fileType: isImage(currentFile.filename) ? 'image' : 'video',
+            ...data
+          })
+        })
+        
+        if (!response.ok) {
+          const errorData = await response.json()
+          throw new Error(errorData.error || '保存媒体评分失败')
+        }
+      } else if (ratingType === 'group' && currentGroup.length > 0) {
+        const groupPath = getGroupPath(currentGroup[0].filename)
+        const groupName = getGroupName(groupPath)
+        
+        const response = await fetch('/api/ratings/group', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            groupPath,
+            groupName,
+            fileCount: currentGroup.length,
+            ...data
+          })
+        })
+        
+        if (!response.ok) {
+          const errorData = await response.json()
+          throw new Error(errorData.error || '保存图组评分失败')
+        }
+      }
+    } catch (error: any) {
+      throw new Error(error.message)
+    }
+  }
+
+  const loadCurrentRating = async () => {
+    if (!currentFile && currentGroup.length === 0) return
+
+    try {
+      if (ratingType === 'media' && currentFile) {
+        const response = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(currentFile.filename)}`)
+        if (response.ok) {
+          const data = await response.json()
+          setCurrentRating(data.rating || null)
+        }
+      } else if (ratingType === 'group' && currentGroup.length > 0) {
+        const groupPath = getGroupPath(currentGroup[0].filename)
+        const response = await fetch(`/api/ratings/group?groupPath=${encodeURIComponent(groupPath)}`)
+        if (response.ok) {
+          const data = await response.json()
+          setCurrentRating(data.rating || null)
+        }
+      }
+    } catch (error) {
+      console.error('加载评分失败:', error)
+    }
+  }
+
+  // 获取图组路径
+  const getGroupPath = (filePath: string): string => {
+    const lastSlashIndex = filePath.lastIndexOf('/')
+    return lastSlashIndex > 0 ? filePath.substring(0, lastSlashIndex) : '/'
+  }
+
+  // 获取图组名称
+  const getGroupName = (groupPath: string): string => {
+    const pathParts = groupPath.split('/').filter(part => part.length > 0)
+    return pathParts.length > 0 ? pathParts[pathParts.length - 1] : '根目录'
+  }
+
+  // 快速评分函数
+  const handleQuickRate = useCallback(async (rating: number, evaluation: string) => {
+    if (!currentFile) return
+
+    try {
+      const ratingData = {
+        rating,
+        customEvaluation: [evaluation],  // 快捷键使用单个评价，转为数组格式
+        isViewed: true
+      }
+
+      await saveRating(ratingData)
+      
+      // 更新当前评分状态
+      setCurrentRating(prev => ({
+        ...prev,
+        ...ratingData
+      }))
+      
+      // 显示评分成功提示
+      setSnackbarMessage(`${rating}星 - ${evaluation}`)
+      setSnackbarSeverity('success')
+      setSnackbarOpen(true)
+    } catch (error) {
+      console.error('快速评分失败:', error)
+      setSnackbarMessage('❌ 评分失败，请重试')
+      setSnackbarSeverity('error')
+      setSnackbarOpen(true)
+    }
+  }, [currentFile, saveRating])
+  
+  // 关闭提示
+  const handleCloseSnackbar = () => {
+    setSnackbarOpen(false)
+  }
+
+  // 自动标记已看过
+  const startAutoMarkTimer = () => {
+    if (!currentFile) return
+
+    // 清除之前的定时器
+    if (autoMarkTimer) {
+      clearTimeout(autoMarkTimer)
+    }
+
+    setViewStartTime(Date.now())
+
+    // 根据文件类型设置不同的时间
+    const isImageFile = isImage(currentFile.filename)
+    const timeoutDuration = isImageFile ? 500 : 180000 // 图片0.5秒，视频3分钟
+
+    const timer = setTimeout(async () => {
+      try {
+        // 自动标记为已看过，默认2星，评价"一般"
+        const autoRatingData = {
+          rating: 2,
+          customEvaluation: ['一般'],  // 自动评价转为数组格式
+          isViewed: true
+        }
+
+        await saveRating(autoRatingData)
+        
+        // 更新当前评分状态
+        setCurrentRating(prev => ({
+          ...prev,
+          ...autoRatingData
+        }))
+      } catch (error) {
+        console.error('自动标记已看过失败:', error)
+      }
+    }, timeoutDuration)
+
+    setAutoMarkTimer(timer)
+  }
+
+  // 停止自动标记定时器
+  const stopAutoMarkTimer = () => {
+    if (autoMarkTimer) {
+      clearTimeout(autoMarkTimer)
+      setAutoMarkTimer(null)
+    }
+    setViewStartTime(null)
+  }
+
+  // 快捷键监听
+  useEffect(() => {
+    const handleKeyPress = (event: KeyboardEvent) => {
+      // 只在有当前文件且不在输入框中时响应快捷键
+      if (!currentFile || (event.target as HTMLElement).tagName === 'INPUT' || (event.target as HTMLElement).tagName === 'TEXTAREA') {
+        return
+      }
+
+      const key = event.key
+      if (key >= '1' && key <= '5') {
+        event.preventDefault() // 阻止默认行为
+        const rating = parseInt(key)
+        const quickRatingConfig = [
+          { rating: 1, evaluation: '丑死了' },
+          { rating: 2, evaluation: '一般' },
+          { rating: 3, evaluation: '还行' },
+          { rating: 4, evaluation: '非常爽' },
+          { rating: 5, evaluation: '爽死了' },
+        ]
+        
+        const config = quickRatingConfig[rating - 1]
+        if (config) {
+          handleQuickRate(config.rating, config.evaluation)
+        }
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyPress)
+    return () => {
+      window.removeEventListener('keydown', handleKeyPress)
+    }
+  }, [currentFile, handleQuickRate])
+
+  // 清理定时器
+  useEffect(() => {
+    return () => {
+      if (autoMarkTimer) {
+        clearTimeout(autoMarkTimer)
+      }
+    }
+  }, [autoMarkTimer])
 
   if (!config) {
     return (
@@ -554,6 +812,24 @@ export default function HomePage() {
             )}
           </Fab>
         </Tooltip>
+
+        {/* 评分提示 - 全屏模式 */}
+        <Snackbar
+          open={snackbarOpen}
+          autoHideDuration={2000}
+          onClose={handleCloseSnackbar}
+          anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+          sx={{ zIndex: 9999 }}
+        >
+          <Alert 
+            onClose={handleCloseSnackbar} 
+            severity={snackbarSeverity}
+            variant="filled"
+            sx={{ width: '100%', fontSize: '1.1rem', fontWeight: 'bold' }}
+          >
+            {snackbarMessage}
+          </Alert>
+        </Snackbar>
       </Box>
     )
   }
@@ -580,6 +856,11 @@ export default function HomePage() {
             <Tooltip title="筛选与统计">
               <IconButton onClick={toggleDrawer(true)} color="primary">
                 <FilterListIcon />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="评价与分类管理">
+              <IconButton onClick={() => router.push('/manage')}>
+                <ManageAccountsIcon />
               </IconButton>
             </Tooltip>
             <Tooltip title="设置">
@@ -667,6 +948,27 @@ export default function HomePage() {
                 <Typography variant="caption" color="text.secondary">
                   {new Date(currentFile.lastmod).toLocaleString('zh-CN')}
                 </Typography>
+              </Box>
+              
+              {/* 快速评分 */}
+              <Box sx={{ mt: 1, mb: 1 }}>
+                <QuickRating
+                  currentRating={currentRating?.rating}
+                  onQuickRate={handleQuickRate}
+                  disabled={loading}
+                />
+              </Box>
+              
+              {/* 评分状态显示 */}
+              <Box sx={{ mt: 1 }}>
+                <RatingStatus
+                  rating={currentRating?.rating}
+                  customEvaluation={currentRating?.customEvaluation}
+                  category={currentRating?.category}
+                  isViewed={currentRating?.isViewed}
+                  onEdit={() => openRatingDialog('media')}
+                  compact
+                />
               </Box>
             </CardContent>
           </Card>
@@ -835,6 +1137,60 @@ export default function HomePage() {
 
           <Divider sx={{ mb: 3 }} />
 
+          {/* 评分功能 */}
+          <Box sx={{ mb: 3 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+              <RateReviewIcon color="primary" />
+              <Typography variant="subtitle1" fontWeight="medium">
+                评分管理
+              </Typography>
+            </Box>
+            
+            <Stack spacing={1}>
+              <Button
+                variant="outlined"
+                startIcon={<StarIcon />}
+                onClick={() => openRatingDialog('media')}
+                disabled={!currentFile}
+                fullWidth
+                size="small"
+              >
+                详细评分
+              </Button>
+              
+              {viewMode === 'gallery' && (
+                <Button
+                  variant="outlined"
+                  startIcon={<CollectionsIcon />}
+                  onClick={() => openRatingDialog('group')}
+                  disabled={currentGroup.length === 0}
+                  fullWidth
+                  size="small"
+                >
+                  评分当前图组
+                </Button>
+              )}
+            </Stack>
+            
+            {/* 快捷键说明 */}
+            <Box sx={{ mt: 2, p: 1.5, backgroundColor: 'grey.50', borderRadius: 1 }}>
+              <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
+                快捷键评分：
+              </Typography>
+              <Typography variant="caption" color="text.secondary" display="block">
+                1键: 1星-丑死了 | 2键: 2星-一般 | 3键: 3星-还行
+              </Typography>
+              <Typography variant="caption" color="text.secondary" display="block">
+                4键: 4星-非常爽 | 5键: 5星-爽死了
+              </Typography>
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                自动标记：图片0.5秒，视频3分钟
+              </Typography>
+            </Box>
+          </Box>
+
+          <Divider sx={{ mb: 3 }} />
+
           {/* 媒体类型筛选 */}
           <Box sx={{ mb: 3 }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
@@ -986,6 +1342,41 @@ export default function HomePage() {
           )}
         </Fab>
       </Tooltip>
+
+      {/* 评分对话框 */}
+      <RatingDialog
+        open={ratingDialogOpen}
+        onClose={closeRatingDialog}
+        onSave={saveRating}
+        title={ratingType === 'media' ? '评分媒体文件' : '评分图组'}
+        subtitle={
+          ratingType === 'media' 
+            ? currentFile?.basename 
+            : currentGroup.length > 0 
+              ? `${getGroupName(getGroupPath(currentGroup[0].filename))} (${currentGroup.length} 个文件)`
+              : undefined
+        }
+        initialData={currentRating || undefined}
+        type={ratingType}
+      />
+
+      {/* 评分提示 */}
+      <Snackbar
+        open={snackbarOpen}
+        autoHideDuration={2000}
+        onClose={handleCloseSnackbar}
+        anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+        sx={{ zIndex: 9999 }}
+      >
+        <Alert 
+          onClose={handleCloseSnackbar} 
+          severity={snackbarSeverity}
+          variant="filled"
+          sx={{ width: '100%', fontSize: '1.1rem', fontWeight: 'bold' }}
+        >
+          {snackbarMessage}
+        </Alert>
+      </Snackbar>
     </Box>
   )
 }
