@@ -323,13 +323,22 @@ export default function ConfigPage() {
 
   return (
     <Container maxWidth="md" sx={{ py: 4 }}>
-      <Box sx={{ mb: 4, display: 'flex', alignItems: 'center', gap: 2 }}>
-        <IconButton onClick={() => router.push('/')}>
-          <ArrowBackIcon />
-        </IconButton>
-        <Typography variant="h4" component="h1" fontWeight="bold">
-          WebDAV 配置
-        </Typography>
+      <Box sx={{ mb: 4, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <IconButton onClick={() => router.push('/')}>
+            <ArrowBackIcon />
+          </IconButton>
+          <Typography variant="h4" component="h1" fontWeight="bold">
+            WebDAV 配置
+          </Typography>
+        </Box>
+        <Button
+          variant="outlined"
+          startIcon={<ManageAccountsIcon />}
+          onClick={() => router.push('/manage')}
+        >
+          评价与分类管理
+        </Button>
       </Box>
 
       <Paper elevation={3} sx={{ p: 4, borderRadius: 3 }}>
