@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Container,
   Box,
@@ -116,11 +116,16 @@ export default function HomePage() {
   // 自动标记已看过相关状态
   const [viewStartTime, setViewStartTime] = useState<number | null>(null)
   const [autoMarkTimer, setAutoMarkTimer] = useState<NodeJS.Timeout | null>(null)
+  const [hasAutoRated, setHasAutoRated] = useState(false) // 追踪当前文件是否已自动评分
   
   // 提示消息相关状态
   const [snackbarOpen, setSnackbarOpen] = useState(false)
   const [snackbarMessage, setSnackbarMessage] = useState('')
   const [snackbarSeverity, setSnackbarSeverity] = useState<'success' | 'error' | 'info'>('success')
+  
+  // 视频元素引用
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const fullscreenVideoRef = useRef<HTMLVideoElement>(null)
 
   useEffect(() => {
     // 从localStorage加载配置
@@ -572,6 +577,32 @@ export default function HomePage() {
     setSnackbarOpen(false)
   }
 
+  // 执行自动评分
+  const performAutoRating = useCallback(async () => {
+    if (hasAutoRated || !currentFile) return // 避免重复评分
+    
+    setHasAutoRated(true) // 标记已评分
+    
+    try {
+      // 自动标记为已看过，默认2星，评价"一般"
+      const autoRatingData = {
+        rating: 2,
+        customEvaluation: ['一般'],
+        isViewed: true
+      }
+
+      await saveRating(autoRatingData)
+      
+      // 更新当前评分状态
+      setCurrentRating(prev => ({
+        ...prev,
+        ...autoRatingData
+      }))
+    } catch (error) {
+      console.error('自动标记已看过失败:', error)
+    }
+  }, [hasAutoRated, currentFile, saveRating])
+
   // 自动标记已看过
   const startAutoMarkTimer = (file?: MediaFile) => {
     // 使用传入的文件或当前文件
@@ -582,6 +613,9 @@ export default function HomePage() {
     if (autoMarkTimer) {
       clearTimeout(autoMarkTimer)
     }
+    
+    // 重置自动评分标志
+    setHasAutoRated(false)
 
     setViewStartTime(Date.now())
 
@@ -590,24 +624,7 @@ export default function HomePage() {
     const timeoutDuration = isImageFile ? 500 : 180000 // 图片0.5秒，视频3分钟
 
     const timer = setTimeout(async () => {
-      try {
-        // 自动标记为已看过，默认2星，评价"一般"
-        const autoRatingData = {
-          rating: 2,
-          customEvaluation: ['一般'],  // 自动评价转为数组格式
-          isViewed: true
-        }
-
-        await saveRating(autoRatingData)
-        
-        // 更新当前评分状态
-        setCurrentRating(prev => ({
-          ...prev,
-          ...autoRatingData
-        }))
-      } catch (error) {
-        console.error('自动标记已看过失败:', error)
-      }
+      await performAutoRating()
     }, timeoutDuration)
 
     setAutoMarkTimer(timer)
@@ -621,6 +638,23 @@ export default function HomePage() {
     }
     setViewStartTime(null)
   }
+
+  // 视频播放进度监听（播放超过80%时自动标记）
+  const handleVideoTimeUpdate = useCallback((event: React.SyntheticEvent<HTMLVideoElement>) => {
+    const video = event.currentTarget
+    if (!video.duration || hasAutoRated) return
+    
+    const progress = video.currentTime / video.duration
+    // 播放超过80%时自动标记
+    if (progress >= 0.8) {
+      performAutoRating()
+    }
+  }, [hasAutoRated, performAutoRating])
+
+  // 视频播放结束监听
+  const handleVideoEnded = useCallback(() => {
+    performAutoRating()
+  }, [performAutoRating])
 
   // 快捷键监听
   useEffect(() => {
@@ -739,9 +773,12 @@ export default function HomePage() {
         {isVideo(currentFile.filename) && (
           <Box
             component="video"
+            ref={fullscreenVideoRef}
             src={mediaUrl}
             controls
             autoPlay
+            onTimeUpdate={handleVideoTimeUpdate}
+            onEnded={handleVideoEnded}
             sx={{
               maxWidth: '100%',
               maxHeight: '100%',
@@ -960,11 +997,14 @@ export default function HomePage() {
                 />
               )}
               {isVideo(currentFile.filename) && (
-                <CardMedia
+                <Box
                   component="video"
+                  ref={videoRef}
                   src={mediaUrl}
                   controls
                   autoPlay
+                  onTimeUpdate={handleVideoTimeUpdate}
+                  onEnded={handleVideoEnded}
                   sx={{
                     width: '100%',
                     maxHeight: 'calc(100vh - 150px)',
@@ -1240,7 +1280,10 @@ export default function HomePage() {
                 G键: 图组评分 (仅图组模式)
               </Typography>
               <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-                自动标记：图片0.5秒，视频3分钟
+                自动标记：图片0.5秒，视频播放80%或结束时
+              </Typography>
+              <Typography variant="caption" color="text.secondary" display="block">
+                （视频超时兜底：3分钟）
               </Typography>
             </Box>
           </Box>
