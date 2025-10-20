@@ -5,11 +5,11 @@ FROM node:20-alpine AS base
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
 
-# 复制 package.json 和 package-lock.json
-COPY package*.json ./
+# 复制 package.json 和 package-lock.json（显式指定，避免匹配失败）
+COPY package.json package-lock.json ./
 
-# 安装依赖项
-RUN npm ci --only=production
+# 安装依赖项（构建需要 devDependencies）
+RUN npm ci
 
 # 复制源代码
 COPY . .
