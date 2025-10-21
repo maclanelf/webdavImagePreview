@@ -36,3 +36,7 @@ next-env.d.ts
 # SQLite 临时文件
 *.db-shm
 *.db-wal
+
+media_ratings.db-shm
+media_ratings.db-wal
+media_ratings.db
