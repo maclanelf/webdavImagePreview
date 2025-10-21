@@ -48,7 +48,7 @@ HOSTNAME=0.0.0.0
 使用 Docker Compose 启动：
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 或者使用 Docker 命令：
@@ -105,19 +105,19 @@ ports:
 ### 查看日志
 
 ```bash
-docker-compose logs -f webdav-image-preview
+docker compose logs -f webdav-image-preview
 ```
 
 ### 重启应用
 
 ```bash
-docker-compose restart webdav-image-preview
+docker compose restart webdav-image-preview
 ```
 
 ### 停止应用
 
 ```bash
-docker-compose down
+docker compose down
 ```
 
 ### 更新应用
@@ -127,7 +127,7 @@ docker-compose down
 git pull
 
 # 重新构建并启动
-docker-compose up -d --build
+docker compose up -d --build
 ```
 
 ### 备份数据

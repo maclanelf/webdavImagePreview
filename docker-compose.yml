@@ -1,4 +1,5 @@
-version: '3.8'
+# Docker Compose 配置文件
+# 使用命令: docker compose up -d
 
 services:
   webdav-image-preview:
