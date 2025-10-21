@@ -209,9 +209,9 @@ export default function ManagePage() {
       </AppBar>
 
       <Container maxWidth="lg" sx={{ py: 4 }}>
-        <Grid container spacing={3}>
+        <Box sx={{ display: 'flex', flexDirection: { xs: 'column', md: 'row' }, gap: 3 }}>
           {/* 评价标签管理 */}
-          <Grid item xs={12} md={6}>
+          <Box sx={{ flex: 1 }}>
             <Paper sx={{ p: 3 }}>
               <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
                 <LabelIcon sx={{ mr: 1, color: 'primary.main' }} />
@@ -301,10 +301,10 @@ export default function ManagePage() {
                 共 {evaluations.length} 个评价标签
               </Typography>
             </Paper>
-          </Grid>
+          </Box>
 
           {/* 分类管理 */}
-          <Grid item xs={12} md={6}>
+          <Box sx={{ flex: 1 }}>
             <Paper sx={{ p: 3 }}>
               <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
                 <CategoryIcon sx={{ mr: 1, color: 'secondary.main' }} />
@@ -394,8 +394,8 @@ export default function ManagePage() {
                 共 {categories.length} 个分类
               </Typography>
             </Paper>
-          </Grid>
-        </Grid>
+          </Box>
+        </Box>
 
         {/* 使用说明 */}
         <Paper sx={{ p: 3, mt: 3 }}>
