@@ -3,6 +3,19 @@ import { scheduledScans } from '@/lib/database'
 import { getWebDAVClient, getMediaFiles } from '@/lib/webdav'
 import { scanCache } from '@/lib/database'
 
+interface ScheduledTask {
+  id: number
+  webdav_url: string
+  webdav_username: string
+  webdav_password: string
+  media_paths: string
+  scan_settings: string
+  cron_expression: string
+  is_active: number
+  last_run?: string
+  next_run?: string
+}
+
 // 手动执行定时扫描任务
 export async function POST(request: NextRequest) {
   try {
@@ -18,7 +31,7 @@ export async function POST(request: NextRequest) {
 
     // 获取任务信息
     const tasks = scheduledScans.getAll()
-    const task = tasks.find(t => t.id === taskId)
+    const task = (tasks as ScheduledTask[]).find(t => t.id === taskId)
     
     if (!task) {
       return NextResponse.json(

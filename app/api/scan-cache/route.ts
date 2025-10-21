@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { scanCache } from '@/lib/database'
 
+interface ScanCacheItem {
+  path: string
+  total_files: number
+  image_count: number
+  video_count: number
+  last_scan: string
+}
+
 // 获取扫描缓存数据
 export async function GET(request: NextRequest) {
   try {
@@ -21,7 +29,7 @@ export async function GET(request: NextRequest) {
     
     // 转换为前端需要的格式
     const pathStats = new Map()
-    cacheData.forEach(item => {
+    ;(cacheData as ScanCacheItem[]).forEach((item: ScanCacheItem) => {
       pathStats.set(item.path, {
         path: item.path,
         total: item.total_files,
