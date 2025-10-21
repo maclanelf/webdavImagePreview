@@ -51,6 +51,7 @@ import { ListItemButton, ListItemSecondaryAction } from '@mui/material'
 import { useRouter } from 'next/navigation'
 import ScheduledScanDialog from '@/components/ScheduledScanDialog'
 import DirectoryItem from '@/components/DirectoryItem'
+import { useWebSocketScanning, ScanTask } from '@/hooks/useWebSocketScanning'
 
 interface WebDAVConfig {
   url: string
@@ -105,6 +106,82 @@ export default function ConfigPage() {
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set())
   const [browsing, setBrowsing] = useState(false)
   const [pathStats, setPathStats] = useState<Map<string, PathStats>>(new Map())
+  // WebSocket扫描管理 - 只在需要时启用
+  const [enableWebSocket, setEnableWebSocket] = useState(false)
+  const {
+    isConnected: wsConnected,
+    activeTasks,
+    createScanTask,
+    subscribeToTask
+  } = useWebSocketScanning({
+    enabled: enableWebSocket,
+    onTaskCreated: (taskId, task) => {
+      console.log('扫描任务已创建:', taskId)
+    },
+    onTaskStarted: (taskId, task) => {
+      console.log('扫描任务已开始:', taskId, task)
+      // 更新UI状态
+      setScanning(prev => new Set(prev).add(task.path))
+      setScanProgress(prev => new Map(prev).set(task.path, {
+        currentPath: task.path,
+        fileCount: 0,
+        startTime: task.startTime,
+        scannedDirectories: 0,
+        totalDirectories: 0,
+        percentage: 0
+      }))
+    },
+    onProgress: (taskId, progress) => {
+      console.log('扫描进度更新:', taskId, progress)
+      // 更新UI状态
+      const task = activeTasks.find(t => t.id === taskId)
+      if (task) {
+        console.log('找到任务，更新进度:', task.path, progress)
+        setScanProgress(prev => new Map(prev).set(task.path, {
+          currentPath: progress.currentPath,
+          fileCount: progress.fileCount,
+          startTime: task.startTime,
+          scannedDirectories: progress.scannedDirectories,
+          totalDirectories: progress.totalDirectories,
+          percentage: progress.percentage
+        }))
+      } else {
+        console.log('未找到任务:', taskId, '当前活动任务:', activeTasks.map(t => t.id))
+      }
+    },
+    onTaskCompleted: (taskId, task, result) => {
+      console.log('扫描任务完成:', taskId, result)
+      // 更新UI状态
+      setScanning(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(task.path)
+        return newSet
+      })
+      setScanProgress(prev => {
+        const newMap = new Map(prev)
+        newMap.delete(task.path)
+        return newMap
+      })
+      // 重新加载扫描缓存
+      loadScanCache(config)
+    },
+    onTaskFailed: (taskId, task, error) => {
+      console.error('扫描任务失败:', taskId, error)
+      // 更新UI状态
+      setScanning(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(task.path)
+        return newSet
+      })
+      setScanProgress(prev => {
+        const newMap = new Map(prev)
+        newMap.delete(task.path)
+        return newMap
+      })
+    }
+  })
+
+  // 兼容性：保持原有的scanning和scanProgress状态
   const [scanning, setScanning] = useState<Set<string>>(new Set())
   const [scanProgress, setScanProgress] = useState<Map<string, { 
     currentPath: string, 
@@ -124,6 +201,12 @@ export default function ConfigPage() {
 
   // 加载扫描缓存数据
   const loadScanCache = async (config: WebDAVConfig) => {
+    // 检查配置是否完整
+    if (!config || !config.url || !config.username || !config.password) {
+      console.log('配置不完整，跳过加载扫描缓存')
+      return
+    }
+
     try {
       const response = await fetch(`/api/scan-cache?webdavUrl=${encodeURIComponent(config.url)}&webdavUsername=${encodeURIComponent(config.username)}&webdavPassword=${encodeURIComponent(config.password)}`)
       
@@ -167,6 +250,29 @@ export default function ConfigPage() {
     loadScheduledScans()
     loadSchedulerStatus()
   }, [])
+
+  // 当配置发生变化时，重新加载扫描缓存
+  useEffect(() => {
+    if (config.url && config.username && config.password) {
+      loadScanCache(config)
+    }
+  }, [config.url, config.username, config.password])
+
+  // 当页面重新获得焦点时，重新加载扫描缓存
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!document.hidden && config.url && config.username && config.password) {
+        console.log('页面重新获得焦点，重新加载扫描缓存')
+        loadScanCache(config)
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [config.url, config.username, config.password])
 
   const loadScheduledScans = async () => {
     setLoadingScans(true)
@@ -245,7 +351,7 @@ export default function ConfigPage() {
     }
   }
 
-  const saveConfig = () => {
+  const saveConfig = async () => {
     if (!config.url || !config.username || !config.password) {
       setSaveResult({
         type: 'error',
@@ -271,14 +377,56 @@ export default function ConfigPage() {
         mediaPaths: Array.from(selectedPaths),
       }
       localStorage.setItem('webdav_config', JSON.stringify(configToSave))
-      setSaveResult({
-        type: 'success',
-        message: '配置已保存！',
+      
+      // 检查是否有正在进行的扫描任务（WebSocket + 传统方式）
+      const hasScanningTasks = Array.from(selectedPaths).some(path => {
+        const scanStatus = getPathScanStatus(path)
+        return scanStatus.isScanning
       })
       
-      setTimeout(() => {
-        router.push('/')
-      }, 1500)
+      if (hasScanningTasks) {
+        setSaveResult({
+          type: 'success',
+          message: '配置已保存！正在后台扫描目录，请稍后查看结果...\n⚠️ 扫描任务在服务端运行，页面刷新不会影响扫描进度！',
+        })
+        
+        // 等待扫描完成后再跳转
+        const waitForScanning = () => {
+          return new Promise<void>((resolve) => {
+            const checkInterval = setInterval(() => {
+              const stillScanning = Array.from(selectedPaths).some(path => {
+                const scanStatus = getPathScanStatus(path)
+                return scanStatus.isScanning
+              })
+              if (!stillScanning) {
+                clearInterval(checkInterval)
+                resolve()
+              }
+            }, 1000) // 每秒检查一次
+            
+            // 最多等待5分钟
+            setTimeout(() => {
+              clearInterval(checkInterval)
+              resolve()
+            }, 300000)
+          })
+        }
+        
+        await waitForScanning()
+        
+        setTimeout(() => {
+          router.push('/')
+        }, 1000)
+      } else {
+        setSaveResult({
+          type: 'success',
+          message: '配置已保存！',
+        })
+        
+        setTimeout(() => {
+          router.push('/')
+        }, 1500)
+      }
     } catch (error: any) {
       setSaveResult({
         type: 'error',
@@ -368,93 +516,37 @@ export default function ConfigPage() {
   }
 
   const scanDirectory = async (path: string, forceRescan = false) => {
-    const startTime = Date.now()
-    const progressId = `${path}_${Date.now()}` // 生成唯一的进度ID
-    setScanning(prev => new Set(prev).add(path))
-    setScanProgress(prev => new Map(prev).set(path, { 
-      currentPath: path, 
-      fileCount: 0, 
-      startTime,
-      scannedDirectories: 0,
-      totalDirectories: 0,
-      percentage: 0
-    }))
-    
-    // 启动进度轮询
-    const progressInterval = setInterval(async () => {
-      try {
-        const response = await fetch(`/api/webdav/scan?progressId=${progressId}`)
-        if (response.ok) {
-          const progress = await response.json()
-          setScanProgress(prev => new Map(prev).set(path, {
-            currentPath: progress.currentPath,
-            fileCount: progress.fileCount,
-            startTime,
-            scannedDirectories: progress.scannedDirectories,
-            totalDirectories: progress.totalDirectories,
-            percentage: progress.percentage
-          }))
-        }
-      } catch (error) {
-        // 忽略进度获取错误
-      }
-    }, 500) // 每500ms更新一次进度
-    
     try {
-      const response = await fetch('/api/webdav/scan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          url: config.url,
-          username: config.username,
-          password: config.password,
-          path,
-          maxDepth: config.scanSettings?.maxDepth || 10,
-          maxFiles: config.scanSettings?.maxFiles || 200000,
-          timeout: config.scanSettings?.timeout || 60000,
-          forceRescan,
-          progressId
-        }),
+      // 启用WebSocket连接
+      if (!enableWebSocket) {
+        console.log('启用WebSocket连接')
+        setEnableWebSocket(true)
+        // 等待WebSocket连接建立
+        await new Promise(resolve => setTimeout(resolve, 2000))
+      }
+      
+      // 使用WebSocket创建扫描任务
+      const taskId = await createScanTask({
+        webdavUrl: config.url,
+        webdavUsername: config.username,
+        webdavPassword: config.password,
+        path,
+        maxDepth: config.scanSettings?.maxDepth || 10,
+        maxFiles: config.scanSettings?.maxFiles || 200000,
+        timeout: config.scanSettings?.timeout || 60000,
+        forceRescan
       })
 
-      if (response.ok) {
-        const data = await response.json()
-        setPathStats(prev => new Map(prev).set(path, {
-          ...data,
-          lastScan: new Date().toISOString()
-        }))
-        
-        // 显示缓存状态
-        if (data.scanInfo?.fromCache) {
-          console.log(`从缓存加载: ${path} (最后扫描: ${data.scanInfo.lastScan})`)
-        } else {
-          console.log(`重新扫描完成: ${path}`)
-        }
-      } else {
-        const error = await response.json()
-        console.error('扫描目录失败:', error.error)
-        setTestResult({
-          type: 'error',
-          message: `扫描目录 ${path} 失败: ${error.error}`
-        })
-      }
+      // 订阅任务进度
+      subscribeToTask(taskId)
+      
+      console.log('扫描任务已创建:', taskId)
+      
     } catch (error: any) {
-      console.error('扫描目录失败:', error)
+      console.error('创建扫描任务失败:', error)
       setTestResult({
         type: 'error',
-        message: `扫描目录 ${path} 失败: ${error.message}`
-      })
-    } finally {
-      clearInterval(progressInterval)
-      setScanning(prev => {
-        const newSet = new Set(prev)
-        newSet.delete(path)
-        return newSet
-      })
-      setScanProgress(prev => {
-        const newMap = new Map(prev)
-        newMap.delete(path)
-        return newMap
+        message: `创建扫描任务失败: ${error.message}`,
       })
     }
   }
@@ -467,6 +559,31 @@ export default function ConfigPage() {
     const newStats = new Map(pathStats)
     newStats.delete(path)
     setPathStats(newStats)
+  }
+
+  // 获取路径的扫描状态（兼容WebSocket和传统方式）
+  const getPathScanStatus = (path: string) => {
+    // 检查WebSocket任务
+    const wsTask = activeTasks.find(task => task.path === path)
+    if (wsTask) {
+      return {
+        isScanning: wsTask.status === 'running' || wsTask.status === 'pending',
+        scanProgress: wsTask.status === 'running' ? {
+          currentPath: wsTask.progress.currentPath,
+          fileCount: wsTask.progress.fileCount,
+          startTime: wsTask.startTime,
+          scannedDirectories: wsTask.progress.scannedDirectories,
+          totalDirectories: wsTask.progress.totalDirectories,
+          percentage: wsTask.progress.percentage
+        } : undefined
+      }
+    }
+
+    // 回退到传统方式
+    return {
+      isScanning: scanning.has(path),
+      scanProgress: scanProgress.get(path)
+    }
   }
 
   // 定时扫描相关函数
@@ -572,6 +689,11 @@ export default function ConfigPage() {
           <Typography variant="h4" component="h1" fontWeight="bold">
             WebDAV 配置
           </Typography>
+          <Chip 
+            label={wsConnected ? 'WebSocket已连接' : 'WebSocket未连接'} 
+            color={wsConnected ? 'success' : 'error'}
+            size="small"
+          />
         </Box>
         <Button
           variant="outlined"
@@ -868,16 +990,15 @@ export default function ConfigPage() {
             <Stack spacing={1}>
               {Array.from(selectedPaths).map(path => {
                 const stats = pathStats.get(path)
-                const isScanning = scanning.has(path)
-                const progress = scanProgress.get(path)
+                const scanStatus = getPathScanStatus(path)
                 
                 return (
                   <DirectoryItem
                     key={path}
                     path={path}
                     stats={stats}
-                    isScanning={isScanning}
-                    scanProgress={progress}
+                    isScanning={scanStatus.isScanning}
+                    scanProgress={scanStatus.scanProgress}
                     onRescan={(path, force) => scanDirectory(path, force)}
                     onRemove={removeSelectedPath}
                   />
@@ -918,7 +1039,14 @@ export default function ConfigPage() {
             disabled={testing || saving || selectedPaths.size === 0}
             startIcon={saving ? <CircularProgress size={20} color="inherit" /> : <SaveIcon />}
           >
-            {saving ? '保存中...' : '保存配置'}
+            {saving ? (
+              Array.from(selectedPaths).some(path => {
+                const scanStatus = getPathScanStatus(path)
+                return scanStatus.isScanning
+              }) 
+                ? '等待扫描完成...' 
+                : '保存中...'
+            ) : '保存配置'}
           </Button>
         </Box>
 

@@ -268,7 +268,7 @@ export default function DirectoryItem({
                   size="small"
                   variant="outlined"
                   startIcon={<RefreshIcon />}
-                  onClick={() => onRescan(path, false)}
+                  onClick={() => onRescan(path, true)}
                   disabled={isScanning}
                 >
                   重新扫描

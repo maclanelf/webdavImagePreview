@@ -1,4 +1,5 @@
 import scheduler from './scheduler'
+import { getWebSocketManager, closeWebSocketManager } from './websocket-manager'
 
 // 初始化应用
 export async function initializeApp() {
@@ -7,7 +8,10 @@ export async function initializeApp() {
   // 启动内置调度器
   scheduler.start()
   
-  console.log('应用初始化完成')
+  // 启动WebSocket服务器
+  getWebSocketManager()
+  
+  console.log('应用初始化完成：调度器和WebSocket服务器已启动')
 }
 
 // 清理应用
@@ -17,5 +21,8 @@ export async function cleanupApp() {
   // 停止调度器
   scheduler.stop()
   
-  console.log('应用清理完成')
+  // 关闭WebSocket服务器
+  closeWebSocketManager()
+  
+  console.log('应用清理完成：调度器和WebSocket服务器已停止')
 }

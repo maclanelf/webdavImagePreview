@@ -26,10 +26,13 @@
     "@mui/icons-material": "^7.3.4",
     "@mui/material": "^7.3.4",
     "@mui/material-nextjs": "^7.3.3",
+    "@types/ws": "^8.18.1",
     "better-sqlite3": "^12.4.1",
+    "bufferutil": "^4.0.9",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "webdav": "^5.8.0"
+    "webdav": "^5.8.0",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

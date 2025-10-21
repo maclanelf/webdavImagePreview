@@ -135,13 +135,13 @@ export default function HomePage() {
   const fullscreenVideoRef = useRef<HTMLVideoElement>(null)
 
   useEffect(() => {
-    // 初始化应用服务
+    // 只初始化调度器，不初始化WebSocket
     const initApp = async () => {
       try {
-        await fetch('/api/init', { method: 'POST' })
-        console.log('应用初始化完成')
+        await fetch('/api/init-scheduler', { method: 'POST' })
+        console.log('调度器初始化完成')
       } catch (error) {
-        console.error('应用初始化失败:', error)
+        console.error('调度器初始化失败:', error)
       }
     }
     
