@@ -33,11 +33,7 @@ yarn-error.log*
 next-env.d.ts
 
 
-# SQLite 临时文件
+# SQLite 数据库文件
+*.db
 *.db-shm
 *.db-wal
-
-# 数据库文件
-media_ratings.db-shm
-media_ratings.db-wal
-media_ratings.db
