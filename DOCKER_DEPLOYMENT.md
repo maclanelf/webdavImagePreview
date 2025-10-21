@@ -56,6 +56,11 @@ docker compose up -d
 ```bash
 # 构建镜像
 docker build -t webdav-image-preview .
+# 如果出现需要导出导出
+# 导出为tar
+docker save -o webdav-image-preview_1.0.0.tar webdav-image-preview:1.0.0
+# 导入加载tar
+docker load -i webdav-image-preview_1.0.0.tar
 
 # 运行容器
 docker run -d \
@@ -145,6 +150,12 @@ docker run --rm -v webdav_data:/data -v $(pwd):/backup alpine tar xzf /backup/we
 ```
 
 ## 🔍 故障排除
+
+### 无法拉取node:20-alpine镜像
+1.采用手动拉取
+  ```bash
+  docker pull --platform=linux/amd64 node:20-alpine
+  ```
 
 ### 应用无法启动
 
