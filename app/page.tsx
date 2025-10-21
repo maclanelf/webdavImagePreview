@@ -169,11 +169,11 @@ export default function HomePage() {
       setAllFiles(files)
       
       const imageCount = files.filter((f: MediaFile) => 
-        /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.basename)
+        /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(f.basename)
       ).length
       
       const videoCount = files.filter((f: MediaFile) => 
-        /\.(mp4|webm|mov|avi|mkv)$/i.test(f.basename)
+        /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(f.basename)
       ).length
 
       setStats({
@@ -188,9 +188,9 @@ export default function HomePage() {
 
   const getFilteredFiles = () => {
     if (mediaFilter === 'images') {
-      return allFiles.filter(f => /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.basename))
+      return allFiles.filter(f => /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(f.basename))
     } else if (mediaFilter === 'videos') {
-      return allFiles.filter(f => /\.(mp4|webm|mov|avi|mkv)$/i.test(f.basename))
+      return allFiles.filter(f => /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(f.basename))
     }
     return allFiles
   }
@@ -388,8 +388,8 @@ export default function HomePage() {
       
       // 如果当前显示的文件不符合新筛选条件，清空显示
       if (currentFile) {
-        const isImage = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(currentFile.basename)
-        const isVideo = /\.(mp4|webm|mov|avi|mkv)$/i.test(currentFile.basename)
+        const isImage = /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(currentFile.basename)
+        const isVideo = /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(currentFile.basename)
         
         if ((newFilter === 'images' && !isImage) || (newFilter === 'videos' && !isVideo)) {
           setCurrentFile(null)
@@ -400,11 +400,11 @@ export default function HomePage() {
   }
 
   const isImage = (filename: string) => {
-    return /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(filename)
+    return /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(filename)
   }
 
   const isVideo = (filename: string) => {
-    return /\.(mp4|webm|mov|avi|mkv)$/i.test(filename)
+    return /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(filename)
   }
 
   const formatFileSize = (bytes: number) => {

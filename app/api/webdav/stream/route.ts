@@ -28,11 +28,23 @@ export async function POST(request: NextRequest) {
       'gif': 'image/gif',
       'webp': 'image/webp',
       'bmp': 'image/bmp',
+      'tiff': 'image/tiff',
+      'tif': 'image/tiff',
+      'svg': 'image/svg+xml',
+      'ico': 'image/x-icon',
       'mp4': 'video/mp4',
       'webm': 'video/webm',
       'mov': 'video/quicktime',
       'avi': 'video/x-msvideo',
       'mkv': 'video/x-matroska',
+      'flv': 'video/x-flv',
+      'wmv': 'video/x-ms-wmv',
+      'm4v': 'video/x-m4v',
+      '3gp': 'video/3gpp',
+      'ogv': 'video/ogg',
+      'ts': 'video/mp2t',
+      'mts': 'video/mp2t',
+      'm2ts': 'video/mp2t',
     }
     
     if (ext && mimeTypes[ext]) {
