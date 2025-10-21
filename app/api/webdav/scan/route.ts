@@ -20,11 +20,11 @@ export async function POST(request: NextRequest) {
     
     // 统计信息
     const imageCount = files.filter(f => 
-      /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f.basename)
+      /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(f.basename)
     ).length
     
     const videoCount = files.filter(f => 
-      /\.(mp4|webm|mov|avi|mkv)$/i.test(f.basename)
+      /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(f.basename)
     ).length
     
     return NextResponse.json({
