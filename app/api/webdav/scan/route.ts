@@ -4,7 +4,15 @@ import { getWebDAVClient, getMediaFiles } from '@/lib/webdav'
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { url, username, password, path = '/' } = body
+    const { 
+      url, 
+      username, 
+      password, 
+      path = '/',
+      maxDepth = 10,
+      maxFiles = 200000,
+      timeout = 60000
+    } = body
 
     if (!url || !username || !password) {
       return NextResponse.json(
@@ -15,8 +23,15 @@ export async function POST(request: NextRequest) {
 
     const client = getWebDAVClient({ url, username, password })
     
-    // 扫描指定目录的媒体文件
-    const files = await getMediaFiles(client, path)
+    // 扫描指定目录的媒体文件，使用优化的参数
+    const files = await getMediaFiles(client, path, {
+      maxDepth,
+      maxFiles,
+      timeout,
+      onProgress: (currentPath, fileCount) => {
+        console.log(`扫描进度: ${currentPath} (已找到 ${fileCount} 个文件)`)
+      }
+    })
     
     // 统计信息
     const imageCount = files.filter(f => 
@@ -32,6 +47,12 @@ export async function POST(request: NextRequest) {
       total: files.length,
       images: imageCount,
       videos: videoCount,
+      scanInfo: {
+        maxDepth,
+        maxFiles,
+        timeout,
+        actualFilesFound: files.length
+      }
     })
   } catch (error: any) {
     console.error('扫描目录失败:', error)
