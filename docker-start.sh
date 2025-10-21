@@ -12,8 +12,8 @@ if ! command -v docker &> /dev/null; then
 fi
 
 # 检查 Docker Compose 是否安装
-if ! command -v docker-compose &> /dev/null; then
-    echo "❌ Docker Compose 未安装，请先安装 Docker Compose"
+if ! docker compose version &> /dev/null; then
+    echo "❌ Docker Compose 未安装，请先安装 Docker Desktop 或 Docker Compose"
     exit 1
 fi
 
@@ -31,23 +31,23 @@ fi
 
 # 构建并启动应用
 echo "🔨 构建并启动应用..."
-docker-compose up -d --build
+docker compose up -d --build
 
 # 等待应用启动
 echo "⏳ 等待应用启动..."
 sleep 10
 
 # 检查应用状态
-if docker-compose ps | grep -q "Up"; then
+if docker compose ps | grep -q "Up"; then
     echo "✅ 应用启动成功！"
     echo "🌐 访问地址: http://localhost:3000"
     echo ""
     echo "📋 管理命令："
-    echo "  查看日志: docker-compose logs -f"
-    echo "  重启应用: docker-compose restart"
-    echo "  停止应用: docker-compose down"
-    echo "  更新应用: docker-compose up -d --build"
+    echo "  查看日志: docker compose logs -f"
+    echo "  重启应用: docker compose restart"
+    echo "  停止应用: docker compose down"
+    echo "  更新应用: docker compose up -d --build"
 else
     echo "❌ 应用启动失败，请检查日志："
-    docker-compose logs
+    docker compose logs
 fi
