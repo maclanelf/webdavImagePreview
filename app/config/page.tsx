@@ -10,7 +10,6 @@ import {
   Paper,
   Alert,
   CircularProgress,
-  IconButton,
   InputAdornment,
   Divider,
   List,
@@ -28,6 +27,7 @@ import {
   Stack,
   Card,
   CardContent,
+  IconButton,
 } from '@mui/material'
 import {
   Save as SaveIcon,
@@ -46,7 +46,7 @@ import {
   Home as HomeIcon,
   ManageAccounts as ManageAccountsIcon,
 } from '@mui/icons-material'
-import { ListItemButton } from '@mui/material'
+import { ListItemButton, ListItemSecondaryAction } from '@mui/material'
 import { useRouter } from 'next/navigation'
 
 interface WebDAVConfig {
@@ -54,6 +54,11 @@ interface WebDAVConfig {
   username: string
   password: string
   mediaPaths: string[]
+  scanSettings?: {
+    maxDepth: number
+    maxFiles: number
+    timeout: number
+  }
 }
 
 interface Directory {
@@ -77,6 +82,11 @@ export default function ConfigPage() {
     username: '',
     password: '',
     mediaPaths: ['/'],
+    scanSettings: {
+      maxDepth: 10,
+      maxFiles: 200000,
+      timeout: 60000
+    }
   })
   const [showPassword, setShowPassword] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -92,6 +102,7 @@ export default function ConfigPage() {
   const [browsing, setBrowsing] = useState(false)
   const [pathStats, setPathStats] = useState<Map<string, PathStats>>(new Map())
   const [scanning, setScanning] = useState<Set<string>>(new Set())
+  const [scanProgress, setScanProgress] = useState<Map<string, { currentPath: string, fileCount: number }>>(new Map())
 
   useEffect(() => {
     // 加载已保存的配置
@@ -285,6 +296,8 @@ export default function ConfigPage() {
 
   const scanDirectory = async (path: string) => {
     setScanning(prev => new Set(prev).add(path))
+    setScanProgress(prev => new Map(prev).set(path, { currentPath: path, fileCount: 0 }))
+    
     try {
       const response = await fetch('/api/webdav/scan', {
         method: 'POST',
@@ -294,20 +307,39 @@ export default function ConfigPage() {
           username: config.username,
           password: config.password,
           path,
+          maxDepth: config.scanSettings?.maxDepth || 10,
+          maxFiles: config.scanSettings?.maxFiles || 200000,
+          timeout: config.scanSettings?.timeout || 60000,
         }),
       })
 
       if (response.ok) {
         const data = await response.json()
         setPathStats(prev => new Map(prev).set(path, data))
+      } else {
+        const error = await response.json()
+        console.error('扫描目录失败:', error.error)
+        setTestResult({
+          type: 'error',
+          message: `扫描目录 ${path} 失败: ${error.error}`
+        })
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('扫描目录失败:', error)
+      setTestResult({
+        type: 'error',
+        message: `扫描目录 ${path} 失败: ${error.message}`
+      })
     } finally {
       setScanning(prev => {
         const newSet = new Set(prev)
         newSet.delete(path)
         return newSet
+      })
+      setScanProgress(prev => {
+        const newMap = new Map(prev)
+        newMap.delete(path)
+        return newMap
       })
     }
   }
@@ -400,6 +432,71 @@ export default function ConfigPage() {
 
         <Divider sx={{ my: 3 }} />
 
+        {/* 扫描设置 */}
+        <Box sx={{ mb: 3 }}>
+          <Typography variant="h6" sx={{ mb: 2 }}>
+            扫描设置
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            配置深度扫描的参数，适用于包含大量子目录的情况
+          </Typography>
+          
+          <Box sx={{ display: 'flex', gap: 2, flexDirection: { xs: 'column', md: 'row' } }}>
+            <TextField
+              label="最大扫描深度"
+              type="number"
+              value={config.scanSettings?.maxDepth || 10}
+              onChange={(e) => setConfig({
+                ...config,
+                scanSettings: {
+                  maxDepth: parseInt(e.target.value) || 10,
+                  maxFiles: config.scanSettings?.maxFiles || 200000,
+                  timeout: config.scanSettings?.timeout || 60000
+                }
+              })}
+              helperText="递归扫描的最大目录层级深度"
+              inputProps={{ min: 1, max: 20 }}
+              sx={{ flex: 1 }}
+            />
+            
+            <TextField
+              label="最大文件数量"
+              type="number"
+              value={config.scanSettings?.maxFiles || 200000}
+              onChange={(e) => setConfig({
+                ...config,
+                scanSettings: {
+                  maxDepth: config.scanSettings?.maxDepth || 10,
+                  maxFiles: parseInt(e.target.value) || 200000,
+                  timeout: config.scanSettings?.timeout || 60000
+                }
+              })}
+              helperText="扫描的最大文件数量限制"
+              inputProps={{ min: 100, max: 500000 }}
+              sx={{ flex: 1 }}
+            />
+            
+            <TextField
+              label="超时时间(秒)"
+              type="number"
+              value={Math.floor((config.scanSettings?.timeout || 60000) / 1000)}
+              onChange={(e) => setConfig({
+                ...config,
+                scanSettings: {
+                  maxDepth: config.scanSettings?.maxDepth || 10,
+                  maxFiles: config.scanSettings?.maxFiles || 200000,
+                  timeout: (parseInt(e.target.value) || 60) * 1000
+                }
+              })}
+              helperText="扫描超时时间"
+              inputProps={{ min: 10, max: 300 }}
+              sx={{ flex: 1 }}
+            />
+          </Box>
+        </Box>
+
+        <Divider sx={{ my: 3 }} />
+
         {/* 已选择的目录 */}
         <Box sx={{ mb: 3 }}>
           <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
@@ -413,6 +510,37 @@ export default function ConfigPage() {
               浏览并选择目录
             </Button>
           </Box>
+
+          {/* 批量操作 */}
+          {selectedPaths.size > 0 && (
+            <Box sx={{ mb: 2, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={() => {
+                  Array.from(selectedPaths).forEach(path => {
+                    if (!pathStats.has(path)) {
+                      scanDirectory(path)
+                    }
+                  })
+                }}
+                disabled={Array.from(selectedPaths).some(path => scanning.has(path))}
+              >
+                批量扫描
+              </Button>
+              <Button
+                size="small"
+                variant="outlined"
+                color="error"
+                onClick={() => {
+                  setSelectedPaths(new Set())
+                  setPathStats(new Map())
+                }}
+              >
+                清空所有
+              </Button>
+            </Box>
+          )}
 
           {selectedPaths.size === 0 ? (
             <Alert severity="info">
@@ -435,9 +563,21 @@ export default function ConfigPage() {
                               {path}
                             </Typography>
                             {isScanning && (
-                              <Typography variant="caption" color="text.secondary">
-                                正在扫描...
-                              </Typography>
+                              <Box>
+                                <Typography variant="caption" color="primary" display="block">
+                                  正在扫描...
+                                </Typography>
+                                {scanProgress.has(path) && (
+                                  <Typography variant="caption" color="text.secondary" display="block">
+                                    当前路径: {scanProgress.get(path)?.currentPath}
+                                  </Typography>
+                                )}
+                                {scanProgress.has(path) && (
+                                  <Typography variant="caption" color="text.secondary" display="block">
+                                    已找到: {scanProgress.get(path)?.fileCount} 个文件
+                                  </Typography>
+                                )}
+                              </Box>
                             )}
                             {stats && !isScanning && (
                               <Box sx={{ display: 'flex', gap: 2, mt: 0.5 }}>
@@ -604,6 +744,45 @@ export default function ConfigPage() {
             </ListItemButton>
           </Card>
 
+          {/* 批量操作按钮 */}
+          {directories.length > 0 && (
+            <Box sx={{ mb: 2, display: 'flex', gap: 1 }}>
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={() => {
+                  const newSelected = new Set(selectedPaths)
+                  directories.forEach(dir => {
+                    newSelected.add(dir.filename)
+                    if (!pathStats.has(dir.filename)) {
+                      scanDirectory(dir.filename)
+                    }
+                  })
+                  setSelectedPaths(newSelected)
+                }}
+                disabled={browsing}
+              >
+                全选当前目录
+              </Button>
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={() => {
+                  const newSelected = new Set(selectedPaths)
+                  directories.forEach(dir => {
+                    newSelected.delete(dir.filename)
+                    const newStats = new Map(pathStats)
+                    newStats.delete(dir.filename)
+                    setPathStats(newStats)
+                  })
+                  setSelectedPaths(newSelected)
+                }}
+              >
+                取消全选
+              </Button>
+            </Box>
+          )}
+
           <Divider sx={{ my: 2 }} />
 
           {browsing ? (
@@ -615,23 +794,66 @@ export default function ConfigPage() {
           ) : (
             <List>
               {directories.map(dir => (
-                <ListItemButton
+                <ListItem
                   key={dir.filename}
-                  onClick={() => navigateToPath(dir.filename)}
                   sx={{
                     borderRadius: 1,
                     mb: 0.5,
+                    border: '1px solid #e0e0e0',
                   }}
                 >
                   <ListItemIcon>
-                    <FolderIcon />
+                    <Checkbox
+                      checked={selectedPaths.has(dir.filename)}
+                      onChange={() => togglePathSelection(dir.filename)}
+                      tabIndex={-1}
+                      disableRipple
+                    />
+                  </ListItemIcon>
+                  <ListItemIcon>
+                    <FolderIcon color="primary" />
                   </ListItemIcon>
                   <ListItemText
-                    primary={dir.basename}
-                    secondary={new Date(dir.lastmod).toLocaleString('zh-CN')}
+                    primary={
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Typography variant="body1" sx={{ flex: 1 }}>
+                          {dir.basename}
+                        </Typography>
+                        {scanning.has(dir.filename) && (
+                          <CircularProgress size={16} />
+                        )}
+                        {pathStats.has(dir.filename) && !scanning.has(dir.filename) && (
+                          <Chip
+                            size="small"
+                            label={`${pathStats.get(dir.filename)?.total || 0} 文件`}
+                            color="primary"
+                            variant="outlined"
+                          />
+                        )}
+                      </Box>
+                    }
+                    secondary={
+                      <Box>
+                        <Typography variant="caption" color="text.secondary">
+                          {new Date(dir.lastmod).toLocaleString('zh-CN')}
+                        </Typography>
+                        {scanning.has(dir.filename) && scanProgress.has(dir.filename) && (
+                          <Typography variant="caption" color="primary" display="block">
+                            扫描中: {scanProgress.get(dir.filename)?.currentPath}
+                          </Typography>
+                        )}
+                      </Box>
+                    }
                   />
-                  <NavigateNextIcon color="action" />
-                </ListItemButton>
+                  <ListItemSecondaryAction>
+                    <IconButton
+                      size="small"
+                      onClick={() => navigateToPath(dir.filename)}
+                    >
+                      <NavigateNextIcon />
+                    </IconButton>
+                  </ListItemSecondaryAction>
+                </ListItem>
               ))}
             </List>
           )}

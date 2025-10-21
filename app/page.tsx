@@ -58,6 +58,11 @@ interface WebDAVConfig {
   username: string
   password: string
   mediaPaths: string[]
+  scanSettings?: {
+    maxDepth: number
+    maxFiles: number
+    timeout: number
+  }
 }
 
 interface MediaFile {
@@ -107,6 +112,7 @@ export default function HomePage() {
   const [viewMode, setViewMode] = useState<ViewMode>('random')
   const [currentGroup, setCurrentGroup] = useState<MediaFile[]>([])
   const [currentGroupIndex, setCurrentGroupIndex] = useState(0)
+  const [scanProgress, setScanProgress] = useState<{ currentPath: string, fileCount: number } | null>(null)
   
   // 评分相关状态
   const [ratingDialogOpen, setRatingDialogOpen] = useState(false)
@@ -155,14 +161,25 @@ export default function HomePage() {
   }, [])
 
   const loadStats = async (cfg: WebDAVConfig) => {
+    setLoading(true)
+    setScanProgress({ currentPath: '开始扫描...', fileCount: 0 })
+    
     try {
       const response = await fetch('/api/webdav/files', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(cfg),
+        body: JSON.stringify({
+          ...cfg,
+          maxDepth: cfg.scanSettings?.maxDepth || 10,
+          maxFiles: cfg.scanSettings?.maxFiles || 200000,
+          timeout: cfg.scanSettings?.timeout || 60000,
+        }),
       })
 
-      if (!response.ok) throw new Error('获取文件列表失败')
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || '获取文件列表失败')
+      }
 
       const data = await response.json()
       const files = data.files || []
@@ -181,8 +198,14 @@ export default function HomePage() {
         images: imageCount,
         videos: videoCount,
       })
+      
+      setScanProgress(null)
     } catch (e: any) {
       console.error('加载统计信息失败:', e)
+      setError(`加载统计信息失败: ${e.message}`)
+      setScanProgress(null)
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -1159,9 +1182,34 @@ export default function HomePage() {
             }}
           >
             <CircularProgress size={60} sx={{ mb: 2 }} />
-            <Typography variant="body2" color="text.secondary">
-              正在加载{filteredStats.label}...
+            <Typography variant="h6" color="primary" sx={{ mb: 2 }}>
+              正在扫描媒体文件...
             </Typography>
+            {scanProgress && (
+              <Box sx={{ textAlign: 'center', mb: 2 }}>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                  当前扫描路径:
+                </Typography>
+                <Typography variant="body1" color="primary" sx={{ mb: 1, fontFamily: 'monospace' }}>
+                  {scanProgress.currentPath}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  已找到 {scanProgress.fileCount} 个文件
+                </Typography>
+              </Box>
+            )}
+            <Typography variant="caption" color="text.secondary" sx={{ textAlign: 'center' }}>
+              深度扫描可能需要一些时间，请耐心等待
+              <br />
+              扫描参数: 最大深度 {config?.scanSettings?.maxDepth || 10}层, 
+              最大文件数 {config?.scanSettings?.maxFiles || 200000}个, 
+              超时时间 {Math.floor((config?.scanSettings?.timeout || 60000) / 1000)}秒
+            </Typography>
+            {allFiles.length > 0 && (
+              <Typography variant="body2" color="success.main" sx={{ mt: 2 }}>
+                已找到 {allFiles.length} 个文件
+              </Typography>
+            )}
           </Box>
         )}
       </Container>
