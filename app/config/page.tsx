@@ -106,7 +106,14 @@ export default function ConfigPage() {
   const [browsing, setBrowsing] = useState(false)
   const [pathStats, setPathStats] = useState<Map<string, PathStats>>(new Map())
   const [scanning, setScanning] = useState<Set<string>>(new Set())
-  const [scanProgress, setScanProgress] = useState<Map<string, { currentPath: string, fileCount: number, startTime?: number }>>(new Map())
+  const [scanProgress, setScanProgress] = useState<Map<string, { 
+    currentPath: string, 
+    fileCount: number, 
+    startTime?: number,
+    scannedDirectories?: number,
+    totalDirectories?: number,
+    percentage?: number
+  }>>(new Map())
   
   // 定时扫描相关状态
   const [scheduledScans, setScheduledScans] = useState<any[]>([])
@@ -362,12 +369,36 @@ export default function ConfigPage() {
 
   const scanDirectory = async (path: string, forceRescan = false) => {
     const startTime = Date.now()
+    const progressId = `${path}_${Date.now()}` // 生成唯一的进度ID
     setScanning(prev => new Set(prev).add(path))
     setScanProgress(prev => new Map(prev).set(path, { 
       currentPath: path, 
       fileCount: 0, 
-      startTime 
+      startTime,
+      scannedDirectories: 0,
+      totalDirectories: 0,
+      percentage: 0
     }))
+    
+    // 启动进度轮询
+    const progressInterval = setInterval(async () => {
+      try {
+        const response = await fetch(`/api/webdav/scan?progressId=${progressId}`)
+        if (response.ok) {
+          const progress = await response.json()
+          setScanProgress(prev => new Map(prev).set(path, {
+            currentPath: progress.currentPath,
+            fileCount: progress.fileCount,
+            startTime,
+            scannedDirectories: progress.scannedDirectories,
+            totalDirectories: progress.totalDirectories,
+            percentage: progress.percentage
+          }))
+        }
+      } catch (error) {
+        // 忽略进度获取错误
+      }
+    }, 500) // 每500ms更新一次进度
     
     try {
       const response = await fetch('/api/webdav/scan', {
@@ -382,6 +413,7 @@ export default function ConfigPage() {
           maxFiles: config.scanSettings?.maxFiles || 200000,
           timeout: config.scanSettings?.timeout || 60000,
           forceRescan,
+          progressId
         }),
       })
 
@@ -413,6 +445,7 @@ export default function ConfigPage() {
         message: `扫描目录 ${path} 失败: ${error.message}`
       })
     } finally {
+      clearInterval(progressInterval)
       setScanning(prev => {
         const newSet = new Set(prev)
         newSet.delete(path)

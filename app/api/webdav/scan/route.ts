@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getWebDAVClient, getMediaFiles } from '@/lib/webdav'
 import { scanCache } from '@/lib/database'
 
+// 存储扫描进度（实际应用中应该使用Redis等）
+const scanProgressMap = new Map<string, any>()
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
@@ -13,7 +16,8 @@ export async function POST(request: NextRequest) {
       maxDepth = 10,
       maxFiles = 200000,
       timeout = 60000,
-      forceRescan = false // 新增：是否强制重新扫描
+      forceRescan = false,
+      progressId // 新增：进度ID
     } = body
 
     if (!url || !username || !password) {
@@ -54,8 +58,21 @@ export async function POST(request: NextRequest) {
       maxDepth,
       maxFiles,
       timeout,
-      onProgress: (currentPath, fileCount) => {
-        console.log(`扫描进度: ${currentPath} (已找到 ${fileCount} 个文件)`)
+      onProgress: (currentPath, fileCount, totalFiles, scannedDirs, totalDirs) => {
+        const percentage = totalDirs ? Math.round(((scannedDirs || 0) / totalDirs) * 100) : 0
+        console.log(`扫描进度: ${currentPath} (已扫描 ${scannedDirs || 0}/${totalDirs || 0} 个目录, ${fileCount} 个文件, ${percentage}%)`)
+        
+        // 更新进度映射
+        if (progressId) {
+          scanProgressMap.set(progressId, {
+            currentPath,
+            fileCount,
+            scannedDirectories: scannedDirs || 0,
+            totalDirectories: totalDirs || 0,
+            percentage,
+            timestamp: Date.now()
+          })
+        }
       }
     })
     
@@ -88,6 +105,11 @@ export async function POST(request: NextRequest) {
       scanSettings: JSON.stringify({ maxDepth, maxFiles, timeout })
     })
     
+    // 清理进度映射
+    if (progressId) {
+      scanProgressMap.delete(progressId)
+    }
+    
     return NextResponse.json({
       path,
       total: files.length,
@@ -98,7 +120,8 @@ export async function POST(request: NextRequest) {
         maxFiles,
         timeout,
         actualFilesFound: files.length,
-        fromCache: false
+        fromCache: false,
+        scanTime: Date.now()
       },
       files: filesData // 返回文件列表供前端使用
     })
@@ -111,3 +134,34 @@ export async function POST(request: NextRequest) {
   }
 }
 
+// 获取扫描进度
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url)
+    const progressId = searchParams.get('progressId')
+    
+    if (!progressId) {
+      return NextResponse.json(
+        { error: '请提供进度ID' },
+        { status: 400 }
+      )
+    }
+    
+    const progress = scanProgressMap.get(progressId)
+    
+    if (!progress) {
+      return NextResponse.json(
+        { error: '进度信息不存在或已过期' },
+        { status: 404 }
+      )
+    }
+    
+    return NextResponse.json(progress)
+  } catch (error: any) {
+    console.error('获取扫描进度失败:', error)
+    return NextResponse.json(
+      { error: `获取扫描进度失败: ${error.message}` },
+      { status: 500 }
+    )
+  }
+}

@@ -42,13 +42,36 @@ export async function getMediaFiles(
     maxDepth?: number
     maxFiles?: number
     timeout?: number
-    onProgress?: (currentPath: string, fileCount: number) => void
+    onProgress?: (currentPath: string, fileCount: number, totalFiles?: number, scannedDirs?: number, totalDirs?: number) => void
   } = {}
 ): Promise<FileStat[]> {
   const { maxDepth = 10, maxFiles = 200000, timeout = 60000, onProgress } = options
   const startTime = Date.now()
   
   const mediaFiles: FileStat[] = []
+  let scannedDirectories = 0
+  let totalDirectories = 0
+  
+  // 首先估算总目录数（用于进度计算）
+  async function estimateTotalDirectories(currentPath: string, currentDepth: number = 0): Promise<number> {
+    if (currentDepth >= maxDepth) return 0
+    
+    try {
+      const contents = await client.getDirectoryContents(currentPath) as FileStat[]
+      const directories = contents.filter(item => item.type === 'directory')
+      
+      let total = directories.length
+      for (const dir of directories) {
+        total += await estimateTotalDirectories(dir.filename, currentDepth + 1)
+      }
+      return total
+    } catch (error) {
+      return 0
+    }
+  }
+  
+  // 估算总目录数
+  totalDirectories = await estimateTotalDirectories(path)
   
   async function scanDirectory(currentPath: string, currentDepth: number = 0): Promise<void> {
     // 检查超时
@@ -72,7 +95,8 @@ export async function getMediaFiles(
     try {
       // 报告进度
       if (onProgress) {
-        onProgress(currentPath, mediaFiles.length)
+        const percentage = totalDirectories > 0 ? Math.round((scannedDirectories / totalDirectories) * 100) : 0
+        onProgress(currentPath, mediaFiles.length, undefined, scannedDirectories, totalDirectories)
       }
       
       const contents = await client.getDirectoryContents(currentPath) as FileStat[]
@@ -100,6 +124,7 @@ export async function getMediaFiles(
       
       // 递归处理子目录
       for (const dir of directories) {
+        scannedDirectories++
         await scanDirectory(dir.filename, currentDepth + 1)
         
         // 再次检查超时和文件数量限制

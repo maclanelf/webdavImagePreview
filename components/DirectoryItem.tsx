@@ -62,7 +62,9 @@ interface ScanProgress {
   currentPath: string
   fileCount: number
   startTime?: number
-  estimatedTime?: number
+  scannedDirectories?: number
+  totalDirectories?: number
+  percentage?: number
 }
 
 interface DirectoryItemProps {
@@ -154,14 +156,35 @@ export default function DirectoryItem({
                   {/* 扫描进度条 */}
                   {isScanning && (
                     <Box sx={{ width: '100%', mb: 1 }}>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 0.5 }}>
+                        <Typography variant="caption" color="text.secondary">
+                          扫描进度
+                        </Typography>
+                        <Typography variant="caption" color="primary.main" fontWeight="bold">
+                          {scanProgress?.percentage || 0}%
+                        </Typography>
+                      </Box>
                       <LinearProgress 
-                        variant="indeterminate" 
+                        variant="determinate" 
+                        value={scanProgress?.percentage || 0}
                         sx={{ 
-                          height: 4, 
-                          borderRadius: 2,
-                          backgroundColor: 'grey.200'
+                          height: 6, 
+                          borderRadius: 3,
+                          backgroundColor: 'grey.200',
+                          '& .MuiLinearProgress-bar': {
+                            borderRadius: 3,
+                            transition: 'transform 0.3s ease-in-out'
+                          }
                         }} 
                       />
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
+                        <Typography variant="caption" color="text.secondary">
+                          目录: {scanProgress?.scannedDirectories || 0}/{scanProgress?.totalDirectories || '?'}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          文件: {scanProgress?.fileCount || 0}
+                        </Typography>
+                      </Box>
                       {scanProgress && (
                         <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
                           当前路径: {scanProgress.currentPath}
@@ -351,19 +374,48 @@ export default function DirectoryItem({
                   扫描进度
                 </Typography>
                 <Box sx={{ width: '100%' }}>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                    <Typography variant="body2" color="text.secondary">
+                      扫描进度
+                    </Typography>
+                    <Typography variant="h6" color="primary.main" fontWeight="bold">
+                      {scanProgress.percentage || 0}%
+                    </Typography>
+                  </Box>
                   <LinearProgress 
-                    variant="indeterminate" 
+                    variant="determinate" 
+                    value={scanProgress.percentage || 0}
                     sx={{ 
-                      height: 8, 
-                      borderRadius: 4,
-                      mb: 2
+                      height: 12, 
+                      borderRadius: 6,
+                      mb: 2,
+                      backgroundColor: 'grey.200',
+                      '& .MuiLinearProgress-bar': {
+                        borderRadius: 6,
+                        transition: 'transform 0.3s ease-in-out'
+                      }
                     }} 
                   />
-                  <Typography variant="body2" color="text.secondary">
+                  <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 2 }}>
+                    <Paper variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
+                      <Typography variant="h4" color="primary.main">
+                        {scanProgress.scannedDirectories || 0}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        已扫描目录 / {scanProgress.totalDirectories || '?'}
+                      </Typography>
+                    </Paper>
+                    <Paper variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
+                      <Typography variant="h4" color="secondary.main">
+                        {scanProgress.fileCount || 0}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        已找到文件
+                      </Typography>
+                    </Paper>
+                  </Box>
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
                     当前路径: {scanProgress.currentPath}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    已找到文件: {scanProgress.fileCount}
                   </Typography>
                   {scanProgress.startTime && (
                     <Typography variant="body2" color="text.secondary">
