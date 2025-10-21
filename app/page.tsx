@@ -47,6 +47,7 @@ import {
   Star as StarIcon,
   RateReview as RateReviewIcon,
   ManageAccounts as ManageAccountsIcon,
+  Refresh as RefreshIcon,
 } from '@mui/icons-material'
 import { useRouter } from 'next/navigation'
 import RatingDialog from '@/components/RatingDialog'
@@ -134,6 +135,18 @@ export default function HomePage() {
   const fullscreenVideoRef = useRef<HTMLVideoElement>(null)
 
   useEffect(() => {
+    // 初始化应用服务
+    const initApp = async () => {
+      try {
+        await fetch('/api/init', { method: 'POST' })
+        console.log('应用初始化完成')
+      } catch (error) {
+        console.error('应用初始化失败:', error)
+      }
+    }
+    
+    initApp()
+    
     // 从localStorage加载配置
     const savedConfig = localStorage.getItem('webdav_config')
     if (savedConfig) {
@@ -160,7 +173,7 @@ export default function HomePage() {
     }
   }, [])
 
-  const loadStats = async (cfg: WebDAVConfig) => {
+  const loadStats = async (cfg: WebDAVConfig, forceRescan = false) => {
     setLoading(true)
     setScanProgress({ currentPath: '开始扫描...', fileCount: 0 })
     
@@ -173,6 +186,7 @@ export default function HomePage() {
           maxDepth: cfg.scanSettings?.maxDepth || 10,
           maxFiles: cfg.scanSettings?.maxFiles || 200000,
           timeout: cfg.scanSettings?.timeout || 60000,
+          forceRescan,
         }),
       })
 
@@ -200,6 +214,13 @@ export default function HomePage() {
       })
       
       setScanProgress(null)
+      
+      // 显示缓存状态
+      if (data.fromCache) {
+        console.log('从缓存加载文件列表')
+      } else {
+        console.log('重新扫描完成')
+      }
     } catch (e: any) {
       console.error('加载统计信息失败:', e)
       setError(`加载统计信息失败: ${e.message}`)
@@ -1456,6 +1477,20 @@ export default function HomePage() {
                 </ListItem>
               ))}
             </List>
+
+            {/* 重新扫描按钮 */}
+            <Box sx={{ mt: 2 }}>
+              <Button
+                variant="outlined"
+                size="small"
+                fullWidth
+                onClick={() => loadStats(config, true)}
+                disabled={loading}
+                startIcon={<RefreshIcon />}
+              >
+                强制重新扫描
+              </Button>
+            </Box>
           </Box>
         </Box>
       </Drawer>

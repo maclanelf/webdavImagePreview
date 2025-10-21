@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getWebDAVClient, getMediaFiles } from '@/lib/webdav'
+import { scanCache } from '@/lib/database'
 
 export async function POST(request: NextRequest) {
   try {
@@ -11,7 +12,8 @@ export async function POST(request: NextRequest) {
       path = '/',
       maxDepth = 10,
       maxFiles = 200000,
-      timeout = 60000
+      timeout = 60000,
+      forceRescan = false // 新增：是否强制重新扫描
     } = body
 
     if (!url || !username || !password) {
@@ -19,6 +21,30 @@ export async function POST(request: NextRequest) {
         { error: '请提供完整的WebDAV配置信息' },
         { status: 400 }
       )
+    }
+
+    // 检查缓存（如果不强制重新扫描）
+    if (!forceRescan) {
+      const cached = scanCache.get(url, username, path) as any
+      if (cached) {
+        console.log(`从缓存加载扫描结果: ${path}`)
+        const filesData = JSON.parse(cached.files_data)
+        return NextResponse.json({
+          path,
+          total: cached.total_files,
+          images: cached.image_count,
+          videos: cached.video_count,
+          scanInfo: {
+            maxDepth,
+            maxFiles,
+            timeout,
+            actualFilesFound: cached.total_files,
+            fromCache: true,
+            lastScan: cached.last_scan
+          },
+          files: filesData // 返回文件列表供前端使用
+        })
+      }
     }
 
     const client = getWebDAVClient({ url, username, password })
@@ -41,6 +67,26 @@ export async function POST(request: NextRequest) {
     const videoCount = files.filter(f => 
       /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(f.basename)
     ).length
+
+    // 保存到缓存
+    const filesData = files.map(file => ({
+      filename: file.filename,
+      basename: file.basename,
+      size: file.size,
+      type: file.type,
+      lastmod: file.lastmod,
+    }))
+
+    scanCache.save({
+      webdavUrl: url,
+      webdavUsername: username,
+      path,
+      filesData: JSON.stringify(filesData),
+      totalFiles: files.length,
+      imageCount,
+      videoCount,
+      scanSettings: JSON.stringify({ maxDepth, maxFiles, timeout })
+    })
     
     return NextResponse.json({
       path,
@@ -51,8 +97,10 @@ export async function POST(request: NextRequest) {
         maxDepth,
         maxFiles,
         timeout,
-        actualFilesFound: files.length
-      }
+        actualFilesFound: files.length,
+        fromCache: false
+      },
+      files: filesData // 返回文件列表供前端使用
     })
   } catch (error: any) {
     console.error('扫描目录失败:', error)

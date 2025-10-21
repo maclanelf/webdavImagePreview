@@ -45,9 +45,12 @@ import {
   NavigateNext as NavigateNextIcon,
   Home as HomeIcon,
   ManageAccounts as ManageAccountsIcon,
+  Refresh as RefreshIcon,
 } from '@mui/icons-material'
 import { ListItemButton, ListItemSecondaryAction } from '@mui/material'
 import { useRouter } from 'next/navigation'
+import ScheduledScanDialog from '@/components/ScheduledScanDialog'
+import DirectoryItem from '@/components/DirectoryItem'
 
 interface WebDAVConfig {
   url: string
@@ -73,6 +76,7 @@ interface PathStats {
   total: number
   images: number
   videos: number
+  lastScan?: string
 }
 
 export default function ConfigPage() {
@@ -102,7 +106,35 @@ export default function ConfigPage() {
   const [browsing, setBrowsing] = useState(false)
   const [pathStats, setPathStats] = useState<Map<string, PathStats>>(new Map())
   const [scanning, setScanning] = useState<Set<string>>(new Set())
-  const [scanProgress, setScanProgress] = useState<Map<string, { currentPath: string, fileCount: number }>>(new Map())
+  const [scanProgress, setScanProgress] = useState<Map<string, { currentPath: string, fileCount: number, startTime?: number }>>(new Map())
+  
+  // 定时扫描相关状态
+  const [scheduledScans, setScheduledScans] = useState<any[]>([])
+  const [scheduledScanDialogOpen, setScheduledScanDialogOpen] = useState(false)
+  const [editingScan, setEditingScan] = useState<any>(null)
+  const [loadingScans, setLoadingScans] = useState(false)
+  const [schedulerStatus, setSchedulerStatus] = useState<any>(null)
+
+  // 加载扫描缓存数据
+  const loadScanCache = async (config: WebDAVConfig) => {
+    try {
+      const response = await fetch(`/api/scan-cache?webdavUrl=${encodeURIComponent(config.url)}&webdavUsername=${encodeURIComponent(config.username)}&webdavPassword=${encodeURIComponent(config.password)}`)
+      
+      if (response.ok) {
+        const data = await response.json()
+        const statsMap = new Map<string, PathStats>()
+        Object.entries(data.pathStats).forEach(([path, stats]: [string, any]) => {
+          statsMap.set(path, stats as PathStats)
+        })
+        setPathStats(statsMap)
+        console.log('扫描缓存数据加载成功:', statsMap.size, '个目录')
+      } else {
+        console.error('加载扫描缓存失败')
+      }
+    } catch (error) {
+      console.error('加载扫描缓存失败:', error)
+    }
+  }
 
   useEffect(() => {
     // 加载已保存的配置
@@ -116,11 +148,45 @@ export default function ConfigPage() {
         }
         setConfig(parsed)
         setSelectedPaths(new Set(parsed.mediaPaths || []))
+        
+        // 加载扫描缓存数据
+        loadScanCache(parsed)
       } catch (e) {
         console.error('加载配置失败:', e)
       }
     }
+    
+    // 加载定时扫描任务
+    loadScheduledScans()
+    loadSchedulerStatus()
   }, [])
+
+  const loadScheduledScans = async () => {
+    setLoadingScans(true)
+    try {
+      const response = await fetch('/api/scheduled-scans')
+      if (response.ok) {
+        const data = await response.json()
+        setScheduledScans(data.tasks || [])
+      }
+    } catch (error) {
+      console.error('加载定时扫描任务失败:', error)
+    } finally {
+      setLoadingScans(false)
+    }
+  }
+
+  const loadSchedulerStatus = async () => {
+    try {
+      const response = await fetch('/api/scheduler/status')
+      if (response.ok) {
+        const data = await response.json()
+        setSchedulerStatus(data)
+      }
+    } catch (error: any) {
+      console.error('加载调度器状态失败:', error)
+    }
+  }
 
   const handleChange = (field: keyof WebDAVConfig) => (
     event: React.ChangeEvent<HTMLInputElement>
@@ -294,9 +360,14 @@ export default function ConfigPage() {
     setSelectedPaths(newSelected)
   }
 
-  const scanDirectory = async (path: string) => {
+  const scanDirectory = async (path: string, forceRescan = false) => {
+    const startTime = Date.now()
     setScanning(prev => new Set(prev).add(path))
-    setScanProgress(prev => new Map(prev).set(path, { currentPath: path, fileCount: 0 }))
+    setScanProgress(prev => new Map(prev).set(path, { 
+      currentPath: path, 
+      fileCount: 0, 
+      startTime 
+    }))
     
     try {
       const response = await fetch('/api/webdav/scan', {
@@ -310,12 +381,23 @@ export default function ConfigPage() {
           maxDepth: config.scanSettings?.maxDepth || 10,
           maxFiles: config.scanSettings?.maxFiles || 200000,
           timeout: config.scanSettings?.timeout || 60000,
+          forceRescan,
         }),
       })
 
       if (response.ok) {
         const data = await response.json()
-        setPathStats(prev => new Map(prev).set(path, data))
+        setPathStats(prev => new Map(prev).set(path, {
+          ...data,
+          lastScan: new Date().toISOString()
+        }))
+        
+        // 显示缓存状态
+        if (data.scanInfo?.fromCache) {
+          console.log(`从缓存加载: ${path} (最后扫描: ${data.scanInfo.lastScan})`)
+        } else {
+          console.log(`重新扫描完成: ${path}`)
+        }
       } else {
         const error = await response.json()
         console.error('扫描目录失败:', error.error)
@@ -352,6 +434,99 @@ export default function ConfigPage() {
     const newStats = new Map(pathStats)
     newStats.delete(path)
     setPathStats(newStats)
+  }
+
+  // 定时扫描相关函数
+  const saveScheduledScan = async (scanData: any) => {
+    try {
+      const url = editingScan ? `/api/scheduled-scans/${editingScan.id}` : '/api/scheduled-scans'
+      const method = editingScan ? 'PUT' : 'POST'
+      
+      const response = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(scanData)
+      })
+
+      if (response.ok) {
+        setScheduledScanDialogOpen(false)
+        setEditingScan(null)
+        loadScheduledScans()
+        setSaveResult({
+          type: 'success',
+          message: editingScan ? '定时扫描任务更新成功' : '定时扫描任务创建成功'
+        })
+      } else {
+        const error = await response.json()
+        setSaveResult({
+          type: 'error',
+          message: error.error || '保存失败'
+        })
+      }
+    } catch (error: any) {
+      setSaveResult({
+        type: 'error',
+        message: `保存失败: ${error.message}`
+      })
+    }
+  }
+
+  const deleteScheduledScan = async (id: number) => {
+    if (!confirm('确定要删除这个定时扫描任务吗？')) return
+    
+    try {
+      const response = await fetch(`/api/scheduled-scans/${id}`, {
+        method: 'DELETE'
+      })
+
+      if (response.ok) {
+        loadScheduledScans()
+        setSaveResult({
+          type: 'success',
+          message: '定时扫描任务删除成功'
+        })
+      } else {
+        const error = await response.json()
+        setSaveResult({
+          type: 'error',
+          message: error.error || '删除失败'
+        })
+      }
+    } catch (error: any) {
+      setSaveResult({
+        type: 'error',
+        message: `删除失败: ${error.message}`
+      })
+    }
+  }
+
+  const executeScheduledScan = async (id: number) => {
+    try {
+      const response = await fetch('/api/scheduled-scans/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskId: id })
+      })
+
+      if (response.ok) {
+        const result = await response.json()
+        setSaveResult({
+          type: 'success',
+          message: `扫描执行成功！扫描了 ${result.result?.scannedPaths || 0} 个路径，找到 ${result.result?.totalFiles || 0} 个文件`
+        })
+      } else {
+        const error = await response.json()
+        setSaveResult({
+          type: 'error',
+          message: error.error || '执行失败'
+        })
+      }
+    } catch (error: any) {
+      setSaveResult({
+        type: 'error',
+        message: `执行失败: ${error.message}`
+      })
+    }
   }
 
   return (
@@ -497,6 +672,103 @@ export default function ConfigPage() {
 
         <Divider sx={{ my: 3 }} />
 
+        {/* 定时扫描设置 */}
+        <Box sx={{ mb: 3 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+            <Typography variant="h6">
+              定时扫描设置
+            </Typography>
+            <Button
+              variant="outlined"
+              startIcon={<AddIcon />}
+              onClick={() => {
+                setEditingScan(null)
+                setScheduledScanDialogOpen(true)
+              }}
+            >
+              添加定时扫描
+            </Button>
+          </Box>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            设置定时扫描任务，通过cron表达式配置执行频率，系统将自动执行扫描并更新缓存
+          </Typography>
+          
+          <Alert severity="success" sx={{ mb: 2 }}>
+            <Typography variant="body2">
+              ✅ 内置调度器已启用，无需额外配置。系统会根据任务频率自动调整检查间隔，确保精确执行。
+            </Typography>
+            {schedulerStatus && (
+              <Typography variant="body2" sx={{ mt: 1 }}>
+                调度器状态: {schedulerStatus.status?.isRunning ? '运行中' : '已停止'} | 
+                检查间隔: {schedulerStatus.status?.checkIntervalMinutes || 5}分钟 | 
+                最后检查: {schedulerStatus.timestamp ? new Date(schedulerStatus.timestamp).toLocaleString('zh-CN') : '未知'}
+              </Typography>
+            )}
+          </Alert>
+          
+          {loadingScans ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
+              <CircularProgress size={24} />
+            </Box>
+          ) : scheduledScans.length === 0 ? (
+            <Alert severity="info">
+              暂无定时扫描任务，点击"添加定时扫描"创建第一个任务
+            </Alert>
+          ) : (
+            <Stack spacing={1}>
+              {scheduledScans.map((scan) => (
+                <Card key={scan.id} variant="outlined">
+                  <CardContent sx={{ py: 2, '&:last-child': { pb: 2 } }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <Box sx={{ flex: 1 }}>
+                        <Typography variant="body1" fontWeight="medium">
+                          {scan.webdav_url}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          路径: {JSON.parse(scan.media_paths).join(', ')}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          执行时间: {scan.cron_expression} | 
+                          状态: {scan.is_active ? '启用' : '禁用'} |
+                          下次运行: {scan.next_run ? new Date(scan.next_run).toLocaleString('zh-CN') : '未设置'}
+                        </Typography>
+                      </Box>
+                      <Box sx={{ display: 'flex', gap: 0.5 }}>
+                        <IconButton
+                          size="small"
+                          onClick={() => executeScheduledScan(scan.id)}
+                          color="primary"
+                          title="手动执行扫描"
+                        >
+                          <RefreshIcon />
+                        </IconButton>
+                        <IconButton
+                          size="small"
+                          onClick={() => {
+                            setEditingScan(scan)
+                            setScheduledScanDialogOpen(true)
+                          }}
+                        >
+                          <SettingsIcon />
+                        </IconButton>
+                        <IconButton
+                          size="small"
+                          onClick={() => deleteScheduledScan(scan.id)}
+                          color="error"
+                        >
+                          <DeleteIcon />
+                        </IconButton>
+                      </Box>
+                    </Box>
+                  </CardContent>
+                </Card>
+              ))}
+            </Stack>
+          )}
+        </Box>
+
+        <Divider sx={{ my: 3 }} />
+
         {/* 已选择的目录 */}
         <Box sx={{ mb: 3 }}>
           <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
@@ -531,6 +803,19 @@ export default function ConfigPage() {
               <Button
                 size="small"
                 variant="outlined"
+                color="warning"
+                onClick={() => {
+                  Array.from(selectedPaths).forEach(path => {
+                    scanDirectory(path, true) // 强制重新扫描
+                  })
+                }}
+                disabled={Array.from(selectedPaths).some(path => scanning.has(path))}
+              >
+                强制重新扫描
+              </Button>
+              <Button
+                size="small"
+                variant="outlined"
                 color="error"
                 onClick={() => {
                   setSelectedPaths(new Set())
@@ -551,67 +836,18 @@ export default function ConfigPage() {
               {Array.from(selectedPaths).map(path => {
                 const stats = pathStats.get(path)
                 const isScanning = scanning.has(path)
+                const progress = scanProgress.get(path)
                 
                 return (
-                  <Card key={path} variant="outlined">
-                    <CardContent sx={{ py: 2, '&:last-child': { pb: 2 } }}>
-                      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flex: 1 }}>
-                          <FolderIcon color="primary" />
-                          <Box sx={{ flex: 1 }}>
-                            <Typography variant="body1" fontWeight="medium">
-                              {path}
-                            </Typography>
-                            {isScanning && (
-                              <Box>
-                                <Typography variant="caption" color="primary" display="block">
-                                  正在扫描...
-                                </Typography>
-                                {scanProgress.has(path) && (
-                                  <Typography variant="caption" color="text.secondary" display="block">
-                                    当前路径: {scanProgress.get(path)?.currentPath}
-                                  </Typography>
-                                )}
-                                {scanProgress.has(path) && (
-                                  <Typography variant="caption" color="text.secondary" display="block">
-                                    已找到: {scanProgress.get(path)?.fileCount} 个文件
-                                  </Typography>
-                                )}
-                              </Box>
-                            )}
-                            {stats && !isScanning && (
-                              <Box sx={{ display: 'flex', gap: 2, mt: 0.5 }}>
-                                <Chip
-                                  size="small"
-                                  icon={<ImageIcon />}
-                                  label={`${stats.images} 图片`}
-                                  variant="outlined"
-                                />
-                                <Chip
-                                  size="small"
-                                  icon={<VideoIcon />}
-                                  label={`${stats.videos} 视频`}
-                                  variant="outlined"
-                                />
-                                <Chip
-                                  size="small"
-                                  label={`共 ${stats.total} 个`}
-                                  variant="outlined"
-                                />
-                              </Box>
-                            )}
-                          </Box>
-                        </Box>
-                        <IconButton
-                          size="small"
-                          onClick={() => removeSelectedPath(path)}
-                          color="error"
-                        >
-                          <DeleteIcon />
-                        </IconButton>
-                      </Box>
-                    </CardContent>
-                  </Card>
+                  <DirectoryItem
+                    key={path}
+                    path={path}
+                    stats={stats}
+                    isScanning={isScanning}
+                    scanProgress={progress}
+                    onRescan={(path, force) => scanDirectory(path, force)}
+                    onRemove={removeSelectedPath}
+                  />
                 )
               })}
             </Stack>
@@ -871,6 +1107,18 @@ export default function ConfigPage() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* 定时扫描对话框 */}
+      <ScheduledScanDialog
+        open={scheduledScanDialogOpen}
+        onClose={() => {
+          setScheduledScanDialogOpen(false)
+          setEditingScan(null)
+        }}
+        onSave={saveScheduledScan}
+        initialData={editingScan}
+        config={config}
+      />
     </Container>
   )
 }
