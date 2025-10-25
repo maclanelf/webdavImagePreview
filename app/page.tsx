@@ -73,6 +73,7 @@ interface MediaFile {
   size: number
   type: string
   lastmod: string
+  filepath?: string // 添加可选的filepath字段
 }
 
 type MediaFilter = 'all' | 'images' | 'videos'
@@ -207,8 +208,6 @@ export default function HomePage() {
         const hasCacheData = Object.keys(pathStats).length > 0
         
         if (hasCacheData) {
-          console.log('从缓存加载统计信息')
-          
           // 计算总统计
           let totalFiles = 0
           let totalImages = 0
@@ -236,7 +235,6 @@ export default function HomePage() {
       }
       
       // 如果没有缓存数据，进行首次扫描
-      console.log('没有缓存数据，进行首次扫描')
       await loadStats(cfg, false)
       
     } catch (error: any) {
@@ -607,7 +605,7 @@ export default function HomePage() {
 
   // 保存当前评分并切换图片
   const saveAndSwitch = async (switchCallback: () => void) => {
-    if (!currentFile || isSwitching) {
+    if (isSwitching) {
       return
     }
 
@@ -617,8 +615,8 @@ export default function HomePage() {
       // 停止自动标记定时器，避免在切换时触发自动评分
       stopAutoMarkTimer()
       
-      // 如果当前有评分数据，先保存
-      if (currentRating) {
+      // 如果当前有评分数据且当前文件存在，先保存
+      if (currentRating && currentFile) {
         await saveRating(currentRating, currentFile)
       }
       
@@ -683,13 +681,14 @@ export default function HomePage() {
     const filteredFiles = getFilteredFiles()
     
     if (filteredFiles.length === 0) {
-      setError(
-        mediaFilter === 'images' 
-          ? '没有找到图片文件' 
-          : mediaFilter === 'videos'
-          ? '没有找到视频文件'
-          : '未找到任何媒体文件'
-      )
+      const errorMsg = allFiles.length === 0 
+        ? '请先扫描媒体文件，点击"重新扫描"按钮'
+        : (mediaFilter === 'images' 
+            ? '没有找到图片文件' 
+            : mediaFilter === 'videos'
+            ? '没有找到视频文件'
+            : '未找到任何媒体文件')
+      setError(errorMsg)
       return
     }
 
@@ -719,7 +718,7 @@ export default function HomePage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             ...config,
-            filepath: randomFile.filename,
+            filepath: randomFile.filepath || randomFile.filename,
           }),
         })
 

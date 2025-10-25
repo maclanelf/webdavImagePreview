@@ -39,6 +39,7 @@ export async function POST(request: NextRequest) {
         size: randomFile.size,
         type: randomFile.type,
         lastmod: randomFile.lastmod,
+        filepath: randomFile.filename, // 添加filepath字段，与filename相同
       }
     })
   } catch (error: any) {
