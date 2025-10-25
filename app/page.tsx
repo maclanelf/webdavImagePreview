@@ -60,9 +60,7 @@ interface WebDAVConfig {
   password: string
   mediaPaths: string[]
   scanSettings?: {
-    maxDepth: number
-    maxFiles: number
-    timeout: number
+    batchSize?: number
   }
 }
 
@@ -160,7 +158,8 @@ export default function HomePage() {
           parsed.mediaPaths = ['/']
         }
         setConfig(parsed)
-        loadStats(parsed)
+        // 优先从缓存加载，避免不必要的扫描
+        loadStatsFromCache(parsed)
       } catch (e) {
         console.error('加载配置失败:', e)
       }
@@ -173,9 +172,68 @@ export default function HomePage() {
     }
   }, [])
 
+  const loadStatsFromCache = async (cfg: WebDAVConfig) => {
+    setLoading(true)
+    setError(null)
+    
+    try {
+      // 首先尝试从缓存获取统计信息
+      const response = await fetch(`/api/scan-cache?webdavUrl=${encodeURIComponent(cfg.url)}&webdavUsername=${encodeURIComponent(cfg.username)}&webdavPassword=${encodeURIComponent(cfg.password)}`)
+      
+      if (response.ok) {
+        const data = await response.json()
+        const pathStats = data.pathStats || {}
+        
+        // 检查是否有缓存数据
+        const hasCacheData = Object.keys(pathStats).length > 0
+        
+        if (hasCacheData) {
+          console.log('从缓存加载统计信息')
+          
+          // 计算总统计
+          let totalFiles = 0
+          let totalImages = 0
+          let totalVideos = 0
+          
+          for (const path of cfg.mediaPaths) {
+            const stats = pathStats[path]
+            if (stats) {
+              totalFiles += stats.total || 0
+              totalImages += stats.images || 0
+              totalVideos += stats.videos || 0
+            }
+          }
+          
+          setStats({
+            total: totalFiles,
+            images: totalImages,
+            videos: totalVideos
+          })
+          
+          // 如果有缓存数据，尝试加载文件列表（优先从缓存）
+          await loadStats(cfg, false)
+          return
+        }
+      }
+      
+      // 如果没有缓存数据，进行首次扫描
+      console.log('没有缓存数据，进行首次扫描')
+      await loadStats(cfg, false)
+      
+    } catch (error: any) {
+      console.error('从缓存加载失败:', error)
+      // 如果缓存加载失败，回退到正常扫描
+      await loadStats(cfg, false)
+    }
+  }
+
   const loadStats = async (cfg: WebDAVConfig, forceRescan = false) => {
     setLoading(true)
-    setScanProgress({ currentPath: '开始扫描...', fileCount: 0 })
+    
+    // 只有在强制重新扫描时才显示扫描进度
+    if (forceRescan) {
+      setScanProgress({ currentPath: '开始扫描...', fileCount: 0 })
+    }
     
     try {
       const response = await fetch('/api/webdav/files', {
@@ -183,9 +241,6 @@ export default function HomePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...cfg,
-          maxDepth: cfg.scanSettings?.maxDepth || 10,
-          maxFiles: cfg.scanSettings?.maxFiles || 200000,
-          timeout: cfg.scanSettings?.timeout || 60000,
           forceRescan,
         }),
       })
@@ -213,7 +268,10 @@ export default function HomePage() {
         videos: videoCount,
       })
       
-      setScanProgress(null)
+      // 只有在强制重新扫描时才清理扫描进度
+      if (forceRescan) {
+        setScanProgress(null)
+      }
       
       // 显示缓存状态
       if (data.fromCache) {
@@ -224,7 +282,10 @@ export default function HomePage() {
     } catch (e: any) {
       console.error('加载统计信息失败:', e)
       setError(`加载统计信息失败: ${e.message}`)
-      setScanProgress(null)
+      // 只有在强制重新扫描时才清理扫描进度
+      if (forceRescan) {
+        setScanProgress(null)
+      }
     } finally {
       setLoading(false)
     }
@@ -1220,11 +1281,7 @@ export default function HomePage() {
               </Box>
             )}
             <Typography variant="caption" color="text.secondary" sx={{ textAlign: 'center' }}>
-              深度扫描可能需要一些时间，请耐心等待
-              <br />
-              扫描参数: 最大深度 {config?.scanSettings?.maxDepth || 10}层, 
-              最大文件数 {config?.scanSettings?.maxFiles || 200000}个, 
-              超时时间 {Math.floor((config?.scanSettings?.timeout || 60000) / 1000)}秒
+              递归扫描可能需要一些时间，请耐心等待
             </Typography>
             {allFiles.length > 0 && (
               <Typography variant="body2" color="success.main" sx={{ mt: 2 }}>

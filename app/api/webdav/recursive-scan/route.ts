@@ -3,9 +3,6 @@ import { getWebDAVClient, recursiveScanDirectory } from '@/lib/webdav'
 import { scanCache } from '@/lib/database'
 import { writeScanLog } from '@/lib/scanLogger'
 
-// 存储扫描进度（实际应用中应该使用Redis等）
-const scanProgressMap = new Map<string, any>()
-
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
@@ -15,8 +12,7 @@ export async function POST(request: NextRequest) {
       password, 
       path = '/',
       batchSize = 10,
-      forceRescan = false,
-      progressId // 新增：进度ID
+      forceRescan = false
     } = body
 
     if (!url || !username || !password) {
@@ -26,30 +22,12 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // 检查缓存（如果不强制重新扫描）
-    if (!forceRescan) {
-      const cached = scanCache.get(url, username, path) as any
-      if (cached) {
-        console.log(`从缓存加载扫描结果: ${path}`)
-        const filesData = JSON.parse(cached.files_data)
-        return NextResponse.json({
-          path,
-          total: cached.total_files,
-          images: cached.image_count,
-          videos: cached.video_count,
-          scanInfo: {
-            batchSize,
-            actualFilesFound: cached.total_files,
-            fromCache: true,
-            lastScan: cached.last_scan
-          },
-          files: filesData
-        })
-      }
-    }
-
     const client = getWebDAVClient({ url, username, password })
-    const scanProgressId = progressId || `scan_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+
+    // 如果强制重新扫描，清除现有缓存
+    if (forceRescan) {
+      scanCache.delete(url, username, path)
+    }
 
     // 记录扫描开始日志
     writeScanLog({
@@ -74,29 +52,19 @@ export async function POST(request: NextRequest) {
           batchCount++
           const logMessage = `批次 ${batchCount} 完成: 处理了 ${progress.scannedDirectories} 个目录，找到 ${progress.foundFiles} 个文件，总计 ${progress.foundFiles} 个文件 (${progress.percentage}%)`
           progressLogs.push(logMessage)
-          
-          // 更新进度映射
-          scanProgressMap.set(scanProgressId, {
-            currentPath: progress.currentPath,
-            fileCount: progress.foundFiles,
-            percentage: progress.percentage,
-            scannedDirectories: progress.scannedDirectories,
-            totalDirectories: progress.totalDirectories,
-            timestamp: Date.now()
-          })
         }
       })
 
       const duration = Date.now() - startTime
 
       // 保存到缓存
-      const filesData = result.files.map(file => ({
-        filename: file.filename,
-        basename: file.basename,
-        size: file.size,
-        type: file.type,
-        lastmod: file.lastmod,
-      }))
+    const filesData = result.files.map(file => ({
+      filename: file.filename,
+      basename: file.basename,
+      size: file.size,
+      type: file.type,
+      lastmod: file.lastmod,
+    }))
 
       scanCache.save({
         webdavUrl: url,
@@ -109,7 +77,7 @@ export async function POST(request: NextRequest) {
         scanSettings: JSON.stringify({ batchSize })
       })
 
-      // 记录扫描完成日志
+      // 记录扫描完成日志，包含完整的进度信息
       writeScanLog({
         webdavUrl: url,
         webdavUsername: username,
@@ -126,27 +94,21 @@ export async function POST(request: NextRequest) {
         ].join('\n')
       })
 
-      // 清理进度映射
-      scanProgressMap.delete(scanProgressId)
-
       return NextResponse.json({
-        path,
-        total: result.totalFiles,
-        images: result.imageCount,
-        videos: result.videoCount,
-        scanInfo: {
-          batchSize,
-          actualFilesFound: result.totalFiles,
-          fromCache: false,
+        success: true,
+        message: '递归扫描完成',
+        result: {
+          totalFiles: result.totalFiles,
+          imageCount: result.imageCount,
+          videoCount: result.videoCount,
           duration: duration
-        },
-        files: filesData
+        }
       })
 
     } catch (error: any) {
       const duration = Date.now() - startTime
       
-      // 记录扫描失败日志
+      // 记录扫描失败日志，包含已收集的进度信息
       writeScanLog({
         webdavUrl: url,
         webdavUsername: username,
@@ -161,51 +123,17 @@ export async function POST(request: NextRequest) {
         ].join('\n') : `扫描失败: ${error.message}`
       })
 
-      // 清理进度映射
-      scanProgressMap.delete(scanProgressId)
-      
       console.error('递归扫描失败:', error)
       return NextResponse.json(
         { error: `递归扫描失败: ${error.message}` },
         { status: 500 }
       )
     }
-  } catch (error: any) {
-    console.error('扫描API错误:', error)
-    return NextResponse.json(
-      { error: `扫描API错误: ${error.message}` },
-      { status: 500 }
-    )
-  }
-}
 
-// 获取扫描进度
-export async function GET(request: NextRequest) {
-  try {
-    const { searchParams } = new URL(request.url)
-    const progressId = searchParams.get('progressId')
-    
-    if (!progressId) {
-      return NextResponse.json(
-        { error: '请提供进度ID' },
-        { status: 400 }
-      )
-    }
-    
-    const progress = scanProgressMap.get(progressId)
-    
-    if (!progress) {
-      return NextResponse.json(
-        { error: '进度信息不存在或已过期' },
-        { status: 404 }
-      )
-    }
-    
-    return NextResponse.json(progress)
   } catch (error: any) {
-    console.error('获取扫描进度失败:', error)
+    console.error('递归扫描API错误:', error)
     return NextResponse.json(
-      { error: `获取扫描进度失败: ${error.message}` },
+      { error: `递归扫描API错误: ${error.message}` },
       { status: 500 }
     )
   }

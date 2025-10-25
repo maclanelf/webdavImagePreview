@@ -20,7 +20,9 @@ import {
   ListItem,
   ListItemText,
   ListItemIcon,
-  Paper
+  Paper,
+  Alert,
+  CircularProgress
 } from '@mui/material'
 import {
   Folder as FolderIcon,
@@ -72,7 +74,11 @@ interface DirectoryItemProps {
   stats?: PathStats
   isScanning: boolean
   scanProgress?: ScanProgress
-  onRescan: (path: string, force?: boolean) => void
+  webdavConfig: {
+    url: string
+    username: string
+  }
+  onRecursiveScan?: (path: string, force?: boolean) => void
   onRemove: (path: string) => void
 }
 
@@ -81,11 +87,15 @@ export default function DirectoryItem({
   stats,
   isScanning,
   scanProgress,
-  onRescan,
+  webdavConfig,
+  onRecursiveScan,
   onRemove
 }: DirectoryItemProps) {
   const [expanded, setExpanded] = useState(false)
   const [detailDialogOpen, setDetailDialogOpen] = useState(false)
+  const [logDialogOpen, setLogDialogOpen] = useState(false)
+  const [logs, setLogs] = useState<any[]>([])
+  const [loadingLogs, setLoadingLogs] = useState(false)
 
   const handleToggleExpanded = () => {
     setExpanded(!expanded)
@@ -97,6 +107,43 @@ export default function DirectoryItem({
 
   const handleCloseDetail = () => {
     setDetailDialogOpen(false)
+  }
+
+  const handleOpenLogs = async () => {
+    setLogDialogOpen(true)
+    setLoadingLogs(true)
+    
+    try {
+      const response = await fetch(`/api/scan-logs?webdavUrl=${encodeURIComponent(webdavConfig.url)}&webdavUsername=${encodeURIComponent(webdavConfig.username)}&path=${encodeURIComponent(path)}`)
+      if (response.ok) {
+        const data = await response.json()
+        setLogs(data.logs || [])
+      }
+    } catch (error) {
+      console.error('获取日志失败:', error)
+    } finally {
+      setLoadingLogs(false)
+    }
+  }
+
+  const handleCloseLogs = () => {
+    setLogDialogOpen(false)
+    setLogs([])
+  }
+
+  const handleClearLogs = async () => {
+    try {
+      const response = await fetch(`/api/scan-logs?webdavUrl=${encodeURIComponent(webdavConfig.url)}&webdavUsername=${encodeURIComponent(webdavConfig.username)}&path=${encodeURIComponent(path)}`, { method: 'DELETE' })
+      if (response.ok) {
+        setLogs([])
+        alert('日志已清空')
+      } else {
+        alert('清空日志失败')
+      }
+    } catch (error) {
+      console.error('清空日志失败:', error)
+      alert('清空日志失败')
+    }
   }
 
   const getScanStatus = () => {
@@ -229,10 +276,10 @@ export default function DirectoryItem({
                 </IconButton>
               </Tooltip>
               
-              <Tooltip title="重新扫描">
+              <Tooltip title="强制递归扫描">
                 <IconButton 
                   size="small" 
-                  onClick={() => onRescan(path, true)}
+                  onClick={() => onRecursiveScan?.(path, true)}
                   disabled={isScanning}
                 >
                   <RefreshIcon />
@@ -268,10 +315,27 @@ export default function DirectoryItem({
                   size="small"
                   variant="outlined"
                   startIcon={<RefreshIcon />}
-                  onClick={() => onRescan(path, false)}
+                  onClick={() => onRecursiveScan?.(path, false)}
                   disabled={isScanning}
                 >
-                  重新扫描
+                  递归扫描
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="warning"
+                  onClick={() => onRecursiveScan?.(path, true)}
+                  disabled={isScanning}
+                >
+                  强制递归扫描
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="info"
+                  onClick={handleOpenLogs}
+                >
+                  查看日志
                 </Button>
                 <Button
                   size="small"
@@ -432,16 +496,121 @@ export default function DirectoryItem({
           <Button onClick={handleCloseDetail}>
             关闭
           </Button>
-          <Button 
+          <Button
             variant="contained" 
             startIcon={<RefreshIcon />}
             onClick={() => {
-              onRescan(path, true)
+              onRecursiveScan?.(path, true)
               handleCloseDetail()
             }}
             disabled={isScanning}
           >
-            重新扫描
+            强制递归扫描
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* 扫描日志对话框 */}
+      <Dialog open={logDialogOpen} onClose={handleCloseLogs} maxWidth="md" fullWidth>
+        <DialogTitle>
+          扫描日志 - {path}
+        </DialogTitle>
+        <DialogContent>
+          {/* 操作按钮 */}
+          <Box sx={{ mb: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Typography variant="body2" color="text.secondary">
+              共 {logs.length} 条日志记录
+            </Typography>
+            <Button
+              size="small"
+              variant="outlined"
+              color="error"
+              onClick={handleClearLogs}
+            >
+              清空日志
+            </Button>
+          </Box>
+          
+          {loadingLogs ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
+              <CircularProgress />
+            </Box>
+          ) : logs.length === 0 ? (
+            <Alert severity="info">
+              暂无扫描日志
+            </Alert>
+          ) : (
+            <List>
+              {logs.map((log, index) => (
+                <ListItem key={`${log.timestamp}-${index}`} divider={index < logs.length - 1}>
+                  <ListItemText
+                    primary={
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Chip 
+                          label={log.status === 'completed' ? '完成' : log.status === 'failed' ? '失败' : log.status === 'started' ? '开始' : '进度'}
+                          color={log.status === 'completed' ? 'success' : log.status === 'failed' ? 'error' : log.status === 'started' ? 'primary' : 'info'}
+                          size="small"
+                        />
+                        <Typography variant="body2" color="text.secondary">
+                          {new Date(log.timestamp).toLocaleString('zh-CN')}
+                        </Typography>
+                      </Box>
+                    }
+                    secondary={
+                      <Box>
+                        <Typography variant="body2">
+                          扫描类型: {log.scanType === 'recursive' ? '手动扫描' : log.scanType === 'scheduled' ? '定时扫描' : log.scanType} | 
+                          {log.totalFiles !== undefined && `文件总数: ${log.totalFiles} | `}
+                          {log.imageCount !== undefined && `图片: ${log.imageCount} | `}
+                          {log.videoCount !== undefined && `视频: ${log.videoCount}`}
+                        </Typography>
+                        {log.durationMs && (
+                          <Typography variant="body2" color="text.secondary">
+                            耗时: {log.durationMs}ms
+                          </Typography>
+                        )}
+                        {log.errorMessage && (
+                          <Typography variant="body2" color="error">
+                            错误: {log.errorMessage}
+                          </Typography>
+                        )}
+                        {log.logDetails && (
+                          <Box sx={{ mt: 1 }}>
+                            <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block' }}>
+                              扫描详情:
+                            </Typography>
+                            <Box sx={{ 
+                              bgcolor: 'grey.50', 
+                              p: 1, 
+                              borderRadius: 1, 
+                              border: '1px solid', 
+                              borderColor: 'grey.200',
+                              maxHeight: '200px',
+                              overflow: 'auto'
+                            }}>
+                              <pre style={{ 
+                                fontSize: '12px', 
+                                margin: 0, 
+                                whiteSpace: 'pre-wrap',
+                                fontFamily: 'monospace',
+                                lineHeight: '1.4'
+                              }}>
+                                {log.logDetails}
+                              </pre>
+                            </Box>
+                          </Box>
+                        )}
+                      </Box>
+                    }
+                  />
+                </ListItem>
+              ))}
+            </List>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseLogs}>
+            关闭
           </Button>
         </DialogActions>
       </Dialog>

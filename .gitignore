@@ -37,3 +37,6 @@ next-env.d.ts
 *.db
 *.db-shm
 *.db-wal
+
+# 日志文件
+logs/

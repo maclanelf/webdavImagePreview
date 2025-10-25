@@ -118,7 +118,7 @@ class Scheduler {
   private async checkAndExecuteTasks() {
     try {
       const now = new Date()
-      console.log(`[${now.toISOString()}] 检查定时任务...`)
+      console.log(`[${now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}] 检查定时任务...`)
 
       // 获取所有活跃的定时扫描任务
       const activeTasks = scheduledScans.getActive()
@@ -231,7 +231,7 @@ class Scheduler {
             })
           }
         } else {
-          console.log(`任务 ${taskData.id} 未到执行时间，下次运行: ${nextRun.toISOString()}`)
+          console.log(`任务 ${taskData.id} 未到执行时间，下次运行: ${nextRun.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`)
         }
       }
 

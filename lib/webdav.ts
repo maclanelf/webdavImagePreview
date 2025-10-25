@@ -211,3 +211,301 @@ export function isVideoFile(filename: string): boolean {
   )
 }
 
+// 递归扫描接口定义
+export interface RecursiveScanOptions {
+  batchSize?: number // 每批处理的目录数量
+  onProgress?: (progress: RecursiveScanProgress) => void
+  onBatchComplete?: (files: FileStat[], batchInfo: BatchInfo) => void
+}
+
+export interface RecursiveScanProgress {
+  taskId: string
+  currentPath: string
+  scannedDirectories: number
+  totalDirectories: number
+  foundFiles: number
+  percentage: number
+  pendingDirectories: string[]
+  completedDirectories: string[]
+}
+
+export interface BatchInfo {
+  batchNumber: number
+  directoriesInBatch: number
+  filesFoundInBatch: number
+  totalBatches: number
+}
+
+// 分步递归扫描函数
+export async function recursiveScanDirectory(
+  client: WebDAVClient,
+  rootPath: string,
+  options: RecursiveScanOptions = {},
+  taskId?: string
+): Promise<{
+  taskId: string
+  totalFiles: number
+  imageCount: number
+  videoCount: number
+  files: FileStat[]
+}> {
+  const { 
+    batchSize = 10,
+    onProgress,
+    onBatchComplete 
+  } = options
+
+  const scanTaskId = taskId || `recursive_scan_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+  const startTime = Date.now()
+  
+  const allFiles: FileStat[] = []
+  const pendingDirectories: string[] = [rootPath]
+  const completedDirectories: string[] = []
+  let scannedDirectories = 0
+  let totalDirectories = 0
+  let batchNumber = 0
+
+  // 首先估算总目录数
+  async function estimateTotalDirectories(paths: string[]): Promise<number> {
+    let total = 0
+    for (const path of paths) {
+      try {
+        const contents = await client.getDirectoryContents(path) as FileStat[]
+        const directories = contents.filter(item => item.type === 'directory')
+        total += directories.length
+        // 递归估算子目录
+        if (directories.length > 0) {
+          total += await estimateTotalDirectories(directories.map(d => d.filename))
+        }
+      } catch (error) {
+        console.warn(`估算目录失败: ${path}`, error)
+      }
+    }
+    return total
+  }
+
+  // 估算总目录数
+  totalDirectories = await estimateTotalDirectories([rootPath])
+
+  // 处理单个目录
+  async function processDirectory(path: string): Promise<FileStat[]> {
+    try {
+      const contents = await client.getDirectoryContents(path) as FileStat[]
+      const files: FileStat[] = []
+      const subDirectories: string[] = []
+
+      for (const item of contents) {
+        if (item.type === 'file') {
+          const filename = item.filename.toLowerCase()
+          if (isMediaFile(filename)) {
+            files.push(item)
+          }
+        } else if (item.type === 'directory') {
+          subDirectories.push(item.filename)
+        }
+      }
+
+      // 将子目录添加到待处理队列
+      pendingDirectories.push(...subDirectories)
+      
+      return files
+    } catch (error: any) {
+      console.warn(`处理目录失败: ${path}`, error.message)
+      return []
+    }
+  }
+
+  // 批量处理目录
+  while (pendingDirectories.length > 0) {
+    // 取出一批目录进行处理
+    const batchDirectories = pendingDirectories.splice(0, batchSize)
+    batchNumber++
+    
+    const batchFiles: FileStat[] = []
+    
+    // 并行处理当前批次的目录
+    const batchPromises = batchDirectories.map(async (dirPath) => {
+      const files = await processDirectory(dirPath)
+      scannedDirectories++
+      completedDirectories.push(dirPath)
+      return files
+    })
+
+    const batchResults = await Promise.all(batchPromises)
+    
+    // 合并结果
+    for (const files of batchResults) {
+      batchFiles.push(...files)
+    }
+
+    allFiles.push(...batchFiles)
+
+    // 计算进度
+    const percentage = totalDirectories > 0 ? Math.round((scannedDirectories / totalDirectories) * 100) : 0
+
+    // 报告进度
+    if (onProgress) {
+      onProgress({
+        taskId: scanTaskId,
+        currentPath: batchDirectories[batchDirectories.length - 1] || rootPath,
+        scannedDirectories,
+        totalDirectories,
+        foundFiles: allFiles.length,
+        percentage,
+        pendingDirectories: [...pendingDirectories],
+        completedDirectories: [...completedDirectories]
+      })
+    }
+
+    // 批次完成回调
+    if (onBatchComplete) {
+      onBatchComplete(batchFiles, {
+        batchNumber,
+        directoriesInBatch: batchDirectories.length,
+        filesFoundInBatch: batchFiles.length,
+        totalBatches: Math.ceil(totalDirectories / batchSize)
+      })
+    }
+
+    console.log(`批次 ${batchNumber} 完成: 处理了 ${batchDirectories.length} 个目录，找到 ${batchFiles.length} 个文件，总计 ${allFiles.length} 个文件 (${percentage}%)`)
+  }
+
+  // 统计信息
+  const imageCount = allFiles.filter(f => isImageFile(f.filename.toLowerCase())).length
+  const videoCount = allFiles.filter(f => isVideoFile(f.filename.toLowerCase())).length
+
+  console.log(`递归扫描完成，共找到 ${allFiles.length} 个媒体文件 (图片: ${imageCount}, 视频: ${videoCount})，耗时 ${Date.now() - startTime}ms`)
+
+  return {
+    taskId: scanTaskId,
+    totalFiles: allFiles.length,
+    imageCount,
+    videoCount,
+    files: allFiles
+  }
+}
+
+// 恢复扫描任务（从数据库恢复状态）
+export async function resumeRecursiveScan(
+  client: WebDAVClient,
+  taskData: any,
+  options: RecursiveScanOptions = {}
+): Promise<{
+  taskId: string
+  totalFiles: number
+  imageCount: number
+  videoCount: number
+  files: FileStat[]
+}> {
+  const { 
+    batchSize = 10,
+    onProgress,
+    onBatchComplete 
+  } = options
+
+  const taskId = taskData.task_id
+  const startTime = Date.now()
+  
+  const allFiles: FileStat[] = []
+  const pendingDirectories: string[] = taskData.pending_directories ? JSON.parse(taskData.pending_directories) : []
+  const completedDirectories: string[] = taskData.completed_directories ? JSON.parse(taskData.completed_directories) : []
+  let scannedDirectories = taskData.scanned_directories || 0
+  const totalDirectories = taskData.total_directories || 0
+  let batchNumber = Math.floor(scannedDirectories / batchSize)
+
+  // 处理单个目录（与上面相同的函数）
+  async function processDirectory(path: string): Promise<FileStat[]> {
+    try {
+      const contents = await client.getDirectoryContents(path) as FileStat[]
+      const files: FileStat[] = []
+      const subDirectories: string[] = []
+
+      for (const item of contents) {
+        if (item.type === 'file') {
+          const filename = item.filename.toLowerCase()
+          if (isMediaFile(filename)) {
+            files.push(item)
+          }
+        } else if (item.type === 'directory') {
+          subDirectories.push(item.filename)
+        }
+      }
+
+      pendingDirectories.push(...subDirectories)
+      return files
+    } catch (error: any) {
+      console.warn(`处理目录失败: ${path}`, error.message)
+      return []
+    }
+  }
+
+  // 继续批量处理目录
+  while (pendingDirectories.length > 0) {
+    // 取出一批目录进行处理
+    const batchDirectories = pendingDirectories.splice(0, batchSize)
+    batchNumber++
+    
+    const batchFiles: FileStat[] = []
+    
+    // 并行处理当前批次的目录
+    const batchPromises = batchDirectories.map(async (dirPath) => {
+      const files = await processDirectory(dirPath)
+      scannedDirectories++
+      completedDirectories.push(dirPath)
+      return files
+    })
+
+    const batchResults = await Promise.all(batchPromises)
+    
+    // 合并结果
+    for (const files of batchResults) {
+      batchFiles.push(...files)
+    }
+
+    allFiles.push(...batchFiles)
+
+    // 计算进度
+    const percentage = totalDirectories > 0 ? Math.round((scannedDirectories / totalDirectories) * 100) : 0
+
+    // 报告进度
+    if (onProgress) {
+      onProgress({
+        taskId,
+        currentPath: batchDirectories[batchDirectories.length - 1] || taskData.root_path,
+        scannedDirectories,
+        totalDirectories,
+        foundFiles: allFiles.length,
+        percentage,
+        pendingDirectories: [...pendingDirectories],
+        completedDirectories: [...completedDirectories]
+      })
+    }
+
+    // 批次完成回调
+    if (onBatchComplete) {
+      onBatchComplete(batchFiles, {
+        batchNumber,
+        directoriesInBatch: batchDirectories.length,
+        filesFoundInBatch: batchFiles.length,
+        totalBatches: Math.ceil(totalDirectories / batchSize)
+      })
+    }
+
+    console.log(`恢复扫描批次 ${batchNumber} 完成: 处理了 ${batchDirectories.length} 个目录，找到 ${batchFiles.length} 个文件，总计 ${allFiles.length} 个文件 (${percentage}%)`)
+  }
+
+  // 统计信息
+  const imageCount = allFiles.filter(f => isImageFile(f.filename.toLowerCase())).length
+  const videoCount = allFiles.filter(f => isVideoFile(f.filename.toLowerCase())).length
+
+  console.log(`恢复扫描完成，共找到 ${allFiles.length} 个媒体文件 (图片: ${imageCount}, 视频: ${videoCount})，耗时 ${Date.now() - startTime}ms`)
+
+  return {
+    taskId,
+    totalFiles: allFiles.length,
+    imageCount,
+    videoCount,
+    files: allFiles
+  }
+}
+

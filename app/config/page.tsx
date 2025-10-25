@@ -58,9 +58,7 @@ interface WebDAVConfig {
   password: string
   mediaPaths: string[]
   scanSettings?: {
-    maxDepth: number
-    maxFiles: number
-    timeout: number
+    batchSize?: number
   }
 }
 
@@ -87,9 +85,7 @@ export default function ConfigPage() {
     password: '',
     mediaPaths: ['/'],
     scanSettings: {
-      maxDepth: 10,
-      maxFiles: 200000,
-      timeout: 60000
+      batchSize: 10
     }
   })
   const [showPassword, setShowPassword] = useState(false)
@@ -114,6 +110,8 @@ export default function ConfigPage() {
     totalDirectories?: number,
     percentage?: number
   }>>(new Map())
+  
+  // 递归扫描相关状态
   
   // 定时扫描相关状态
   const [scheduledScans, setScheduledScans] = useState<any[]>([])
@@ -275,10 +273,6 @@ export default function ConfigPage() {
         type: 'success',
         message: '配置已保存！',
       })
-      
-      setTimeout(() => {
-        router.push('/')
-      }, 1500)
     } catch (error: any) {
       setSaveResult({
         type: 'error',
@@ -361,47 +355,17 @@ export default function ConfigPage() {
       setPathStats(newStats)
     } else {
       newSelected.add(path)
-      // 自动扫描该目录
-      scanDirectory(path)
+      // 自动递归扫描该目录
+      startRecursiveScan(path)
     }
     setSelectedPaths(newSelected)
   }
 
-  const scanDirectory = async (path: string, forceRescan = false) => {
-    const startTime = Date.now()
-    const progressId = `${path}_${Date.now()}` // 生成唯一的进度ID
-    setScanning(prev => new Set(prev).add(path))
-    setScanProgress(prev => new Map(prev).set(path, { 
-      currentPath: path, 
-      fileCount: 0, 
-      startTime,
-      scannedDirectories: 0,
-      totalDirectories: 0,
-      percentage: 0
-    }))
-    
-    // 启动进度轮询
-    const progressInterval = setInterval(async () => {
-      try {
-        const response = await fetch(`/api/webdav/scan?progressId=${progressId}`)
-        if (response.ok) {
-          const progress = await response.json()
-          setScanProgress(prev => new Map(prev).set(path, {
-            currentPath: progress.currentPath,
-            fileCount: progress.fileCount,
-            startTime,
-            scannedDirectories: progress.scannedDirectories,
-            totalDirectories: progress.totalDirectories,
-            percentage: progress.percentage
-          }))
-        }
-      } catch (error) {
-        // 忽略进度获取错误
-      }
-    }, 500) // 每500ms更新一次进度
-    
+
+  // 递归扫描相关函数
+  const startRecursiveScan = async (path: string, forceRescan = false) => {
     try {
-      const response = await fetch('/api/webdav/scan', {
+      const response = await fetch('/api/webdav/recursive-scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -409,55 +373,45 @@ export default function ConfigPage() {
           username: config.username,
           password: config.password,
           path,
-          maxDepth: config.scanSettings?.maxDepth || 10,
-          maxFiles: config.scanSettings?.maxFiles || 200000,
-          timeout: config.scanSettings?.timeout || 60000,
-          forceRescan,
-          progressId
+          batchSize: config.scanSettings?.batchSize || 10,
+          forceRescan
         }),
       })
 
       if (response.ok) {
         const data = await response.json()
+        
+        // 更新统计信息
         setPathStats(prev => new Map(prev).set(path, {
-          ...data,
+          path,
+          total: data.result.totalFiles,
+          images: data.result.imageCount,
+          videos: data.result.videoCount,
           lastScan: new Date().toISOString()
         }))
         
-        // 显示缓存状态
-        if (data.scanInfo?.fromCache) {
-          console.log(`从缓存加载: ${path} (最后扫描: ${data.scanInfo.lastScan})`)
-        } else {
-          console.log(`重新扫描完成: ${path}`)
-        }
+        setTestResult({
+          type: 'success',
+          message: `递归扫描完成: ${path} - 找到 ${data.result.totalFiles} 个文件`
+        })
       } else {
         const error = await response.json()
-        console.error('扫描目录失败:', error.error)
         setTestResult({
           type: 'error',
-          message: `扫描目录 ${path} 失败: ${error.error}`
+          message: `递归扫描失败: ${error.error}`
         })
       }
     } catch (error: any) {
-      console.error('扫描目录失败:', error)
       setTestResult({
         type: 'error',
-        message: `扫描目录 ${path} 失败: ${error.message}`
-      })
-    } finally {
-      clearInterval(progressInterval)
-      setScanning(prev => {
-        const newSet = new Set(prev)
-        newSet.delete(path)
-        return newSet
-      })
-      setScanProgress(prev => {
-        const newMap = new Map(prev)
-        newMap.delete(path)
-        return newMap
+        message: `递归扫描失败: ${error.message}`
       })
     }
   }
+
+
+
+
 
   const removeSelectedPath = (path: string) => {
     const newSelected = new Set(selectedPaths)
@@ -646,58 +600,23 @@ export default function ConfigPage() {
             扫描设置
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            配置深度扫描的参数，适用于包含大量子目录的情况
+            递归扫描将扫描所有子目录，无深度和文件数量限制
           </Typography>
           
+          {/* 批次大小设置 */}
           <Box sx={{ display: 'flex', gap: 2, flexDirection: { xs: 'column', md: 'row' } }}>
             <TextField
-              label="最大扫描深度"
+              label="批次大小"
               type="number"
-              value={config.scanSettings?.maxDepth || 10}
+              value={config.scanSettings?.batchSize || 10}
               onChange={(e) => setConfig({
                 ...config,
                 scanSettings: {
-                  maxDepth: parseInt(e.target.value) || 10,
-                  maxFiles: config.scanSettings?.maxFiles || 200000,
-                  timeout: config.scanSettings?.timeout || 60000
+                  batchSize: parseInt(e.target.value) || 10
                 }
               })}
-              helperText="递归扫描的最大目录层级深度"
-              inputProps={{ min: 1, max: 20 }}
-              sx={{ flex: 1 }}
-            />
-            
-            <TextField
-              label="最大文件数量"
-              type="number"
-              value={config.scanSettings?.maxFiles || 200000}
-              onChange={(e) => setConfig({
-                ...config,
-                scanSettings: {
-                  maxDepth: config.scanSettings?.maxDepth || 10,
-                  maxFiles: parseInt(e.target.value) || 200000,
-                  timeout: config.scanSettings?.timeout || 60000
-                }
-              })}
-              helperText="扫描的最大文件数量限制"
-              inputProps={{ min: 100, max: 500000 }}
-              sx={{ flex: 1 }}
-            />
-            
-            <TextField
-              label="超时时间(秒)"
-              type="number"
-              value={Math.floor((config.scanSettings?.timeout || 60000) / 1000)}
-              onChange={(e) => setConfig({
-                ...config,
-                scanSettings: {
-                  maxDepth: config.scanSettings?.maxDepth || 10,
-                  maxFiles: config.scanSettings?.maxFiles || 200000,
-                  timeout: (parseInt(e.target.value) || 60) * 1000
-                }
-              })}
-              helperText="扫描超时时间"
-              inputProps={{ min: 10, max: 300 }}
+              helperText="每次处理的文件数量，影响扫描速度和内存使用"
+              inputProps={{ min: 5, max: 50 }}
               sx={{ flex: 1 }}
             />
           </Box>
@@ -825,13 +744,13 @@ export default function ConfigPage() {
                 onClick={() => {
                   Array.from(selectedPaths).forEach(path => {
                     if (!pathStats.has(path)) {
-                      scanDirectory(path)
+                      startRecursiveScan(path)
                     }
                   })
                 }}
                 disabled={Array.from(selectedPaths).some(path => scanning.has(path))}
               >
-                批量扫描
+                批量递归扫描
               </Button>
               <Button
                 size="small"
@@ -839,12 +758,12 @@ export default function ConfigPage() {
                 color="warning"
                 onClick={() => {
                   Array.from(selectedPaths).forEach(path => {
-                    scanDirectory(path, true) // 强制重新扫描
+                    startRecursiveScan(path, true) // 强制重新扫描
                   })
                 }}
                 disabled={Array.from(selectedPaths).some(path => scanning.has(path))}
               >
-                强制重新扫描
+                强制递归扫描
               </Button>
               <Button
                 size="small"
@@ -878,7 +797,11 @@ export default function ConfigPage() {
                     stats={stats}
                     isScanning={isScanning}
                     scanProgress={progress}
-                    onRescan={(path, force) => scanDirectory(path, force)}
+                    webdavConfig={{
+                      url: config.url,
+                      username: config.username
+                    }}
+                    onRecursiveScan={startRecursiveScan}
                     onRemove={removeSelectedPath}
                   />
                 )
@@ -1015,7 +938,7 @@ export default function ConfigPage() {
 
           {/* 批量操作按钮 */}
           {directories.length > 0 && (
-            <Box sx={{ mb: 2, display: 'flex', gap: 1 }}>
+            <Box sx={{ mb: 2, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
               <Button
                 size="small"
                 variant="outlined"
@@ -1024,7 +947,7 @@ export default function ConfigPage() {
                   directories.forEach(dir => {
                     newSelected.add(dir.filename)
                     if (!pathStats.has(dir.filename)) {
-                      scanDirectory(dir.filename)
+                      startRecursiveScan(dir.filename)
                     }
                   })
                   setSelectedPaths(newSelected)
@@ -1048,6 +971,15 @@ export default function ConfigPage() {
                 }}
               >
                 取消全选
+              </Button>
+              <Button
+                size="small"
+                variant="contained"
+                color="primary"
+                onClick={() => startRecursiveScan(currentPath)}
+                disabled={browsing}
+              >
+                递归扫描当前目录
               </Button>
             </Box>
           )}

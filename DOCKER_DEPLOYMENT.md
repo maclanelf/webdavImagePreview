@@ -39,6 +39,7 @@ WEBDAV_MEDIA_PATH=/photos
 NODE_ENV=production
 PORT=3000
 HOSTNAME=0.0.0.0
+TZ=Asia/Shanghai
 ```
 
 > **注意**：如果不设置环境变量，您可以在应用启动后通过 Web 界面进行配置。
@@ -66,7 +67,9 @@ docker load -i webdav-image-preview_1.0.0.tar
 docker run -d \
   --name webdav-image-preview \
   -p 3000:3000 \
+  -e TZ=Asia/Shanghai \
   -v webdav_data:/app/data \
+  -v webdav_logs:/app/logs \
   --restart unless-stopped \
   webdav-image-preview
 ```
@@ -74,6 +77,24 @@ docker run -d \
 ### 4. 访问应用
 
 打开浏览器访问：http://localhost:3000
+
+## ⏰ 时区配置
+
+应用已配置为使用上海时区（Asia/Shanghai），确保：
+
+1. **数据库时间**：所有数据库记录使用本地时间而非UTC时间
+2. **日志时间**：扫描日志和系统日志显示正确的本地时间
+3. **定时任务**：定时扫描任务按本地时间执行
+
+如果您的服务器在其他时区，可以修改 `TZ` 环境变量：
+
+```bash
+# 例如设置为东京时区
+TZ=Asia/Tokyo
+
+# 例如设置为纽约时区  
+TZ=America/New_York
+```
 
 ## 🔧 配置说明
 
@@ -88,13 +109,20 @@ docker run -d \
 | `NODE_ENV` | 运行环境 | `production` | 否 |
 | `PORT` | 应用端口 | `3000` | 否 |
 | `HOSTNAME` | 绑定地址 | `0.0.0.0` | 否 |
+| `TZ` | 时区设置 | `Asia/Shanghai` | 否 |
 
 ### 数据持久化
 
-应用使用 Docker 卷 `webdav_data` 来持久化存储：
-- SQLite 数据库文件
-- 媒体评分数据
-- 应用配置缓存
+应用使用 Docker 卷来持久化存储：
+
+- `webdav_data` 卷：
+  - SQLite 数据库文件
+  - 媒体评分数据
+  - 应用配置缓存
+
+- `webdav_logs` 卷：
+  - 扫描日志文件
+  - 应用运行日志
 
 ### 端口映射
 

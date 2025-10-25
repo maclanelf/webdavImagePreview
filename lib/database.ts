@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3'
 import path from 'path'
+import { getCurrentLocalISOString } from './timeUtils'
 
 // 数据库文件路径
 const dbPath = path.join(process.cwd(), 'data', 'media_ratings.db')
@@ -77,8 +78,8 @@ export function initDatabase() {
         custom_evaluation TEXT,
         category TEXT,
         is_viewed BOOLEAN DEFAULT FALSE,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        created_at DATETIME DEFAULT (datetime(\'now\', \'localtime\')),
+        updated_at DATETIME DEFAULT (datetime(\'now\', \'localtime\'))
       )
     `)
 
@@ -94,8 +95,8 @@ export function initDatabase() {
         custom_evaluation TEXT,
         category TEXT,
         is_viewed BOOLEAN DEFAULT FALSE,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        created_at DATETIME DEFAULT (datetime(\'now\', \'localtime\')),
+        updated_at DATETIME DEFAULT (datetime(\'now\', \'localtime\'))
       )
     `)
 
@@ -105,7 +106,7 @@ export function initDatabase() {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         label TEXT NOT NULL UNIQUE,
         usage_count INTEGER DEFAULT 1,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        created_at DATETIME DEFAULT (datetime(\'now\', \'localtime\'))
       )
     `)
 
@@ -115,7 +116,7 @@ export function initDatabase() {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
         usage_count INTEGER DEFAULT 1,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        created_at DATETIME DEFAULT (datetime(\'now\', \'localtime\'))
       )
     `)
 
@@ -131,8 +132,8 @@ export function initDatabase() {
         image_count INTEGER NOT NULL,
         video_count INTEGER NOT NULL,
         scan_settings TEXT NOT NULL,
-        last_scan DATETIME DEFAULT CURRENT_TIMESTAMP,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        last_scan DATETIME DEFAULT (datetime(\'now\', \'localtime\')),
+        created_at DATETIME DEFAULT (datetime(\'now\', \'localtime\')),
         UNIQUE(webdav_url, webdav_username, path)
       )
     `)
@@ -150,9 +151,38 @@ export function initDatabase() {
         is_active BOOLEAN DEFAULT TRUE,
         last_run DATETIME,
         next_run DATETIME,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        created_at DATETIME DEFAULT (datetime(\'now\', \'localtime\')),
+        updated_at DATETIME DEFAULT (datetime(\'now\', \'localtime\'))
       )
+    `)
+
+    // 创建递归扫描任务表
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS recursive_scan_tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id TEXT NOT NULL UNIQUE,
+        webdav_url TEXT NOT NULL,
+        webdav_username TEXT NOT NULL,
+        webdav_password TEXT NOT NULL,
+        root_path TEXT NOT NULL,
+        scan_settings TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        current_path TEXT,
+        scanned_directories INTEGER DEFAULT 0,
+        total_directories INTEGER DEFAULT 0,
+        found_files INTEGER DEFAULT 0,
+        pending_directories TEXT,
+        completed_directories TEXT,
+        error_message TEXT,
+        created_at DATETIME DEFAULT (datetime(\'now\', \'localtime\')),
+        updated_at DATETIME DEFAULT (datetime(\'now\', \'localtime\')),
+        started_at DATETIME,
+        completed_at DATETIME
+      )
+    `)
+
+    // 创建递归扫描进度表
+    db.exec(`
     `)
 
     console.log('数据库表创建完成')
@@ -201,7 +231,7 @@ export const mediaRatings = {
       const stmt = db.prepare(`
         UPDATE media_ratings 
         SET rating = ?, recommendation_reason = ?, custom_evaluation = ?, 
-            category = ?, is_viewed = ?, updated_at = CURRENT_TIMESTAMP
+            category = ?, is_viewed = ?, updated_at = datetime(\'now\', \'localtime\')
         WHERE file_path = ?
       `)
       return stmt.run(
@@ -285,7 +315,7 @@ export const groupRatings = {
       const stmt = db.prepare(`
         UPDATE group_ratings 
         SET rating = ?, recommendation_reason = ?, custom_evaluation = ?, 
-            category = ?, is_viewed = ?, updated_at = CURRENT_TIMESTAMP
+            category = ?, is_viewed = ?, updated_at = datetime(\'now\', \'localtime\')
         WHERE group_path = ?
       `)
       return stmt.run(
@@ -473,7 +503,7 @@ export const scanCache = {
     const stmt = db.prepare(`
       INSERT OR REPLACE INTO scan_cache 
       (webdav_url, webdav_username, path, files_data, total_files, image_count, video_count, scan_settings, last_scan)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime(\'now\', \'localtime\'))
     `)
     return stmt.run(
       data.webdavUrl,
@@ -597,7 +627,7 @@ export const scheduledScans = {
       values.push(data.isActive ? 1 : 0)
     }
     
-    updates.push('updated_at = CURRENT_TIMESTAMP')
+    updates.push('updated_at = datetime(\'now\', \'localtime\')')
     values.push(id)
     
     const stmt = db.prepare(`UPDATE scheduled_scans SET ${updates.join(', ')} WHERE id = ?`)
@@ -614,7 +644,7 @@ export const scheduledScans = {
   updateLastRun: (id: number) => {
     const stmt = db.prepare(`
       UPDATE scheduled_scans 
-      SET last_run = CURRENT_TIMESTAMP, next_run = ?
+      SET last_run = datetime(\'now\', \'localtime\'), next_run = ?
       WHERE id = ?
     `)
     const task = db.prepare('SELECT cron_expression FROM scheduled_scans WHERE id = ?').get(id) as { cron_expression: string } | undefined
@@ -623,6 +653,120 @@ export const scheduledScans = {
       return stmt.run(nextRun, id)
     }
     return null
+  }
+}
+
+// 递归扫描任务相关操作
+export const recursiveScanTasks = {
+  // 创建扫描任务
+  create: (data: {
+    taskId: string
+    webdavUrl: string
+    webdavUsername: string
+    webdavPassword: string
+    rootPath: string
+    scanSettings: any
+  }) => {
+    const stmt = db.prepare(`
+      INSERT INTO recursive_scan_tasks 
+      (task_id, webdav_url, webdav_username, webdav_password, root_path, scan_settings, status)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending')
+    `)
+    return stmt.run(
+      data.taskId,
+      data.webdavUrl,
+      data.webdavUsername,
+      data.webdavPassword,
+      data.rootPath,
+      JSON.stringify(data.scanSettings)
+    )
+  },
+
+  // 获取任务
+  get: (taskId: string) => {
+    const stmt = db.prepare('SELECT * FROM recursive_scan_tasks WHERE task_id = ?')
+    return stmt.get(taskId)
+  },
+
+  // 更新任务状态
+  updateStatus: (taskId: string, status: string, data?: {
+    currentPath?: string
+    scannedDirectories?: number
+    totalDirectories?: number
+    foundFiles?: number
+    pendingDirectories?: string[]
+    completedDirectories?: string[]
+    errorMessage?: string
+  }) => {
+    const updates = ['status = ?', 'updated_at = datetime(\'now\', \'localtime\')']
+    const values = [status]
+    
+    if (data) {
+      if (data.currentPath !== undefined) {
+        updates.push('current_path = ?')
+        values.push(data.currentPath)
+      }
+      if (data.scannedDirectories !== undefined) {
+        updates.push('scanned_directories = ?')
+        values.push(data.scannedDirectories.toString())
+      }
+      if (data.totalDirectories !== undefined) {
+        updates.push('total_directories = ?')
+        values.push(data.totalDirectories.toString())
+      }
+      if (data.foundFiles !== undefined) {
+        updates.push('found_files = ?')
+        values.push(data.foundFiles.toString())
+      }
+      if (data.pendingDirectories !== undefined) {
+        updates.push('pending_directories = ?')
+        values.push(JSON.stringify(data.pendingDirectories))
+      }
+      if (data.completedDirectories !== undefined) {
+        updates.push('completed_directories = ?')
+        values.push(JSON.stringify(data.completedDirectories))
+      }
+      if (data.errorMessage !== undefined) {
+        updates.push('error_message = ?')
+        values.push(data.errorMessage)
+      }
+    }
+    
+    if (status === 'running' && !data?.currentPath) {
+      updates.push('started_at = datetime(\'now\', \'localtime\')')
+    }
+    if (status === 'completed' || status === 'failed') {
+      updates.push('completed_at = datetime(\'now\', \'localtime\')')
+    }
+    
+    values.push(taskId)
+    
+    const stmt = db.prepare(`UPDATE recursive_scan_tasks SET ${updates.join(', ')} WHERE task_id = ?`)
+    return stmt.run(...values)
+  },
+
+  // 获取所有任务
+  getAll: () => {
+    const stmt = db.prepare('SELECT * FROM recursive_scan_tasks ORDER BY created_at DESC')
+    return stmt.all()
+  },
+
+  // 获取活跃任务
+  getActive: () => {
+    const stmt = db.prepare("SELECT * FROM recursive_scan_tasks WHERE status IN ('pending', 'running', 'paused') ORDER BY created_at DESC")
+    return stmt.all()
+  },
+
+  // 删除任务
+  delete: (taskId: string) => {
+    const stmt = db.prepare('DELETE FROM recursive_scan_tasks WHERE task_id = ?')
+    return stmt.run(taskId)
+  },
+
+  // 清理过期任务（超过7天）
+  cleanup: () => {
+    const stmt = db.prepare('DELETE FROM recursive_scan_tasks WHERE created_at < datetime("now", "-7 days")')
+    return stmt.run()
   }
 }
 
