@@ -65,6 +65,96 @@ export function repairDatabase() {
       createGroupRatingsTable(db)
     }
     
+    // 检查custom_evaluations表
+    const customEvaluationsTable = tables.find((table: any) => table.name === 'custom_evaluations')
+    
+    if (!customEvaluationsTable) {
+      console.log('custom_evaluations表不存在，将创建')
+      createCustomEvaluationsTable(db)
+    } else {
+      // 检查表结构
+      const columns = db.prepare("PRAGMA table_info(custom_evaluations)").all()
+      console.log('custom_evaluations表列:', columns)
+      
+      // 检查是否有usage_count列
+      const hasUsageCount = columns.some((col: any) => col.name === 'usage_count')
+      
+      if (!hasUsageCount) {
+        console.log('usage_count列不存在，将添加')
+        try {
+          db.exec('ALTER TABLE custom_evaluations ADD COLUMN usage_count INTEGER DEFAULT 1')
+          console.log('usage_count列添加成功')
+        } catch (error) {
+          console.error('添加usage_count列失败:', error)
+          // 如果添加列失败，重新创建表
+          console.log('将重新创建custom_evaluations表')
+          const existingData = db.prepare('SELECT * FROM custom_evaluations').all()
+          console.log('备份现有数据:', existingData.length, '条记录')
+          
+          db.exec('DROP TABLE IF EXISTS custom_evaluations')
+          createCustomEvaluationsTable(db)
+          
+          // 恢复数据
+          if (existingData.length > 0) {
+            console.log('尝试恢复数据...')
+            const insertStmt = db.prepare('INSERT INTO custom_evaluations (label, usage_count, created_at) VALUES (?, ?, ?)')
+            for (const row of existingData) {
+              try {
+                insertStmt.run(row.label || row.id, 1, row.created_at || new Date().toISOString())
+              } catch (err) {
+                console.warn('恢复数据失败:', err)
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    // 检查categories表
+    const categoriesTable = tables.find((table: any) => table.name === 'categories')
+    
+    if (!categoriesTable) {
+      console.log('categories表不存在，将创建')
+      createCategoriesTable(db)
+    } else {
+      // 检查表结构
+      const columns = db.prepare("PRAGMA table_info(categories)").all()
+      console.log('categories表列:', columns)
+      
+      // 检查是否有usage_count列
+      const hasUsageCount = columns.some((col: any) => col.name === 'usage_count')
+      
+      if (!hasUsageCount) {
+        console.log('usage_count列不存在，将添加')
+        try {
+          db.exec('ALTER TABLE categories ADD COLUMN usage_count INTEGER DEFAULT 1')
+          console.log('usage_count列添加成功')
+        } catch (error) {
+          console.error('添加usage_count列失败:', error)
+          // 如果添加列失败，重新创建表
+          console.log('将重新创建categories表')
+          const existingData = db.prepare('SELECT * FROM categories').all()
+          console.log('备份现有数据:', existingData.length, '条记录')
+          
+          db.exec('DROP TABLE IF EXISTS categories')
+          createCategoriesTable(db)
+          
+          // 恢复数据
+          if (existingData.length > 0) {
+            console.log('尝试恢复数据...')
+            const insertStmt = db.prepare('INSERT INTO categories (name, usage_count, created_at) VALUES (?, ?, ?)')
+            for (const row of existingData) {
+              try {
+                insertStmt.run(row.name || row.id, 1, row.created_at || new Date().toISOString())
+              } catch (err) {
+                console.warn('恢复数据失败:', err)
+              }
+            }
+          }
+        }
+      }
+    }
+    
     db.close()
     console.log('数据库修复完成')
     
@@ -87,6 +177,8 @@ function createNewDatabase() {
   
   createMediaRatingsTable(db)
   createGroupRatingsTable(db)
+  createCustomEvaluationsTable(db)
+  createCategoriesTable(db)
   
   db.close()
   console.log('新数据库创建完成')
@@ -128,6 +220,30 @@ function createGroupRatingsTable(db: Database) {
     )
   `)
   console.log('group_ratings表创建完成')
+}
+
+function createCustomEvaluationsTable(db: Database) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS custom_evaluations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      label TEXT NOT NULL UNIQUE,
+      usage_count INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT (datetime('now', 'localtime'))
+    )
+  `)
+  console.log('custom_evaluations表创建完成')
+}
+
+function createCategoriesTable(db: Database) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS categories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      usage_count INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT (datetime('now', 'localtime'))
+    )
+  `)
+  console.log('categories表创建完成')
 }
 
 // 如果直接运行此脚本

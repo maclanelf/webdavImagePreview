@@ -139,6 +139,9 @@ export default function HomePage() {
   const [autoMarkTimer, setAutoMarkTimer] = useState<NodeJS.Timeout | null>(null)
   const hasAutoRatedRef = useRef(false) // 使用 ref 避免闭包陷阱,追踪当前文件是否已自动评分
   
+  // 切换状态，防止连续快速点击
+  const [isSwitching, setIsSwitching] = useState(false)
+  
   // 提示消息相关状态
   const [snackbarOpen, setSnackbarOpen] = useState(false)
   const [snackbarMessage, setSnackbarMessage] = useState('')
@@ -602,21 +605,56 @@ export default function HomePage() {
     }
   }
 
+  // 保存当前评分并切换图片
+  const saveAndSwitch = async (switchCallback: () => void) => {
+    if (!currentFile || isSwitching) {
+      return
+    }
+
+    setIsSwitching(true)
+
+    try {
+      // 停止自动标记定时器，避免在切换时触发自动评分
+      stopAutoMarkTimer()
+      
+      // 如果当前有评分数据，先保存
+      if (currentRating) {
+        await saveRating(currentRating, currentFile)
+      }
+      
+      // 保存成功后切换
+      switchCallback()
+    } catch (error) {
+      console.error('保存评分失败:', error)
+      // 即使保存失败也继续切换，避免卡住
+      switchCallback()
+    } finally {
+      // 延迟重置切换状态，防止连续点击
+      setTimeout(() => {
+        setIsSwitching(false)
+      }, 500)
+    }
+  }
+
   // 图组模式：下一张
   const nextInGroup = () => {
-    if (currentGroupIndex < currentGroup.length - 1) {
-      loadFileFromGroup(currentGroup, currentGroupIndex + 1)
-    } else {
-      // 最后一张，加载新图组
-      loadRandomGroup()
-    }
+    saveAndSwitch(() => {
+      if (currentGroupIndex < currentGroup.length - 1) {
+        loadFileFromGroup(currentGroup, currentGroupIndex + 1)
+      } else {
+        // 最后一张，加载新图组
+        loadRandomGroup()
+      }
+    })
   }
 
   // 图组模式：上一张
   const previousInGroup = () => {
-    if (currentGroupIndex > 0) {
-      loadFileFromGroup(currentGroup, currentGroupIndex - 1)
-    }
+    saveAndSwitch(() => {
+      if (currentGroupIndex > 0) {
+        loadFileFromGroup(currentGroup, currentGroupIndex - 1)
+      }
+    })
   }
 
   const loadRandomMedia = async () => {
@@ -636,6 +674,12 @@ export default function HomePage() {
     }
 
     // 随机模式
+    saveAndSwitch(() => {
+      loadRandomFile()
+    })
+  }
+
+  const loadRandomFile = async () => {
     const filteredFiles = getFilteredFiles()
     
     if (filteredFiles.length === 0) {
@@ -787,11 +831,8 @@ export default function HomePage() {
           throw new Error(errorData.error || '保存媒体评分失败')
         }
         
-        // 保存成功后合并更新当前评分状态（保留现有字段）
-        setCurrentRating(prev => ({
-          ...prev,
-          ...data
-        }))
+        // 保存成功后重新从服务器获取最新评分数据
+        await loadMediaRating(targetFile.filename)
       } else if (ratingType === 'group' && currentGroup.length > 0) {
         const groupPath = getGroupPath(currentGroup[0].filename)
         const groupName = getGroupName(groupPath)
@@ -812,11 +853,8 @@ export default function HomePage() {
           throw new Error(errorData.error || '保存图组评分失败')
         }
         
-        // 保存成功后合并更新当前评分状态（保留现有字段）
-        setCurrentRating(prev => ({
-          ...prev,
-          ...data
-        }))
+        // 保存成功后重新从服务器获取最新评分数据
+        await loadCurrentRating()
       }
     } catch (error: any) {
       throw new Error(error.message)
@@ -888,11 +926,7 @@ export default function HomePage() {
 
       await saveRating(ratingData)
       
-      // 更新当前评分状态
-      setCurrentRating(prev => ({
-        ...prev,
-        ...ratingData
-      }))
+      // 评分已保存，状态会在 saveRating 中自动更新
       
       // 显示评分成功提示
       setSnackbarMessage(`${rating}星 - ${evaluation}`)
@@ -924,6 +958,17 @@ export default function HomePage() {
     hasAutoRatedRef.current = true
     
     try {
+      // 检查文件是否已经有评分，如果有评分就不执行自动评分
+      const response = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(targetFile.filename)}`)
+      if (response.ok) {
+        const data = await response.json()
+        if (data.rating && data.rating.rating) {
+          // 文件已经有评分，不执行自动评分
+          console.log(`文件 ${targetFile.basename} 已有评分 ${data.rating.rating} 星，跳过自动评分`)
+          return
+        }
+      }
+      
       // 自动标记为已看过，默认2星，评价"一般"
       const autoRatingData = {
         rating: 2,
@@ -933,11 +978,7 @@ export default function HomePage() {
 
       await saveRating(autoRatingData, targetFile)
       
-      // 更新当前评分状态
-      setCurrentRating(prev => ({
-        ...prev,
-        ...autoRatingData
-      }))
+      // 评分已保存，状态会在 saveRating 中自动更新
     } catch (error) {
       console.error('自动标记已看过失败:', error)
     }
@@ -945,7 +986,6 @@ export default function HomePage() {
 
   // 自动标记已看过
   const startAutoMarkTimer = (file?: MediaFile) => {
-    debugger
     // 使用传入的文件或当前文件
     const targetFile = file || currentFile
     if (!targetFile) return
@@ -1153,7 +1193,7 @@ export default function HomePage() {
                 <Fab
                   color="default"
                   onClick={previousInGroup}
-                  disabled={loading}
+                  disabled={loading || isSwitching}
                   sx={{
                     position: 'fixed',
                     bottom: 100,
@@ -1171,7 +1211,7 @@ export default function HomePage() {
               <Fab
                 color="default"
                 onClick={nextInGroup}
-                disabled={loading}
+                disabled={loading || isSwitching}
                 sx={{
                   position: 'fixed',
                   bottom: 100,
@@ -1207,7 +1247,7 @@ export default function HomePage() {
               <Fab
                 color="secondary"
                 onClick={loadRandomGroup}
-                disabled={loading}
+                disabled={loading || isSwitching}
                 sx={{
                   position: 'fixed',
                   bottom: 180,
@@ -1226,7 +1266,7 @@ export default function HomePage() {
             color="primary"
             aria-label="换一个"
             onClick={loadRandomMedia}
-            disabled={loading}
+            disabled={loading || isSwitching}
             sx={{
               position: 'fixed',
               bottom: 24,
@@ -1386,7 +1426,7 @@ export default function HomePage() {
                 <QuickRating
                   currentRating={currentRating?.rating}
                   onQuickRate={handleQuickRate}
-                  disabled={loading}
+                  disabled={loading || isSwitching}
                 />
               </Box>
               
@@ -1412,7 +1452,7 @@ export default function HomePage() {
               variant="outlined"
               startIcon={<ArrowBackIcon />}
               onClick={previousInGroup}
-              disabled={currentGroupIndex === 0 || loading}
+              disabled={currentGroupIndex === 0 || loading || isSwitching}
             >
               上一张
             </Button>
@@ -1420,7 +1460,7 @@ export default function HomePage() {
               variant="outlined"
               startIcon={<SkipNextIcon />}
               onClick={loadRandomGroup}
-              disabled={loading}
+              disabled={loading || isSwitching}
             >
               换下一组
             </Button>
@@ -1428,7 +1468,7 @@ export default function HomePage() {
               variant="contained"
               endIcon={<ArrowForwardIcon />}
               onClick={nextInGroup}
-              disabled={loading}
+              disabled={loading || isSwitching}
             >
               下一张
             </Button>
@@ -1850,7 +1890,7 @@ export default function HomePage() {
                 size="small"
                 fullWidth
                 onClick={() => loadStats(config, true)}
-                disabled={loading}
+                disabled={loading || isSwitching}
                 startIcon={<RefreshIcon />}
               >
                 强制重新扫描
@@ -1889,7 +1929,7 @@ export default function HomePage() {
           color="primary"
           aria-label="换一个"
           onClick={loadRandomMedia}
-          disabled={loading}
+          disabled={loading || isSwitching}
           sx={{
             position: 'fixed',
             bottom: 24,
