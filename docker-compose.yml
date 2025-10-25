@@ -19,15 +19,10 @@ services:
       - WEBDAV_PASSWORD=${WEBDAV_PASSWORD:-}
       - WEBDAV_MEDIA_PATH=${WEBDAV_MEDIA_PATH:-}
     volumes:
-      # 数据持久化 - SQLite 数据库和评分数据 (映射到本地目录)
-      # - ./data:/app/data
-      # 日志文件持久化 (映射到本地目录)
-      # - ./logs:/app/logs
-
-      # 数据持久化 - SQLite 数据库和评分数据 (映射到本地目录)
-      - ./vol1/1000/webdavimagepreview/data:/app/data
-      # 日志文件持久化 (映射到本地目录)
-      - ./vol1/1000/webdavimagepreview/logs:/app/logs
+      # 数据持久化 - SQLite 数据库和评分数据
+      - webdav_data:/app/data
+      # 日志文件持久化
+      - webdav_logs:/app/logs
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/test-db"]
@@ -36,4 +31,8 @@ services:
       retries: 3
       start_period: 40s
 
-# 不再需要定义 volumes，因为现在使用本地目录映射
+volumes:
+  webdav_data:
+    driver: local
+  webdav_logs:
+    driver: local
