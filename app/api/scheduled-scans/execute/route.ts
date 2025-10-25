@@ -47,8 +47,8 @@ export async function POST(request: NextRequest) {
       password: task.webdav_password
     })
 
-    const mediaPaths = JSON.parse(task.media_paths)
-    const scanSettings = JSON.parse(task.scan_settings)
+    const mediaPaths = task.media_paths ? JSON.parse(task.media_paths) : []
+    const scanSettings = task.scan_settings ? JSON.parse(task.scan_settings) : {}
     
     let totalFiles = 0
     let totalImages = 0

@@ -66,15 +66,26 @@ export default function ScheduledScanDialog({
   })
   const [nextRuns, setNextRuns] = useState<string[]>([])
 
+  // 安全解析JSON的辅助函数
+  const safeJsonParse = (jsonString: string | null | undefined, fallback: any = null) => {
+    if (!jsonString) return fallback
+    try {
+      return JSON.parse(jsonString)
+    } catch (error) {
+      console.error('JSON解析失败:', error, jsonString)
+      return fallback
+    }
+  }
+
   useEffect(() => {
     if (initialData) {
       setFormData({
-        mediaPaths: initialData.media_paths ? JSON.parse(initialData.media_paths) : [],
-        scanSettings: initialData.scan_settings ? JSON.parse(initialData.scan_settings) : {
+        mediaPaths: safeJsonParse(initialData.media_paths, []),
+        scanSettings: safeJsonParse(initialData.scan_settings, {
           maxDepth: 10,
           maxFiles: 200000,
           timeout: 60000
-        },
+        }),
         cronExpression: initialData.cron_expression || '0 */2 * * *',
         isActive: initialData.is_active === 1
       })

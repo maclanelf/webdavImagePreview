@@ -18,6 +18,7 @@ export async function POST(request: NextRequest) {
     
     // 获取目录内容
     const contents = await client.getDirectoryContents(path) as FileStat[]
+    console.log('获取的目录',contents)
     
     // 只返回目录，过滤掉文件
     const directories = contents

@@ -120,6 +120,17 @@ export default function ConfigPage() {
   const [loadingScans, setLoadingScans] = useState(false)
   const [schedulerStatus, setSchedulerStatus] = useState<any>(null)
 
+  // 安全解析JSON的辅助函数
+  const safeJsonParse = (jsonString: string | null | undefined, fallback: any = null) => {
+    if (!jsonString) return fallback
+    try {
+      return JSON.parse(jsonString)
+    } catch (error) {
+      console.error('JSON解析失败:', error, jsonString)
+      return fallback
+    }
+  }
+
   // 加载扫描缓存数据
   const loadScanCache = async (config: WebDAVConfig) => {
     try {
@@ -243,7 +254,7 @@ export default function ConfigPage() {
     }
   }
 
-  const saveConfig = () => {
+  const saveConfig = async () => {
     if (!config.url || !config.username || !config.password) {
       setSaveResult({
         type: 'error',
@@ -269,10 +280,49 @@ export default function ConfigPage() {
         mediaPaths: Array.from(selectedPaths),
       }
       localStorage.setItem('webdav_config', JSON.stringify(configToSave))
-      setSaveResult({
-        type: 'success',
-        message: '配置已保存！',
-      })
+      
+      // 保存成功后，启动后台扫描
+      try {
+        const response = await fetch('/api/webdav/background-scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...configToSave,
+            mediaPaths: Array.from(selectedPaths),
+          }),
+        })
+
+        if (response.ok) {
+          const data = await response.json()
+          if (data.taskRunning) {
+            setSaveResult({
+              type: 'success',
+              message: '配置已保存！扫描任务正在进行中...',
+            })
+          } else if (data.scanStarted) {
+            setSaveResult({
+              type: 'success',
+              message: '配置已保存！后台扫描已启动...',
+            })
+          } else {
+            setSaveResult({
+              type: 'success',
+              message: '配置已保存！所有目录已扫描完成。',
+            })
+          }
+        } else {
+          setSaveResult({
+            type: 'success',
+            message: '配置已保存！',
+          })
+        }
+      } catch (scanError) {
+        console.error('启动扫描失败:', scanError)
+        setSaveResult({
+          type: 'success',
+          message: '配置已保存！',
+        })
+      }
     } catch (error: any) {
       setSaveResult({
         type: 'error',
@@ -677,7 +727,7 @@ export default function ConfigPage() {
                           {scan.webdav_url}
                         </Typography>
                         <Typography variant="body2" color="text.secondary">
-                          路径: {JSON.parse(scan.media_paths).join(', ')}
+                          路径: {safeJsonParse(scan.media_paths, []).join(', ') || '未设置'}
                         </Typography>
                         <Typography variant="caption" color="text.secondary">
                           执行时间: {scan.cron_expression} | 

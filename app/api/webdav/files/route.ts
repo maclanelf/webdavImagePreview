@@ -12,7 +12,8 @@ export async function POST(request: NextRequest) {
       password, 
       mediaPaths = ['/'],
       batchSize = 10,
-      forceRescan = false
+      forceRescan = false,
+      incremental = false // 新增：是否支持增量返回
     } = body
 
     if (!url || !username || !password) {
@@ -25,18 +26,44 @@ export async function POST(request: NextRequest) {
     // 尝试从缓存加载所有路径的文件
     const allFiles = []
     const uncachedPaths = []
+    const cachedPaths = []
     
     for (const path of mediaPaths) {
       if (!forceRescan) {
         const cached = scanCache.get(url, username, path) as any
         if (cached) {
           console.log(`从缓存加载路径: ${path}`)
-          const filesData = JSON.parse(cached.files_data)
+          const filesData = cached.files_data ? JSON.parse(cached.files_data) : []
           allFiles.push(...filesData)
+          cachedPaths.push(path)
           continue
         }
       }
       uncachedPaths.push(path)
+    }
+
+    // 如果支持增量返回且有缓存数据，先返回缓存的结果
+    if (incremental && cachedPaths.length > 0) {
+      const imageCount = allFiles.filter(f => 
+        /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(f.basename)
+      ).length
+      
+      const videoCount = allFiles.filter(f => 
+        /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(f.basename)
+      ).length
+
+      return NextResponse.json({
+        files: allFiles,
+        fromCache: true,
+        incremental: true,
+        cachedPaths,
+        pendingPaths: uncachedPaths,
+        stats: {
+          total: allFiles.length,
+          images: imageCount,
+          videos: videoCount
+        }
+      })
     }
 
     // 如果有未缓存的路径，进行递归扫描

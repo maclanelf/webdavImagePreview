@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3'
 import path from 'path'
 import { getCurrentLocalISOString } from './timeUtils'
+import { repairDatabase } from './repairDatabase'
 
 // 数据库文件路径
 const dbPath = path.join(process.cwd(), 'data', 'media_ratings.db')
@@ -196,8 +197,14 @@ export function initDatabase() {
 export const mediaRatings = {
   // 获取媒体评分
   get: (filePath: string) => {
-    const stmt = db.prepare('SELECT * FROM media_ratings WHERE file_path = ?')
-    return stmt.get(filePath)
+    try {
+      ensureInitialized()
+      const stmt = db.prepare('SELECT * FROM media_ratings WHERE file_path = ?')
+      return stmt.get(filePath)
+    } catch (error) {
+      console.error('获取媒体评分失败:', error)
+      return null
+    }
   },
 
   // 保存或更新媒体评分
@@ -211,7 +218,9 @@ export const mediaRatings = {
     category?: string | string[]
     isViewed?: boolean
   }) => {
-    const existing = mediaRatings.get(data.filePath)
+    try {
+      ensureInitialized()
+      const existing = mediaRatings.get(data.filePath)
     
     // 将数组转换为JSON字符串
     const customEvaluationStr = data.customEvaluation 
@@ -261,6 +270,10 @@ export const mediaRatings = {
         data.isViewed ? 1 : 0
       )
     }
+    } catch (error) {
+      console.error('保存媒体评分失败:', error)
+      throw error
+    }
   },
 
   // 获取所有评分
@@ -280,8 +293,14 @@ export const mediaRatings = {
 export const groupRatings = {
   // 获取图组评分
   get: (groupPath: string) => {
-    const stmt = db.prepare('SELECT * FROM group_ratings WHERE group_path = ?')
-    return stmt.get(groupPath)
+    try {
+      ensureInitialized()
+      const stmt = db.prepare('SELECT * FROM group_ratings WHERE group_path = ?')
+      return stmt.get(groupPath)
+    } catch (error) {
+      console.error('获取图组评分失败:', error)
+      return null
+    }
   },
 
   // 保存或更新图组评分
@@ -295,7 +314,9 @@ export const groupRatings = {
     category?: string | string[]
     isViewed?: boolean
   }) => {
-    const existing = groupRatings.get(data.groupPath)
+    try {
+      ensureInitialized()
+      const existing = groupRatings.get(data.groupPath)
     
     // 将数组转换为JSON字符串
     const customEvaluationStr = data.customEvaluation 
@@ -344,6 +365,10 @@ export const groupRatings = {
         categoryStr,
         data.isViewed ? 1 : 0
       )
+    }
+    } catch (error) {
+      console.error('保存图组评分失败:', error)
+      throw error
     }
   },
 
@@ -903,7 +928,18 @@ function calculateNextRun(cronExpression: string): string {
         console.log('数据库初始化成功')
       } catch (error) {
         console.error('数据库初始化失败:', error)
-        throw error
+        // 如果初始化失败，尝试修复数据库
+        try {
+          console.log('尝试修复数据库...')
+          repairDatabase()
+          initDatabase()
+          initDefaultData()
+          isInitialized = true
+          console.log('数据库修复并初始化成功')
+        } catch (repairError) {
+          console.error('数据库修复失败:', repairError)
+          throw repairError
+        }
       }
     }
   }

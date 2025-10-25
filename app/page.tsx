@@ -48,11 +48,14 @@ import {
   RateReview as RateReviewIcon,
   ManageAccounts as ManageAccountsIcon,
   Refresh as RefreshIcon,
+  Download as DownloadIcon,
+  Speed as SpeedIcon,
 } from '@mui/icons-material'
 import { useRouter } from 'next/navigation'
 import RatingDialog from '@/components/RatingDialog'
 import RatingStatus from '@/components/RatingStatus'
 import QuickRating from '@/components/QuickRating'
+import preloadManager from '@/lib/preloadManager'
 
 interface WebDAVConfig {
   url: string
@@ -112,6 +115,19 @@ export default function HomePage() {
   const [currentGroup, setCurrentGroup] = useState<MediaFile[]>([])
   const [currentGroupIndex, setCurrentGroupIndex] = useState(0)
   const [scanProgress, setScanProgress] = useState<{ currentPath: string, fileCount: number } | null>(null)
+  
+  // 预加载相关状态
+  const [preloadEnabled, setPreloadEnabled] = useState(true)
+  const [preloadProgress, setPreloadProgress] = useState<{ current: number, total: number, message: string } | null>(null)
+  const [preloadStatus, setPreloadStatus] = useState<{ cacheSize: number, maxCacheSize: number } | null>(null)
+  
+  // 扫描状态相关状态
+  const [scanStatus, setScanStatus] = useState<{ 
+    scannedPaths: string[], 
+    pendingPaths: string[], 
+    totalScanned: number, 
+    totalPending: number 
+  } | null>(null)
   
   // 评分相关状态
   const [ratingDialogOpen, setRatingDialogOpen] = useState(false)
@@ -210,8 +226,8 @@ export default function HomePage() {
             videos: totalVideos
           })
           
-          // 如果有缓存数据，尝试加载文件列表（优先从缓存）
-          await loadStats(cfg, false)
+          // 如果有缓存数据，使用增量加载
+          await loadStatsIncremental(cfg)
           return
         }
       }
@@ -224,6 +240,139 @@ export default function HomePage() {
       console.error('从缓存加载失败:', error)
       // 如果缓存加载失败，回退到正常扫描
       await loadStats(cfg, false)
+    } finally {
+      // 确保loading状态被正确设置
+      setLoading(false)
+    }
+  }
+
+  // 增量加载统计信息
+  const loadStatsIncremental = async (cfg: WebDAVConfig) => {
+    try {
+      // 使用增量模式加载文件列表
+      const response = await fetch('/api/webdav/files', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...cfg,
+          incremental: true, // 启用增量模式
+        }),
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || '获取文件列表失败')
+      }
+
+      const data = await response.json()
+      const files = data.files || []
+      setAllFiles(files)
+      
+      const imageCount = files.filter((f: MediaFile) => 
+        /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(f.basename)
+      ).length
+      
+      const videoCount = files.filter((f: MediaFile) => 
+        /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(f.basename)
+      ).length
+
+      setStats({
+        total: files.length,
+        images: imageCount,
+        videos: videoCount,
+      })
+      
+      // 显示缓存状态
+      if (data.fromCache) {
+        console.log('从缓存加载文件列表')
+      }
+      
+      // 如果有待扫描的路径，启动后台扫描
+      if (data.pendingPaths && data.pendingPaths.length > 0) {
+        console.log('启动后台扫描:', data.pendingPaths)
+        startBackgroundScan(cfg, data.pendingPaths)
+      }
+
+      // 如果启用了预加载，开始预加载
+      if (preloadEnabled && files.length > 0) {
+        startPreload(cfg, files)
+      }
+    } catch (e: any) {
+      console.error('增量加载失败:', e)
+      // 如果增量加载失败，回退到正常加载
+      await loadStats(cfg, false)
+    }
+  }
+
+  // 启动后台扫描
+  const startBackgroundScan = async (cfg: WebDAVConfig, pendingPaths: string[]) => {
+    try {
+      const response = await fetch('/api/webdav/background-scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...cfg,
+          mediaPaths: pendingPaths,
+        }),
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        console.log('后台扫描状态:', data.message)
+        
+        // 如果任务已经在运行，显示相应提示
+        if (data.taskRunning) {
+          setSnackbarMessage(`🔄 扫描任务正在进行中：${pendingPaths.length} 个目录`)
+          setSnackbarSeverity('info')
+          setSnackbarOpen(true)
+        } else if (data.scanStarted) {
+          setSnackbarMessage(`🚀 后台扫描已启动：${pendingPaths.length} 个目录`)
+          setSnackbarSeverity('info')
+          setSnackbarOpen(true)
+        }
+        
+        // 定期检查扫描状态
+        checkScanStatus(cfg)
+      }
+    } catch (error) {
+      console.error('启动后台扫描失败:', error)
+    }
+  }
+
+  // 检查扫描状态
+  const checkScanStatus = async (cfg: WebDAVConfig) => {
+    try {
+      const response = await fetch(`/api/webdav/background-scan?url=${encodeURIComponent(cfg.url)}&username=${encodeURIComponent(cfg.username)}&password=${encodeURIComponent(cfg.password)}&mediaPaths=${cfg.mediaPaths.join(',')}`)
+      
+      if (response.ok) {
+        const data = await response.json()
+        
+        // 更新扫描状态
+        setScanStatus({
+          scannedPaths: data.scannedPaths || [],
+          pendingPaths: data.pendingPaths || [],
+          totalScanned: data.totalScanned || 0,
+          totalPending: data.totalPending || 0
+        })
+        
+        // 如果还有待扫描的路径，继续检查
+        if (data.totalPending > 0) {
+          setTimeout(() => checkScanStatus(cfg), 5000) // 5秒后再次检查
+        } else {
+          // 所有扫描完成，刷新数据
+          console.log('所有扫描完成，刷新数据')
+          await loadStatsIncremental(cfg)
+          
+          setSnackbarMessage('✅ 所有目录扫描完成')
+          setSnackbarSeverity('success')
+          setSnackbarOpen(true)
+          
+          // 清除扫描状态
+          setScanStatus(null)
+        }
+      }
+    } catch (error) {
+      console.error('检查扫描状态失败:', error)
     }
   }
 
@@ -279,6 +428,11 @@ export default function HomePage() {
       } else {
         console.log('重新扫描完成')
       }
+
+      // 如果启用了预加载，开始预加载
+      if (preloadEnabled && files.length > 0) {
+        startPreload(cfg, files)
+      }
     } catch (e: any) {
       console.error('加载统计信息失败:', e)
       setError(`加载统计信息失败: ${e.message}`)
@@ -288,6 +442,47 @@ export default function HomePage() {
       }
     } finally {
       setLoading(false)
+    }
+  }
+
+  // 开始预加载
+  const startPreload = async (cfg: WebDAVConfig, files: MediaFile[]) => {
+    if (!preloadEnabled) return
+
+    setPreloadProgress({ current: 0, total: 20, message: '开始预加载...' })
+    
+    try {
+      const result = await preloadManager.preloadFiles(cfg, files, 20)
+      
+      setPreloadProgress(null)
+      setPreloadStatus(preloadManager.getCacheStatus())
+      
+      console.log('预加载完成:', result.message)
+      
+      // 显示预加载成功提示
+      setSnackbarMessage(`🚀 预加载完成：${result.successCount} 个文件已缓存`)
+      setSnackbarSeverity('success')
+      setSnackbarOpen(true)
+      
+    } catch (error: any) {
+      console.error('预加载失败:', error)
+      setPreloadProgress(null)
+      
+      setSnackbarMessage('❌ 预加载失败，将使用正常加载模式')
+      setSnackbarSeverity('error')
+      setSnackbarOpen(true)
+    }
+  }
+
+  // 智能预加载
+  const smartPreload = async (currentFile: MediaFile) => {
+    if (!preloadEnabled || !config) return
+
+    try {
+      await preloadManager.smartPreload(config, allFiles, currentFile, 10)
+      setPreloadStatus(preloadManager.getCacheStatus())
+    } catch (error) {
+      console.error('智能预加载失败:', error)
     }
   }
 
@@ -360,19 +555,29 @@ export default function HomePage() {
       setCurrentFile(file)
       setCurrentGroupIndex(index)
 
-      // 获取文件流
-      const streamResponse = await fetch('/api/webdav/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...config,
-          filepath: file.filename,
-        }),
-      })
+      // 尝试从预加载缓存获取
+      const preloadedBlob = preloadManager.getPreloadedFile(file.filename)
+      
+      let blob: Blob
+      if (preloadedBlob) {
+        // 使用预加载的文件
+        blob = preloadedBlob
+        console.log(`使用预加载文件: ${file.basename}`)
+      } else {
+        // 正常加载文件
+        const streamResponse = await fetch('/api/webdav/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...config,
+            filepath: file.filename,
+          }),
+        })
 
-      if (!streamResponse.ok) throw new Error('获取文件流失败')
+        if (!streamResponse.ok) throw new Error('获取文件流失败')
+        blob = await streamResponse.blob()
+      }
 
-      const blob = await streamResponse.blob()
       const url = URL.createObjectURL(blob)
       
       // 清理旧的URL
@@ -387,6 +592,9 @@ export default function HomePage() {
       
       // 启动自动标记已看过的定时器（传递文件参数避免状态更新延迟）
       startAutoMarkTimer(file)
+
+      // 智能预加载下一个可能查看的文件
+      setTimeout(() => smartPreload(file), 1000)
     } catch (e: any) {
       setError(e.message)
     } finally {
@@ -452,26 +660,36 @@ export default function HomePage() {
       const randomFile = filteredFiles[Math.floor(Math.random() * filteredFiles.length)]
       setCurrentFile(randomFile)
 
-      // 获取文件流
-      const streamResponse = await fetch('/api/webdav/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...config,
-          filepath: randomFile.filename,
-        }),
-      })
+      // 尝试从预加载缓存获取
+      const preloadedBlob = preloadManager.getPreloadedFile(randomFile.filename)
+      
+      let blob: Blob
+      if (preloadedBlob) {
+        // 使用预加载的文件
+        blob = preloadedBlob
+        console.log(`使用预加载文件: ${randomFile.basename}`)
+      } else {
+        // 正常加载文件
+        const streamResponse = await fetch('/api/webdav/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...config,
+            filepath: randomFile.filename,
+          }),
+        })
 
-      if (!streamResponse.ok) throw new Error('获取文件流失败')
+        if (!streamResponse.ok) throw new Error('获取文件流失败')
+        blob = await streamResponse.blob()
+      }
 
-      const blob = await streamResponse.blob()
       const url = URL.createObjectURL(blob)
       
       // 清理旧的URL
       if (mediaUrl) {
         URL.revokeObjectURL(mediaUrl)
       }
-      debugger
+      
       setMediaUrl(url)
       
       // 加载当前文件的评分
@@ -479,6 +697,9 @@ export default function HomePage() {
       
       // 启动自动标记已看过的定时器（传递文件参数避免状态更新延迟）
       startAutoMarkTimer(randomFile)
+
+      // 智能预加载下一个可能查看的文件
+      setTimeout(() => smartPreload(randomFile), 1000)
     } catch (e: any) {
       setError(e.message)
     } finally {
@@ -1431,6 +1652,69 @@ export default function HomePage() {
 
           <Divider sx={{ mb: 3 }} />
 
+          {/* 预加载设置 */}
+          <Box sx={{ mb: 3 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+              <SpeedIcon color="primary" />
+              <Typography variant="subtitle1" fontWeight="medium">
+                预加载设置
+              </Typography>
+            </Box>
+            
+            <Stack spacing={2}>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <Typography variant="body2">启用预加载</Typography>
+                <Button
+                  size="small"
+                  variant={preloadEnabled ? "contained" : "outlined"}
+                  onClick={() => setPreloadEnabled(!preloadEnabled)}
+                >
+                  {preloadEnabled ? '已启用' : '已禁用'}
+                </Button>
+              </Box>
+              
+              {preloadStatus && (
+                <Paper variant="outlined" sx={{ p: 1.5 }}>
+                  <Typography variant="caption" color="text.secondary" display="block">
+                    缓存状态
+                  </Typography>
+                  <Typography variant="body2" fontWeight="medium">
+                    {preloadStatus.cacheSize} / {preloadStatus.maxCacheSize} 个文件
+                  </Typography>
+                </Paper>
+              )}
+              
+              {preloadProgress && (
+                <Paper variant="outlined" sx={{ p: 1.5 }}>
+                  <Typography variant="caption" color="text.secondary" display="block">
+                    {preloadProgress.message}
+                  </Typography>
+                  <Typography variant="body2" fontWeight="medium">
+                    {preloadProgress.current} / {preloadProgress.total}
+                  </Typography>
+                </Paper>
+              )}
+              
+              <Button
+                variant="outlined"
+                size="small"
+                fullWidth
+                onClick={() => {
+                  preloadManager.clearCache()
+                  setPreloadStatus(preloadManager.getCacheStatus())
+                  setSnackbarMessage('缓存已清理')
+                  setSnackbarSeverity('info')
+                  setSnackbarOpen(true)
+                }}
+                startIcon={<DownloadIcon />}
+              >
+                清理缓存
+              </Button>
+            </Stack>
+          </Box>
+
+          <Divider sx={{ mb: 3 }} />
+
           {/* 媒体类型筛选 */}
           <Box sx={{ mb: 3 }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
@@ -1517,6 +1801,30 @@ export default function HomePage() {
               </Typography>
               <Chip label={config.mediaPaths.length} size="small" color="primary" />
             </Box>
+
+            {/* 扫描状态显示 */}
+            {scanStatus && scanStatus.totalPending > 0 && (
+              <Paper variant="outlined" sx={{ p: 1.5, mb: 2, backgroundColor: 'info.light', color: 'info.contrastText' }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                  <CircularProgress size={16} color="inherit" />
+                  <Typography variant="body2" fontWeight="medium">
+                    后台扫描进行中
+                  </Typography>
+                </Box>
+                <Typography variant="caption" display="block">
+                  已完成: {scanStatus.totalScanned} 个目录
+                </Typography>
+                <Typography variant="caption" display="block">
+                  待扫描: {scanStatus.totalPending} 个目录
+                </Typography>
+                {scanStatus.pendingPaths.length > 0 && (
+                  <Typography variant="caption" display="block" sx={{ mt: 0.5 }}>
+                    待扫描: {scanStatus.pendingPaths.slice(0, 2).join(', ')}
+                    {scanStatus.pendingPaths.length > 2 && ` 等${scanStatus.pendingPaths.length}个`}
+                  </Typography>
+                )}
+              </Paper>
+            )}
 
             <List dense>
               {config.mediaPaths.map((path, index) => (

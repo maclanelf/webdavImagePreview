@@ -152,8 +152,8 @@ class Scheduler {
               password: taskData.webdav_password
             })
 
-            const mediaPaths = JSON.parse(taskData.media_paths)
-            const scanSettings = JSON.parse(taskData.scan_settings)
+            const mediaPaths = taskData.media_paths ? JSON.parse(taskData.media_paths) : []
+            const scanSettings = taskData.scan_settings ? JSON.parse(taskData.scan_settings) : {}
             
             let totalFiles = 0
             let totalImages = 0

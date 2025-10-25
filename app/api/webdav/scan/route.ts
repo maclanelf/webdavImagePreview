@@ -31,7 +31,7 @@ export async function POST(request: NextRequest) {
       const cached = scanCache.get(url, username, path) as any
       if (cached) {
         console.log(`从缓存加载扫描结果: ${path}`)
-        const filesData = JSON.parse(cached.files_data)
+        const filesData = cached.files_data ? JSON.parse(cached.files_data) : []
         return NextResponse.json({
           path,
           total: cached.total_files,
