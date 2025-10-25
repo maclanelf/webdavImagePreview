@@ -124,7 +124,7 @@ class Scheduler {
       const activeTasks = scheduledScans.getActive()
       console.log(`找到 ${activeTasks.length} 个活跃的定时扫描任务`)
 
-      const executedTasks = []
+      const executedTasks: any[] = []
 
       for (const task of activeTasks) {
         const taskData = task as any

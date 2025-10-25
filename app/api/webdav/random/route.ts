@@ -16,7 +16,7 @@ export async function POST(request: NextRequest) {
     const client = getWebDAVClient({ url, username, password })
     
     // 从所有路径获取文件
-    const allFiles = []
+    const allFiles: any[] = []
     for (const path of mediaPaths) {
       const files = await getMediaFiles(client, path)
       allFiles.push(...files)

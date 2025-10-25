@@ -24,9 +24,9 @@ export async function POST(request: NextRequest) {
     }
 
     // 尝试从缓存加载所有路径的文件
-    const allFiles = []
-    const uncachedPaths = []
-    const cachedPaths = []
+    const allFiles: any[] = []
+    const uncachedPaths: string[] = []
+    const cachedPaths: string[] = []
     
     for (const path of mediaPaths) {
       if (!forceRescan) {

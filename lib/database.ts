@@ -618,8 +618,8 @@ export const scheduledScans = {
     cronExpression?: string
     isActive?: boolean
   }) => {
-    const updates = []
-    const values = []
+    const updates: string[] = []
+    const values: any[] = []
     
     if (data.webdavUrl !== undefined) {
       updates.push('webdav_url = ?')

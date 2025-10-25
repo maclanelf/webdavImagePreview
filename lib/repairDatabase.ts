@@ -100,7 +100,8 @@ export function repairDatabase() {
             const insertStmt = db.prepare('INSERT INTO custom_evaluations (label, usage_count, created_at) VALUES (?, ?, ?)')
             for (const row of existingData) {
               try {
-                insertStmt.run(row.label || row.id, 1, row.created_at || new Date().toISOString())
+                const rowData = row as any
+                insertStmt.run(rowData.label || rowData.id, 1, rowData.created_at || new Date().toISOString())
               } catch (err) {
                 console.warn('恢复数据失败:', err)
               }
@@ -145,7 +146,8 @@ export function repairDatabase() {
             const insertStmt = db.prepare('INSERT INTO categories (name, usage_count, created_at) VALUES (?, ?, ?)')
             for (const row of existingData) {
               try {
-                insertStmt.run(row.name || row.id, 1, row.created_at || new Date().toISOString())
+                const rowData = row as any
+                insertStmt.run(rowData.name || rowData.id, 1, rowData.created_at || new Date().toISOString())
               } catch (err) {
                 console.warn('恢复数据失败:', err)
               }
@@ -184,7 +186,7 @@ function createNewDatabase() {
   console.log('新数据库创建完成')
 }
 
-function createMediaRatingsTable(db: Database) {
+function createMediaRatingsTable(db: Database.Database) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS media_ratings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -203,7 +205,7 @@ function createMediaRatingsTable(db: Database) {
   console.log('media_ratings表创建完成')
 }
 
-function createGroupRatingsTable(db: Database) {
+function createGroupRatingsTable(db: Database.Database) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS group_ratings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -222,7 +224,7 @@ function createGroupRatingsTable(db: Database) {
   console.log('group_ratings表创建完成')
 }
 
-function createCustomEvaluationsTable(db: Database) {
+function createCustomEvaluationsTable(db: Database.Database) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS custom_evaluations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -234,7 +236,7 @@ function createCustomEvaluationsTable(db: Database) {
   console.log('custom_evaluations表创建完成')
 }
 
-function createCategoriesTable(db: Database) {
+function createCategoriesTable(db: Database.Database) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS categories (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 检查哪些路径需要扫描
-    const uncachedPaths = []
+    const uncachedPaths: string[] = []
     for (const path of mediaPaths) {
       const cached = scanCache.get(url, username, path) as any
       if (!cached) {
@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({
           success: true,
           message: '扫描任务正在进行中',
-          scannedPaths: mediaPaths.filter(p => !uncachedPaths.includes(p)),
+          scannedPaths: mediaPaths.filter((p: string) => !uncachedPaths.includes(p)),
           pendingPaths: uncachedPaths,
           taskId: runningTask.taskId,
           taskRunning: true
@@ -88,9 +88,9 @@ export async function POST(request: NextRequest) {
           path,
           scanType: 'recursive',
           status: 'completed',
-          fileCount: result.files.length,
-          imageCount: result.images,
-          videoCount: result.videos
+          totalFiles: result.files.length,
+          imageCount: result.imageCount,
+          videoCount: result.videoCount
         })
 
         return { path, success: true, result }
@@ -104,10 +104,10 @@ export async function POST(request: NextRequest) {
           path,
           scanType: 'recursive',
           status: 'failed',
-          error: error.message
+          errorMessage: (error as Error).message
         })
 
-        return { path, success: false, error: error.message }
+        return { path, success: false, error: (error as Error).message }
       }
     })
 
@@ -129,7 +129,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       message: `已启动 ${pathsToScan.length} 个路径的后台扫描`,
-      scannedPaths: mediaPaths.filter(p => !pathsToScan.includes(p)),
+      scannedPaths: mediaPaths.filter((p: string) => !pathsToScan.includes(p)),
       pendingPaths: pathsToScan,
       taskId,
       scanStarted: true
@@ -161,7 +161,14 @@ export async function GET(request: NextRequest) {
     }
 
     // 检查各路径的扫描状态
-    const pathStatus = []
+    const pathStatus: Array<{
+      path: string;
+      scanned: boolean;
+      fileCount: number;
+      imageCount: number;
+      videoCount: number;
+      lastScan: string | null;
+    }> = []
     for (const path of mediaPaths) {
       const cached = scanCache.get(url, username, path) as any
       pathStatus.push({
@@ -174,14 +181,14 @@ export async function GET(request: NextRequest) {
       })
     }
 
-    const scannedPaths = pathStatus.filter(p => p.scanned)
-    const pendingPaths = pathStatus.filter(p => !p.scanned)
+    const scannedPaths = pathStatus.filter((p: any) => p.scanned)
+    const pendingPaths = pathStatus.filter((p: any) => !p.scanned)
 
     return NextResponse.json({
       success: true,
       pathStatus,
-      scannedPaths: scannedPaths.map(p => p.path),
-      pendingPaths: pendingPaths.map(p => p.path),
+      scannedPaths: scannedPaths.map((p: any) => p.path),
+      pendingPaths: pendingPaths.map((p: any) => p.path),
       totalScanned: scannedPaths.length,
       totalPending: pendingPaths.length
     })
