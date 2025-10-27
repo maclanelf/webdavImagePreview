@@ -8,18 +8,32 @@ class PreloadManager {
   }>()
   
   private queue = new Set<string>()
-  private maxCacheSize = 20
+  private maxCacheSize = 10
   private maxVideoSize = 100 * 1024 * 1024 // 100MB
   private cacheExpireTime = 5 * 60 * 1000 // 5分钟
+  private viewedFiles = new Set<string>() // 已观看的文件路径（缓存）
+
+  // 设置缓存大小
+  setMaxCacheSize(size: number) {
+    this.maxCacheSize = size
+  }
 
   // 预加载文件列表
-  async preloadFiles(config: any, files: any[], count: number = 20): Promise<{
+  async preloadFiles(config: any, files: any[], count: number = 10): Promise<{
     successCount: number
     failedCount: number
     message: string
   }> {
-    // 筛选符合条件的文件
+    // 从数据库获取已看过的文件列表
+    await this.loadViewedFilesFromDatabase()
+    
+    // 筛选符合条件的文件（排除已观看的文件）
     const eligibleFiles = files.filter(file => {
+      // 排除已观看的文件
+      if (this.viewedFiles.has(file.filename)) {
+        return false
+      }
+      
       const isImage = /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(file.basename)
       const isVideo = /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(file.basename)
       
@@ -181,26 +195,175 @@ class PreloadManager {
     }
   }
 
+  // 获取所有缓存的文件路径
+  getCachedFilepaths(): string[] {
+    return Array.from(this.cache.keys())
+  }
+
+  // 从缓存中随机获取文件
+  getRandomCachedFile(): string | null {
+    const cachedPaths = this.getCachedFilepaths()
+    if (cachedPaths.length === 0) return null
+    
+    const randomIndex = Math.floor(Math.random() * cachedPaths.length)
+    return cachedPaths[randomIndex]
+  }
+
+  // 从数据库加载已看过的文件列表
+  private async loadViewedFilesFromDatabase(): Promise<void> {
+    try {
+      const response = await fetch('/api/ratings/viewed?viewed=true')
+      if (response.ok) {
+        const data = await response.json()
+        this.viewedFiles.clear()
+        data.filePaths.forEach((filePath: string) => {
+          this.viewedFiles.add(filePath)
+        })
+        console.log(`从数据库加载已看过文件: ${data.count} 个`)
+      }
+    } catch (error) {
+      console.error('从数据库加载已看过文件失败:', error)
+    }
+  }
+
+  // 标记文件为已观看
+  async markAsViewed(filepath: string): Promise<void> {
+    // 更新内存缓存
+    this.viewedFiles.add(filepath)
+    
+    // 更新数据库
+    try {
+      const response = await fetch('/api/ratings/viewed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filePath: filepath,
+          isViewed: true
+        })
+      })
+      
+      if (!response.ok) {
+        console.error('更新数据库已看过状态失败:', filepath)
+      }
+    } catch (error) {
+      console.error('更新数据库已看过状态失败:', error)
+    }
+  }
+
+  // 检查文件是否已观看
+  isViewed(filepath: string): boolean {
+    return this.viewedFiles.has(filepath)
+  }
+
+  // 从缓存中移除文件
+  removeFromCache(filepath: string) {
+    const cached = this.cache.get(filepath)
+    if (cached) {
+      URL.revokeObjectURL(cached.url)
+      this.cache.delete(filepath)
+      console.log(`从缓存中移除: ${filepath}`)
+    }
+  }
+
+  // 清除已观看记录
+  clearViewedFiles() {
+    this.viewedFiles.clear()
+  }
+
   // 智能预加载 - 根据当前文件预测下一个可能查看的文件
-  async smartPreload(config: any, allFiles: any[], currentFile: any, count: number = 10): Promise<void> {
+  async smartPreload(config: any, allFiles: any[], currentFile: any, maxCount: number = 10, viewedFilter: string = 'unviewed'): Promise<void> {
     if (!currentFile) return
 
-    // 获取当前文件所在目录的其他文件
+    // 从数据库获取已看过的文件列表
+    await this.loadViewedFilesFromDatabase()
+
+    // 计算需要预加载的文件数量（考虑当前缓存状态）
+    const currentCacheSize = this.cache.size
+    const needCount = Math.max(0, maxCount - currentCacheSize)
+    
+    if (needCount <= 0) {
+      console.log('缓存已满，无需智能预加载')
+      return
+    }
+
+    console.log(`智能预加载：当前缓存 ${currentCacheSize} 个，需要补齐 ${needCount} 个，筛选条件: ${viewedFilter}`)
+
+    // 根据筛选条件过滤文件
+    const filteredFiles = allFiles.filter(file => {
+      if (viewedFilter === 'viewed') {
+        return this.viewedFiles.has(file.filename)
+      } else if (viewedFilter === 'unviewed') {
+        return !this.viewedFiles.has(file.filename)
+      }
+      return true // viewedFilter === 'all'
+    })
+
+    // 获取当前文件所在目录的其他文件（排除当前文件和已缓存的）
     const currentDir = currentFile.filename.substring(0, currentFile.filename.lastIndexOf('/'))
-    const dirFiles = allFiles.filter(file => 
-      file.filename.startsWith(currentDir) && file.filename !== currentFile.filename
+    const cachedPaths = this.getCachedFilepaths()
+    
+    const dirFiles = filteredFiles.filter(file => 
+      file.filename.startsWith(currentDir) && 
+      file.filename !== currentFile.filename &&
+      !cachedPaths.includes(file.filename)
     )
 
-    // 如果目录内文件不够，从其他目录随机选择
-    const remainingCount = count - dirFiles.length
+    // 如果目录内文件不够，从其他目录随机选择（排除已缓存的）
+    const remainingCount = needCount - dirFiles.length
     if (remainingCount > 0) {
-      const otherFiles = allFiles.filter(file => !file.filename.startsWith(currentDir))
+      const otherFiles = filteredFiles.filter(file => 
+        !file.filename.startsWith(currentDir) &&
+        !cachedPaths.includes(file.filename)
+      )
       const randomFiles = [...otherFiles].sort(() => Math.random() - 0.5).slice(0, remainingCount)
       dirFiles.push(...randomFiles)
     }
 
-    // 预加载这些文件
-    await this.preloadFiles(config, dirFiles.slice(0, count), count)
+    // 只预加载需要的数量
+    const filesToPreload = dirFiles.slice(0, needCount)
+    if (filesToPreload.length > 0) {
+      await this.preloadFiles(config, filesToPreload, filesToPreload.length)
+    }
+  }
+
+  // 自动补齐缓存到目标数量
+  async refillCache(config: any, allFiles: any[], targetCount: number = 10, viewedFilter: string = 'unviewed'): Promise<void> {
+    // 从数据库获取已看过的文件列表
+    await this.loadViewedFilesFromDatabase()
+    
+    const currentCacheSize = this.cache.size
+    if (currentCacheSize >= targetCount) {
+      console.log('缓存已满，无需补齐')
+      return // 缓存已满，无需补齐
+    }
+
+    const needCount = targetCount - currentCacheSize
+    console.log(`缓存不足，需要补齐 ${needCount} 个文件，筛选条件: ${viewedFilter}`)
+
+    // 根据筛选条件过滤文件
+    const filteredFiles = allFiles.filter(file => {
+      if (viewedFilter === 'viewed') {
+        return this.viewedFiles.has(file.filename)
+      } else if (viewedFilter === 'unviewed') {
+        return !this.viewedFiles.has(file.filename)
+      }
+      return true // viewedFilter === 'all'
+    })
+
+    // 过滤出未缓存的文件
+    const cachedPaths = this.getCachedFilepaths()
+    const availableFiles = filteredFiles.filter(file => 
+      !cachedPaths.includes(file.filename)
+    )
+
+    if (availableFiles.length === 0) {
+      console.log('没有可用的文件进行补齐')
+      return
+    }
+
+    // 只预加载需要的数量
+    const filesToPreload = availableFiles.slice(0, needCount)
+    await this.preloadFiles(config, filesToPreload, filesToPreload.length)
   }
 }
 

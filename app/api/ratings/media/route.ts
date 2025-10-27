@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { mediaRatings, ensureInitialized } from '@/lib/database'
+import { mediaRatings, customEvaluations, categories, ensureInitialized } from '@/lib/database'
 
 // 辅助函数：解析JSON字段
 function parseRatingData(rating: any) {
@@ -7,12 +7,14 @@ function parseRatingData(rating: any) {
   
   return {
     ...rating,
-    custom_evaluation: rating.custom_evaluation 
+    recommendationReason: rating.recommendation_reason,
+    customEvaluation: rating.custom_evaluation 
       ? tryParseJSON(rating.custom_evaluation)
       : undefined,
     category: rating.category
       ? tryParseJSON(rating.category)
-      : undefined
+      : undefined,
+    isViewed: rating.is_viewed === 1 // 将数据库的布尔值转换为JavaScript布尔值
   }
 }
 
@@ -34,12 +36,17 @@ export async function GET(request: NextRequest) {
 
     if (filePath) {
       // 获取单个媒体评分
+      const fileName = filePath.split('/').pop() || filePath
+      console.log(`🔍 [API GET] 获取媒体评分: ${fileName}`)
       const rating = mediaRatings.get(filePath)
+      console.log(`✅ [API GET] 评分获取完成: ${fileName}`)
       return NextResponse.json({ rating: parseRatingData(rating) })
     } else {
       // 获取所有媒体评分
+      console.log(`🔍 [API GET] 获取所有媒体评分`)
       const ratings = mediaRatings.getAll()
       const parsedRatings = ratings.map(parseRatingData)
+      console.log(`✅ [API GET] 所有评分获取完成，共 ${parsedRatings.length} 条`)
       return NextResponse.json({ ratings: parsedRatings })
     }
   } catch (error: any) {
@@ -67,7 +74,10 @@ export async function POST(request: NextRequest) {
       isViewed
     } = body
 
+    console.log(`💾 [API POST] 保存媒体评分: ${fileName} (${rating}星)`)
+
     if (!filePath || !fileName || !fileType) {
+      console.log(`❌ [API POST] 缺少必要参数: ${fileName}`)
       return NextResponse.json(
         { error: '缺少必要参数' },
         { status: 400 }
@@ -84,6 +94,28 @@ export async function POST(request: NextRequest) {
       category,
       isViewed
     })
+
+    // 更新自定义评价标签的使用计数
+    if (customEvaluation) {
+      const evaluations = Array.isArray(customEvaluation) ? customEvaluation : [customEvaluation]
+      evaluations.forEach(evaluation => {
+        if (typeof evaluation === 'string' && evaluation.trim()) {
+          customEvaluations.add(evaluation.trim())
+        }
+      })
+    }
+
+    // 更新分类的使用计数
+    if (category) {
+      const categoriesList = Array.isArray(category) ? category : [category]
+      categoriesList.forEach(cat => {
+        if (typeof cat === 'string' && cat.trim()) {
+          categories.add(cat.trim())
+        }
+      })
+    }
+
+    console.log(`✅ [API POST] 评分保存成功: ${fileName} (ID: ${result.lastInsertRowid})`)
 
     return NextResponse.json({ 
       success: true, 

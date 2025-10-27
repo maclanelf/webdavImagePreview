@@ -64,6 +64,7 @@ interface WebDAVConfig {
   mediaPaths: string[]
   scanSettings?: {
     batchSize?: number
+    preloadCount?: number
   }
 }
 
@@ -78,6 +79,7 @@ interface MediaFile {
 
 type MediaFilter = 'all' | 'images' | 'videos'
 type ViewMode = 'random' | 'gallery' // random: 随机模式, gallery: 图组模式
+type ViewedFilter = 'all' | 'viewed' | 'unviewed' // 已看过筛选
 
 interface MediaGroup {
   folderPath: string
@@ -109,6 +111,7 @@ export default function HomePage() {
   const [mediaUrl, setMediaUrl] = useState<string | null>(null)
   const [stats, setStats] = useState({ total: 0, images: 0, videos: 0 })
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all')
+  const [viewedFilter, setViewedFilter] = useState<ViewedFilter>('unviewed') // 默认只显示未看过的
   const [allFiles, setAllFiles] = useState<MediaFile[]>([])
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [fullscreen, setFullscreen] = useState(false)
@@ -129,6 +132,9 @@ export default function HomePage() {
     totalScanned: number, 
     totalPending: number 
   } | null>(null)
+  
+  // 已看过文件状态
+  const [viewedFiles, setViewedFiles] = useState<Set<string>>(new Set())
   
   // 评分相关状态
   const [ratingDialogOpen, setRatingDialogOpen] = useState(false)
@@ -190,7 +196,43 @@ export default function HomePage() {
     if (savedFilter && (savedFilter === 'all' || savedFilter === 'images' || savedFilter === 'videos')) {
       setMediaFilter(savedFilter as MediaFilter)
     }
+
+    // 加载保存的已看过筛选偏好
+    const savedViewedFilter = localStorage.getItem('viewed_filter')
+    if (savedViewedFilter && (savedViewedFilter === 'all' || savedViewedFilter === 'viewed' || savedViewedFilter === 'unviewed')) {
+      setViewedFilter(savedViewedFilter as ViewedFilter)
+    }
+
+    // 加载已看过文件列表
+    loadViewedFiles()
   }, [])
+
+  // 当文件列表和已看过文件都加载完成后，触发预加载
+  useEffect(() => {
+    if (allFiles.length > 0 && viewedFiles.size >= 0 && preloadEnabled && config) {
+      const preloadCount = config.scanSettings?.preloadCount || 10
+      preloadManager.refillCache(config, allFiles, preloadCount, viewedFilter).then(() => {
+        setPreloadStatus(preloadManager.getCacheStatus())
+        console.log(`文件列表加载完成后预加载完成，筛选条件: ${viewedFilter}`)
+      }).catch(error => {
+        console.warn('文件列表加载完成后预加载失败:', error)
+      })
+    }
+  }, [allFiles.length, viewedFiles.size, viewedFilter, preloadEnabled, config])
+
+  // 加载已看过文件列表
+  const loadViewedFiles = async () => {
+    try {
+      const response = await fetch('/api/ratings/viewed?viewed=true')
+      if (response.ok) {
+        const data = await response.json()
+        setViewedFiles(new Set(data.filePaths))
+        console.log(`加载已看过文件: ${data.count} 个`)
+      }
+    } catch (error) {
+      console.error('加载已看过文件失败:', error)
+    }
+  }
 
   const loadStatsFromCache = async (cfg: WebDAVConfig) => {
     setLoading(true)
@@ -380,6 +422,12 @@ export default function HomePage() {
   const loadStats = async (cfg: WebDAVConfig, forceRescan = false) => {
     setLoading(true)
     
+    // 如果是强制重新扫描，清除已观看记录
+    if (forceRescan) {
+      preloadManager.clearViewedFiles()
+      console.log('已清除观看记录')
+    }
+    
     // 只有在强制重新扫描时才显示扫描进度
     if (forceRescan) {
       setScanProgress({ currentPath: '开始扫描...', fileCount: 0 })
@@ -450,10 +498,15 @@ export default function HomePage() {
   const startPreload = async (cfg: WebDAVConfig, files: MediaFile[]) => {
     if (!preloadEnabled) return
 
-    setPreloadProgress({ current: 0, total: 20, message: '开始预加载...' })
+    // 从配置中获取预加载数量，默认为10
+    const preloadCount = cfg.scanSettings?.preloadCount || 10
+    setPreloadProgress({ current: 0, total: preloadCount, message: '开始预加载...' })
+    
+    // 设置预加载管理器缓存大小
+    preloadManager.setMaxCacheSize(preloadCount)
     
     try {
-      const result = await preloadManager.preloadFiles(cfg, files, 20)
+      const result = await preloadManager.preloadFiles(cfg, files, preloadCount)
       
       setPreloadProgress(null)
       setPreloadStatus(preloadManager.getCacheStatus())
@@ -480,20 +533,70 @@ export default function HomePage() {
     if (!preloadEnabled || !config) return
 
     try {
-      await preloadManager.smartPreload(config, allFiles, currentFile, 10)
+      // 从配置中获取预加载数量，默认为10
+      const preloadCount = config.scanSettings?.preloadCount || 10
+      await preloadManager.smartPreload(config, allFiles, currentFile, preloadCount, viewedFilter)
       setPreloadStatus(preloadManager.getCacheStatus())
     } catch (error) {
       console.error('智能预加载失败:', error)
     }
   }
 
-  const getFilteredFiles = () => {
-    if (mediaFilter === 'images') {
-      return allFiles.filter(f => /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(f.basename))
-    } else if (mediaFilter === 'videos') {
-      return allFiles.filter(f => /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(f.basename))
+  // 标记当前文件为已观看并从缓存中移除，然后补齐缓存（后台异步进行）
+  const markFileAsViewedAndRefill = async (file: MediaFile) => {
+    if (!preloadEnabled || !config) return
+
+    try {
+      // 立即标记为已观看并从缓存中移除（同步操作，不阻塞）
+      await preloadManager.markAsViewed(file.filename)
+      preloadManager.removeFromCache(file.filename)
+      
+      // 更新本地状态
+      setViewedFiles(prev => new Set([...prev, file.filename]))
+      
+      console.log(`已标记为观看: ${file.basename}，开始后台补齐缓存`)
+      
+      // 更新缓存状态（立即更新UI）
+      setPreloadStatus(preloadManager.getCacheStatus())
+      
+      // 后台异步补齐缓存
+      const preloadCount = config.scanSettings?.preloadCount || 10
+      await preloadManager.refillCache(config, allFiles, preloadCount, viewedFilter)
+      
+      // 补齐完成后再次更新状态
+      setPreloadStatus(preloadManager.getCacheStatus())
+      console.log(`缓存补齐完成: ${file.basename}`)
+      
+      // 检查缓存是否为空，如果为空则重新预加载
+      const cachedFilepaths = preloadManager.getCachedFilepaths()
+      if (cachedFilepaths.length === 0) {
+        console.log('缓存为空，重新启动预加载')
+        await startPreload(config, allFiles)
+      }
+    } catch (error) {
+      console.error('标记已观看失败:', error)
     }
-    return allFiles
+  }
+
+  const getFilteredFiles = () => {
+    let filtered = allFiles
+
+    // 按媒体类型筛选
+    if (mediaFilter === 'images') {
+      filtered = filtered.filter(f => /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(f.basename))
+    } else if (mediaFilter === 'videos') {
+      filtered = filtered.filter(f => /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(f.basename))
+    }
+
+    // 按已看过状态筛选
+    if (viewedFilter === 'viewed') {
+      filtered = filtered.filter(f => viewedFiles.has(f.filename))
+    } else if (viewedFilter === 'unviewed') {
+      filtered = filtered.filter(f => !viewedFiles.has(f.filename))
+    }
+    // viewedFilter === 'all' 时不进行筛选
+
+    return filtered
   }
 
   // 按文件夹分组
@@ -620,18 +723,28 @@ export default function HomePage() {
         await saveRating(currentRating, currentFile)
       }
       
-      // 保存成功后切换
+      // 立即切换，不等待补齐缓存
       switchCallback()
+      setIsSwitching(false)
+      
+      // 标记当前文件为已观看并补齐缓存（随机模式下）- 后台异步进行
+      if (currentFile && viewMode === 'random') {
+        // 不等待补齐完成，让它在后台进行
+        markFileAsViewedAndRefill(currentFile).catch(error => {
+          console.error('后台补齐缓存失败:', error)
+        })
+      }
     } catch (error) {
       console.error('保存评分失败:', error)
       // 即使保存失败也继续切换，避免卡住
       switchCallback()
-    } finally {
-      // 延迟重置切换状态，防止连续点击
-      setTimeout(() => {
-        setIsSwitching(false)
-      }, 500)
+      setIsSwitching(false)
     }
+    
+    // 500ms 后重置状态作为兜底策略，防止某些情况下状态未正确重置
+    setTimeout(() => {
+      setIsSwitching(false)
+    }, 500)
   }
 
   // 图组模式：下一张
@@ -678,17 +791,68 @@ export default function HomePage() {
   }
 
   const loadRandomFile = async () => {
-    const filteredFiles = getFilteredFiles()
+    console.log(`[DEBUG] loadRandomFile 开始，当前筛选条件: ${viewedFilter}`)
+    console.log(`[DEBUG] 已看过文件数量: ${viewedFiles.size}`)
+    console.log(`[DEBUG] 缓存文件数量: ${preloadManager.getCachedFilepaths().length}`)
     
-    if (filteredFiles.length === 0) {
-      const errorMsg = allFiles.length === 0 
-        ? '请先扫描媒体文件，点击"重新扫描"按钮'
-        : (mediaFilter === 'images' 
-            ? '没有找到图片文件' 
-            : mediaFilter === 'videos'
-            ? '没有找到视频文件'
-            : '未找到任何媒体文件')
-      setError(errorMsg)
+    // 先尝试从预加载缓存中获取符合筛选条件的文件
+    const cachedPaths = preloadManager.getCachedFilepaths()
+    const filteredCachedFiles = cachedPaths.filter(filePath => {
+      const file = allFiles.find(f => f.filename === filePath)
+      if (!file) return false
+      
+      // 检查媒体类型筛选
+      const isImage = /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(file.basename)
+      const isVideo = /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(file.basename)
+      
+      if (mediaFilter === 'images' && !isImage) return false
+      if (mediaFilter === 'videos' && !isVideo) return false
+      
+      // 检查已看过状态筛选
+      if (viewedFilter === 'viewed' && !viewedFiles.has(file.filename)) return false
+      if (viewedFilter === 'unviewed' && viewedFiles.has(file.filename)) return false
+      
+      return true
+    })
+    
+    console.log(`[DEBUG] 符合条件的缓存文件数量: ${filteredCachedFiles.length}`)
+    
+    let fileToLoad: MediaFile | null = null
+    
+    if (filteredCachedFiles.length > 0) {
+      // 从符合条件的缓存文件中随机选择一个
+      const randomCachedPath = filteredCachedFiles[Math.floor(Math.random() * filteredCachedFiles.length)]
+      fileToLoad = allFiles.find(f => f.filename === randomCachedPath) || null
+      console.log(`[DEBUG] 从预加载缓存中选择文件: ${fileToLoad?.basename}`)
+    } else {
+      console.log(`[DEBUG] 缓存中没有符合条件的文件，从所有文件中选择`)
+      // 如果缓存中没有符合条件的文件，从所有符合条件的文件中随机选择一个
+      const filteredFiles = getFilteredFiles()
+      
+      if (filteredFiles.length === 0) {
+        const filterMsg = viewedFilter === 'viewed' ? '已看过' : 
+                         viewedFilter === 'unviewed' ? '未看过' : '全部'
+        const mediaMsg = mediaFilter === 'images' ? '图片' : 
+                        mediaFilter === 'videos' ? '视频' : '媒体'
+        setError(`没有找到符合条件的${mediaMsg}文件（${filterMsg}）`)
+        return
+      }
+      
+      const randomIndex = Math.floor(Math.random() * filteredFiles.length)
+      fileToLoad = filteredFiles[randomIndex]
+      console.log(`[DEBUG] 从筛选文件中选择文件: ${fileToLoad.basename}`)
+      
+      // 如果选中的文件不在缓存中，异步预加载它（不等待）
+      if (!cachedPaths.includes(fileToLoad.filename)) {
+        console.log(`[DEBUG] 文件 ${fileToLoad.basename} 不在缓存中，开始异步预加载...`)
+        preloadManager.preloadFiles(config, [fileToLoad], 1).catch(error => {
+          console.warn('异步预加载失败:', error)
+        })
+      }
+    }
+    
+    if (!fileToLoad) {
+      setError('随机选择文件失败')
       return
     }
 
@@ -699,18 +863,16 @@ export default function HomePage() {
     setError(null)
 
     try {
-      // 从筛选后的文件中随机选择
-      const randomFile = filteredFiles[Math.floor(Math.random() * filteredFiles.length)]
-      setCurrentFile(randomFile)
+      setCurrentFile(fileToLoad)
 
-      // 尝试从预加载缓存获取
-      const preloadedBlob = preloadManager.getPreloadedFile(randomFile.filename)
+      // 尝试从预加载缓存获取（如果文件在缓存中）
+      const preloadedBlob = preloadManager.getPreloadedFile(fileToLoad.filename)
       
       let blob: Blob
       if (preloadedBlob) {
         // 使用预加载的文件
         blob = preloadedBlob
-        console.log(`使用预加载文件: ${randomFile.basename}`)
+        console.log(`使用预加载文件: ${fileToLoad.basename}`)
       } else {
         // 正常加载文件
         const streamResponse = await fetch('/api/webdav/stream', {
@@ -718,7 +880,7 @@ export default function HomePage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             ...config,
-            filepath: randomFile.filepath || randomFile.filename,
+            filepath: fileToLoad.filepath || fileToLoad.filename,
           }),
         })
 
@@ -736,13 +898,13 @@ export default function HomePage() {
       setMediaUrl(url)
       
       // 加载当前文件的评分
-      await loadCurrentRating(randomFile)
+      await loadCurrentRating(fileToLoad)
       
       // 启动自动标记已看过的定时器（传递文件参数避免状态更新延迟）
-      startAutoMarkTimer(randomFile)
+      startAutoMarkTimer(fileToLoad)
 
       // 智能预加载下一个可能查看的文件
-      setTimeout(() => smartPreload(randomFile), 1000)
+      setTimeout(() => smartPreload(fileToLoad), 1000)
     } catch (e: any) {
       setError(e.message)
     } finally {
@@ -768,6 +930,34 @@ export default function HomePage() {
     }
   }
 
+  const handleViewedFilterChange = (event: React.MouseEvent<HTMLElement>, newFilter: ViewedFilter | null) => {
+    if (newFilter !== null) {
+      setViewedFilter(newFilter)
+      localStorage.setItem('viewed_filter', newFilter)
+      
+      // 如果当前显示的文件不符合新筛选条件，清空显示
+      if (currentFile) {
+        const isViewed = viewedFiles.has(currentFile.filename)
+        
+        if ((newFilter === 'viewed' && !isViewed) || (newFilter === 'unviewed' && isViewed)) {
+          setCurrentFile(null)
+          setMediaUrl(null)
+        }
+      }
+      
+      // 异步预加载符合新筛选条件的文件
+      if (preloadEnabled && config) {
+        const preloadCount = config.scanSettings?.preloadCount || 10
+        preloadManager.refillCache(config, allFiles, preloadCount, newFilter).then(() => {
+          setPreloadStatus(preloadManager.getCacheStatus())
+          console.log(`切换筛选条件后缓存补齐完成: ${newFilter}`)
+        }).catch(error => {
+          console.warn('切换筛选条件后缓存补齐失败:', error)
+        })
+      }
+    }
+  }
+
   const isImage = (filename: string) => {
     return /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(filename)
   }
@@ -783,12 +973,14 @@ export default function HomePage() {
   }
 
   const getFilteredStats = () => {
+    const filteredFiles = getFilteredFiles()
+    
     if (mediaFilter === 'images') {
-      return { total: stats.images, label: '图片' }
+      return { total: filteredFiles.length, label: '图片' }
     } else if (mediaFilter === 'videos') {
-      return { total: stats.videos, label: '视频' }
+      return { total: filteredFiles.length, label: '视频' }
     }
-    return { total: stats.total, label: '全部' }
+    return { total: filteredFiles.length, label: '全部' }
   }
 
   const toggleDrawer = (open: boolean) => () => {
@@ -810,10 +1002,55 @@ export default function HomePage() {
     // 不清空 currentRating，保持显示数据库中的实际评分状态
   }
 
-  const saveRating = async (data: MediaRating | GroupRating, file?: MediaFile) => {
+  // 加载指定媒体文件的评分（用于图组模式）
+  const loadMediaRating = useCallback(async (filePath: string) => {
+    try {
+      // 确保评分类型为媒体
+      setRatingType('media')
+      
+      const response = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(filePath)}`)
+      if (response.ok) {
+        const data = await response.json()
+        setCurrentRating(data.rating || null)
+      } else {
+        setCurrentRating(null)
+      }
+    } catch (error) {
+      console.error('加载媒体评分失败:', error)
+      setCurrentRating(null)
+    }
+  }, [])
+
+  const loadCurrentRating = useCallback(async (file?: MediaFile) => {
+    const targetFile = file || currentFile
+    if (!targetFile && currentGroup.length === 0) return
+
+    try {
+      if (ratingType === 'media' && targetFile) {
+        const response = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(targetFile.filename)}`)
+        if (response.ok) {
+          const data = await response.json()
+          setCurrentRating(data.rating || null)
+        }
+      } else if (ratingType === 'group' && currentGroup.length > 0) {
+        const groupPath = getGroupPath(currentGroup[0].filename)
+        const response = await fetch(`/api/ratings/group?groupPath=${encodeURIComponent(groupPath)}`)
+        if (response.ok) {
+          const data = await response.json()
+          setCurrentRating(data.rating || null)
+        }
+      }
+    } catch (error) {
+      console.error('加载评分失败:', error)
+    }
+  }, [currentFile, ratingType, currentGroup])
+
+  const saveRating = useCallback(async (data: MediaRating | GroupRating, file?: MediaFile) => {
     try {
       const targetFile = file || currentFile
-      if (ratingType === 'media' && targetFile) {
+      
+      // 如果有传入文件，优先使用媒体评分
+      if (targetFile) {
         const response = await fetch('/api/ratings/media', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -858,47 +1095,8 @@ export default function HomePage() {
     } catch (error: any) {
       throw new Error(error.message)
     }
-  }
+  }, [currentFile, ratingType, currentGroup, loadMediaRating, loadCurrentRating])
 
-  const loadCurrentRating = async (file?: MediaFile) => {
-    const targetFile = file || currentFile
-    if (!targetFile && currentGroup.length === 0) return
-
-    try {
-      if (ratingType === 'media' && targetFile) {
-        const response = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(targetFile.filename)}`)
-        if (response.ok) {
-          const data = await response.json()
-          setCurrentRating(data.rating || null)
-        }
-      } else if (ratingType === 'group' && currentGroup.length > 0) {
-        const groupPath = getGroupPath(currentGroup[0].filename)
-        const response = await fetch(`/api/ratings/group?groupPath=${encodeURIComponent(groupPath)}`)
-        if (response.ok) {
-          const data = await response.json()
-          setCurrentRating(data.rating || null)
-        }
-      }
-    } catch (error) {
-      console.error('加载评分失败:', error)
-    }
-  }
-
-  // 加载指定媒体文件的评分（用于图组模式）
-  const loadMediaRating = async (filePath: string) => {
-    try {
-      const response = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(filePath)}`)
-      if (response.ok) {
-        const data = await response.json()
-        setCurrentRating(data.rating || null)
-      } else {
-        setCurrentRating(null)
-      }
-    } catch (error) {
-      console.error('加载媒体评分失败:', error)
-      setCurrentRating(null)
-    }
-  }
 
   // 获取图组路径
   const getGroupPath = (filePath: string): string => {
@@ -924,6 +1122,9 @@ export default function HomePage() {
       }
 
       await saveRating(ratingData)
+      
+      // 更新本地已看过状态
+      setViewedFiles(prev => new Set([...prev, currentFile.filename]))
       
       // 评分已保存，状态会在 saveRating 中自动更新
       
@@ -977,7 +1178,12 @@ export default function HomePage() {
 
       await saveRating(autoRatingData, targetFile)
       
-      // 评分已保存，状态会在 saveRating 中自动更新
+      // 更新本地已看过状态
+      setViewedFiles(prev => new Set([...prev, targetFile.filename]))
+      
+      // 确保评分状态已更新
+      console.log(`自动评分完成: ${targetFile.basename}`)
+      console.log('当前评分状态:', currentRating)
     } catch (error) {
       console.error('自动标记已看过失败:', error)
     }
@@ -1750,6 +1956,39 @@ export default function HomePage() {
                 清理缓存
               </Button>
             </Stack>
+          </Box>
+
+          <Divider sx={{ mb: 3 }} />
+
+          {/* 已看过筛选 */}
+          <Box sx={{ mb: 3 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+              <StarIcon color="primary" />
+              <Typography variant="subtitle1" fontWeight="medium">
+                已看过状态
+              </Typography>
+            </Box>
+            
+            <ToggleButtonGroup
+              value={viewedFilter}
+              exclusive
+              onChange={handleViewedFilterChange}
+              orientation="vertical"
+              fullWidth
+            >
+              <ToggleButton value="unviewed">
+                <StarIcon sx={{ mr: 1 }} />
+                未看过 ({allFiles.filter(f => !viewedFiles.has(f.filename)).length})
+              </ToggleButton>
+              <ToggleButton value="viewed">
+                <StarIcon sx={{ mr: 1, color: 'gold' }} />
+                已看过 ({viewedFiles.size})
+              </ToggleButton>
+              <ToggleButton value="all">
+                <PhotoLibraryIcon sx={{ mr: 1 }} />
+                全部 ({allFiles.length})
+              </ToggleButton>
+            </ToggleButtonGroup>
           </Box>
 
           <Divider sx={{ mb: 3 }} />

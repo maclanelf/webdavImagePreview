@@ -59,6 +59,7 @@ interface WebDAVConfig {
   mediaPaths: string[]
   scanSettings?: {
     batchSize?: number
+    preloadCount?: number
   }
 }
 
@@ -85,7 +86,8 @@ export default function ConfigPage() {
     password: '',
     mediaPaths: ['/'],
     scanSettings: {
-      batchSize: 10
+      batchSize: 10,
+      preloadCount: 10
     }
   })
   const [showPassword, setShowPassword] = useState(false)
@@ -662,11 +664,27 @@ export default function ConfigPage() {
               onChange={(e) => setConfig({
                 ...config,
                 scanSettings: {
+                  ...config.scanSettings,
                   batchSize: parseInt(e.target.value) || 10
                 }
               })}
               helperText="每次处理的文件数量，影响扫描速度和内存使用"
               inputProps={{ min: 5, max: 50 }}
+              sx={{ flex: 1 }}
+            />
+            <TextField
+              label="预加载数量"
+              type="number"
+              value={config.scanSettings?.preloadCount || 10}
+              onChange={(e) => setConfig({
+                ...config,
+                scanSettings: {
+                  ...config.scanSettings,
+                  preloadCount: parseInt(e.target.value) || 10
+                }
+              })}
+              helperText="预加载缓存的文件数量，影响浏览流畅度"
+              inputProps={{ min: 5, max: 30 }}
               sx={{ flex: 1 }}
             />
           </Box>
