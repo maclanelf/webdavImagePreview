@@ -12,6 +12,7 @@ class PreloadManager {
   private maxVideoSize = 100 * 1024 * 1024 // 100MB
   private cacheExpireTime = 5 * 60 * 1000 // 5分钟
   private viewedFiles = new Set<string>() // 已观看的文件路径（缓存）
+  private localViewedFiles = new Set<string>() // 本地已观看的文件路径（用于已看过模式）
 
   // 设置缓存大小
   setMaxCacheSize(size: number) {
@@ -19,7 +20,7 @@ class PreloadManager {
   }
 
   // 预加载文件列表
-  async preloadFiles(config: any, files: any[], count: number = 10): Promise<{
+  async preloadFiles(config: any, files: any[], count: number = 10, viewedFilter: string = 'unviewed'): Promise<{
     successCount: number
     failedCount: number
     message: string
@@ -27,12 +28,21 @@ class PreloadManager {
     // 从数据库获取已看过的文件列表
     await this.loadViewedFilesFromDatabase()
     
-    // 筛选符合条件的文件（排除已观看的文件）
+    // 筛选符合条件的文件（根据viewedFilter参数决定是否包含已观看的文件）
     const eligibleFiles = files.filter(file => {
-      // 排除已观看的文件
-      if (this.viewedFiles.has(file.filename)) {
-        return false
+      // 根据筛选条件决定是否包含已观看的文件
+      if (viewedFilter === 'viewed') {
+        // 只选择已看过的文件
+        if (!this.viewedFiles.has(file.filename)) {
+          return false
+        }
+      } else if (viewedFilter === 'unviewed') {
+        // 只选择未看过的文件
+        if (this.viewedFiles.has(file.filename)) {
+          return false
+        }
       }
+      // viewedFilter === 'all' 时不进行已看过状态筛选
       
       const isImage = /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(file.basename)
       const isVideo = /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(file.basename)
@@ -270,6 +280,30 @@ class PreloadManager {
     this.viewedFiles.clear()
   }
 
+  // 本地已看过文件管理（用于已看过模式）
+  addLocalViewedFile(filepath: string) {
+    this.localViewedFiles.add(filepath)
+  }
+
+  // 检查文件是否在本地已看过
+  isLocalViewed(filepath: string): boolean {
+    return this.localViewedFiles.has(filepath)
+  }
+
+  // 清除本地已看过记录
+  clearLocalViewedFiles() {
+    this.localViewedFiles.clear()
+  }
+
+  // 获取本地已看过的文件数量
+  getLocalViewedCount(): number {
+    return this.localViewedFiles.size
+  }
+
+  getLocalViewed(): number {
+    return this.localViewedFiles
+  }
+
   // 智能预加载 - 根据当前文件预测下一个可能查看的文件
   async smartPreload(config: any, allFiles: any[], currentFile: any, maxCount: number = 10, viewedFilter: string = 'unviewed'): Promise<void> {
     if (!currentFile) return
@@ -322,7 +356,7 @@ class PreloadManager {
     // 只预加载需要的数量
     const filesToPreload = dirFiles.slice(0, needCount)
     if (filesToPreload.length > 0) {
-      await this.preloadFiles(config, filesToPreload, filesToPreload.length)
+      await this.preloadFiles(config, filesToPreload, filesToPreload.length, viewedFilter)
     }
   }
 
@@ -350,20 +384,40 @@ class PreloadManager {
       return true // viewedFilter === 'all'
     })
 
-    // 过滤出未缓存的文件
-    const cachedPaths = this.getCachedFilepaths()
-    const availableFiles = filteredFiles.filter(file => 
-      !cachedPaths.includes(file.filename)
-    )
+    // 在已看过模式下，使用本地已看过记录来管理缓存
+    if (viewedFilter === 'viewed') {
+      const cachedPaths = this.getCachedFilepaths()
+      
+      // 从未缓存且未在本地标记为已看过的文件中选择
+      const availableFiles = filteredFiles.filter(file => 
+        !cachedPaths.includes(file.filename) && 
+        !this.localViewedFiles.has(file.filename)
+      )
 
-    if (availableFiles.length === 0) {
-      console.log('没有可用的文件进行补齐')
-      return
+      if (availableFiles.length === 0) {
+        console.log('已看过模式下：所有文件都已缓存或已看过，无法补齐')
+        return
+      }
+
+      // 只预加载需要的数量
+      const filesToPreload = availableFiles.slice(0, needCount)
+      await this.preloadFiles(config, filesToPreload, filesToPreload.length, viewedFilter)
+    } else {
+      // 其他模式使用原有逻辑
+      const cachedPaths = this.getCachedFilepaths()
+      const availableFiles = filteredFiles.filter(file => 
+        !cachedPaths.includes(file.filename)
+      )
+
+      if (availableFiles.length === 0) {
+        console.log('没有可用的文件进行补齐')
+        return
+      }
+
+      // 只预加载需要的数量
+      const filesToPreload = availableFiles.slice(0, needCount)
+      await this.preloadFiles(config, filesToPreload, filesToPreload.length, viewedFilter)
     }
-
-    // 只预加载需要的数量
-    const filesToPreload = availableFiles.slice(0, needCount)
-    await this.preloadFiles(config, filesToPreload, filesToPreload.length)
   }
 }
 

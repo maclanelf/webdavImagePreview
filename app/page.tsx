@@ -506,7 +506,7 @@ export default function HomePage() {
     preloadManager.setMaxCacheSize(preloadCount)
     
     try {
-      const result = await preloadManager.preloadFiles(cfg, files, preloadCount)
+      const result = await preloadManager.preloadFiles(cfg, files, preloadCount, viewedFilter)
       
       setPreloadProgress(null)
       setPreloadStatus(preloadManager.getCacheStatus())
@@ -547,31 +547,60 @@ export default function HomePage() {
     if (!preloadEnabled || !config) return
 
     try {
-      // 立即标记为已观看并从缓存中移除（同步操作，不阻塞）
-      await preloadManager.markAsViewed(file.filename)
-      preloadManager.removeFromCache(file.filename)
-      
-      // 更新本地状态
-      setViewedFiles(prev => new Set([...prev, file.filename]))
-      
-      console.log(`已标记为观看: ${file.basename}，开始后台补齐缓存`)
-      
-      // 更新缓存状态（立即更新UI）
-      setPreloadStatus(preloadManager.getCacheStatus())
-      
-      // 后台异步补齐缓存
-      const preloadCount = config.scanSettings?.preloadCount || 10
-      await preloadManager.refillCache(config, allFiles, preloadCount, viewedFilter)
-      
-      // 补齐完成后再次更新状态
-      setPreloadStatus(preloadManager.getCacheStatus())
-      console.log(`缓存补齐完成: ${file.basename}`)
-      
-      // 检查缓存是否为空，如果为空则重新预加载
-      const cachedFilepaths = preloadManager.getCachedFilepaths()
-      if (cachedFilepaths.length === 0) {
-        console.log('缓存为空，重新启动预加载')
-        await startPreload(config, allFiles)
+      // 在已看过模式下，使用本地管理，不向数据库同步
+      if (viewedFilter === 'viewed') {
+        
+        console.log(`已标记为本地观看: ${file.basename}，开始补齐缓存`)
+        
+        // 更新缓存状态（立即更新UI）
+        setPreloadStatus(preloadManager.getCacheStatus())
+        
+        // 检查是否所有已看过的文件都已看过
+        const totalViewedFiles = allFiles.filter(f => viewedFiles.has(f.filename)).length
+        const localViewedCount = preloadManager.getLocalViewedCount()
+        
+        if (localViewedCount >= totalViewedFiles) {
+          console.log('所有已看过的文件都已看过，提示用户重新观看')
+          setSnackbarMessage('🎉 所有已看过的文件都已看完！点击"重新观看"按钮重新开始')
+          setSnackbarSeverity('success')
+          setSnackbarOpen(true)
+          return
+        }
+        
+        // 后台异步补齐缓存
+        const preloadCount = config.scanSettings?.preloadCount || 10
+        await preloadManager.refillCache(config, allFiles, preloadCount, viewedFilter)
+        
+        // 补齐完成后再次更新状态
+        setPreloadStatus(preloadManager.getCacheStatus())
+        console.log(`缓存补齐完成: ${file.basename}`)
+        
+      } else {
+        // 其他模式使用原有逻辑
+        await preloadManager.markAsViewed(file.filename)
+        
+        // 更新本地状态
+        setViewedFiles(prev => new Set([...prev, file.filename]))
+        
+        console.log(`已标记为观看: ${file.basename}，开始后台补齐缓存`)
+        
+        // 更新缓存状态（立即更新UI）
+        setPreloadStatus(preloadManager.getCacheStatus())
+        
+        // 后台异步补齐缓存
+        const preloadCount = config.scanSettings?.preloadCount || 10
+        await preloadManager.refillCache(config, allFiles, preloadCount, viewedFilter)
+        
+        // 补齐完成后再次更新状态
+        setPreloadStatus(preloadManager.getCacheStatus())
+        console.log(`缓存补齐完成: ${file.basename}`)
+        
+        // 检查缓存是否为空，如果为空则重新预加载
+        const cachedFilepaths = preloadManager.getCachedFilepaths()
+        if (cachedFilepaths.length === 0) {
+          console.log('缓存为空，重新启动预加载')
+          await startPreload(config, allFiles)
+        }
       }
     } catch (error) {
       console.error('标记已观看失败:', error)
@@ -719,15 +748,24 @@ export default function HomePage() {
       stopAutoMarkTimer()
       
       // 如果当前有评分数据且当前文件存在，先保存
-      if (currentRating && currentFile) {
+      /* if (currentRating && currentFile) {
         await saveRating(currentRating, currentFile)
+      } */
+      
+      // 先标记当前文件为已观看（在切换之前）
+      if (currentFile && viewMode === 'random') {
+        // 无论什么模式，都添加到本地已看过记录（用于当前会话管理）
+        preloadManager.addLocalViewedFile(currentFile.filename)
+        
+        // 所有模式都从缓存中移除已看过的文件
+        preloadManager.removeFromCache(currentFile.filename)
       }
       
       // 立即切换，不等待补齐缓存
       switchCallback()
       setIsSwitching(false)
       
-      // 标记当前文件为已观看并补齐缓存（随机模式下）- 后台异步进行
+      // 后台异步补齐缓存
       if (currentFile && viewMode === 'random') {
         // 不等待补齐完成，让它在后台进行
         markFileAsViewedAndRefill(currentFile).catch(error => {
@@ -812,10 +850,14 @@ export default function HomePage() {
       if (viewedFilter === 'viewed' && !viewedFiles.has(file.filename)) return false
       if (viewedFilter === 'unviewed' && viewedFiles.has(file.filename)) return false
       
+      // 排除本地已看过的文件（所有模式都适用）
+      if (preloadManager.isLocalViewed(file.filename)) return false
+      
       return true
     })
     
     console.log(`[DEBUG] 符合条件的缓存文件数量: ${filteredCachedFiles.length}`)
+    console.log(`[DEBUG] 本地已看过文件数量: ${preloadManager.getLocalViewedCount()}`)
     
     let fileToLoad: MediaFile | null = null
     
@@ -845,7 +887,7 @@ export default function HomePage() {
       // 如果选中的文件不在缓存中，异步预加载它（不等待）
       if (!cachedPaths.includes(fileToLoad.filename)) {
         console.log(`[DEBUG] 文件 ${fileToLoad.basename} 不在缓存中，开始异步预加载...`)
-        preloadManager.preloadFiles(config, [fileToLoad], 1).catch(error => {
+        preloadManager.preloadFiles(config, [fileToLoad], 1, viewedFilter).catch(error => {
           console.warn('异步预加载失败:', error)
         })
       }
@@ -875,6 +917,7 @@ export default function HomePage() {
         console.log(`使用预加载文件: ${fileToLoad.basename}`)
       } else {
         // 正常加载文件
+        console.log('正在使用正常加载...')
         const streamResponse = await fetch('/api/webdav/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -935,6 +978,11 @@ export default function HomePage() {
       setViewedFilter(newFilter)
       localStorage.setItem('viewed_filter', newFilter)
       
+      // 如果切换到已看过模式，清除本地已看过记录
+      if (newFilter === 'viewed') {
+        preloadManager.clearLocalViewedFiles()
+      }
+      
       // 如果当前显示的文件不符合新筛选条件，清空显示
       if (currentFile) {
         const isViewed = viewedFiles.has(currentFile.filename)
@@ -956,6 +1004,29 @@ export default function HomePage() {
         })
       }
     }
+  }
+
+  // 重新观看已看过的文件
+  const restartViewedMode = async () => {
+    if (!config) return
+    
+    // 清除本地已看过记录
+    preloadManager.clearLocalViewedFiles()
+    
+    // 清空当前显示
+    setCurrentFile(null)
+    setMediaUrl(null)
+    
+    // 重新预加载已看过的文件
+    if (preloadEnabled) {
+      const preloadCount = config.scanSettings?.preloadCount || 10
+      await preloadManager.refillCache(config, allFiles, preloadCount, 'viewed')
+      setPreloadStatus(preloadManager.getCacheStatus())
+    }
+    
+    setSnackbarMessage('🔄 已重新开始观看已看过的文件')
+    setSnackbarSeverity('info')
+    setSnackbarOpen(true)
   }
 
   const isImage = (filename: string) => {
@@ -1989,6 +2060,31 @@ export default function HomePage() {
                 全部 ({allFiles.length})
               </ToggleButton>
             </ToggleButtonGroup>
+            
+            {/* 已看过模式下的重新观看按钮 */}
+            {viewedFilter === 'viewed' && (
+              <Box sx={{ mt: 2 }}>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  fullWidth
+                  onClick={restartViewedMode}
+                  startIcon={<RefreshIcon />}
+                  sx={{ 
+                    backgroundColor: 'warning.light',
+                    color: 'warning.contrastText',
+                    '&:hover': {
+                      backgroundColor: 'warning.main',
+                    }
+                  }}
+                >
+                  重新观看已看过的文件
+                </Button>
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1, textAlign: 'center' }}>
+                  已本地观看: {preloadManager.getLocalViewedCount()} / {allFiles.filter(f => viewedFiles.has(f.filename)).length}
+                </Typography>
+              </Box>
+            )}
           </Box>
 
           <Divider sx={{ mb: 3 }} />
