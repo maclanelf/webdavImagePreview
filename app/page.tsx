@@ -116,6 +116,9 @@ export default function HomePage() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [fullscreen, setFullscreen] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('random')
+  
+  // 用于追踪配置变化，只在关闭抽屉时检查是否需要重新加载
+  const configSnapshotRef = useRef<{ mediaFilter: MediaFilter, viewedFilter: ViewedFilter, viewMode: ViewMode } | null>(null)
   const [currentGroup, setCurrentGroup] = useState<MediaFile[]>([])
   const [currentGroupIndex, setCurrentGroupIndex] = useState(0)
   const [scanProgress, setScanProgress] = useState<{ currentPath: string, fileCount: number } | null>(null)
@@ -145,6 +148,7 @@ export default function HomePage() {
   const [viewStartTime, setViewStartTime] = useState<number | null>(null)
   const [autoMarkTimer, setAutoMarkTimer] = useState<NodeJS.Timeout | null>(null)
   const hasAutoRatedRef = useRef(false) // 使用 ref 避免闭包陷阱,追踪当前文件是否已自动评分
+  const initialPreloadTriggeredRef = useRef(false) // 追踪初始预加载是否已触发
   
   // 切换状态，防止连续快速点击
   const [isSwitching, setIsSwitching] = useState(false)
@@ -203,22 +207,43 @@ export default function HomePage() {
       setViewedFilter(savedViewedFilter as ViewedFilter)
     }
 
+    // 加载保存的浏览模式偏好
+    const savedViewMode = localStorage.getItem('view_mode')
+    if (savedViewMode && (savedViewMode === 'random' || savedViewMode === 'gallery')) {
+      setViewMode(savedViewMode as ViewMode)
+      // 预加载将在第二个useEffect中根据viewMode统一处理
+    }
+
     // 加载已看过文件列表
     loadViewedFiles()
   }, [])
 
-  // 当文件列表和已看过文件都加载完成后，触发预加载
+  // 当文件列表和已看过文件都加载完成后，触发初始预加载
+  // 注意：配置变化时的预加载由 toggleDrawer 处理
   useEffect(() => {
-    if (allFiles.length > 0 && viewedFiles.size >= 0 && preloadEnabled && config) {
+    if (allFiles.length > 0 && viewedFiles.size >= 0 && preloadEnabled && config && !initialPreloadTriggeredRef.current) {
+      initialPreloadTriggeredRef.current = true
       const preloadCount = config.scanSettings?.preloadCount || 10
-      preloadManager.refillCache(config, allFiles, preloadCount, viewedFilter).then(() => {
-        setPreloadStatus(preloadManager.getCacheStatus())
-        console.log(`文件列表加载完成后预加载完成，筛选条件: ${viewedFilter}`)
-      }).catch(error => {
-        console.warn('文件列表加载完成后预加载失败:', error)
-      })
+      
+      if (viewMode === 'gallery') {
+        // 图组模式：使用图组模式专用预加载
+        preloadManager.preloadForGalleryMode(config, allFiles, preloadCount, viewedFilter).then((result) => {
+          setPreloadStatus(preloadManager.getCacheStatus())
+          console.log(`图组模式初始预加载完成: ${result.message}`)
+        }).catch(error => {
+          console.warn('图组模式初始预加载失败:', error)
+        })
+      } else {
+        // 随机模式：使用随机预加载
+        preloadManager.refillCache(config, allFiles, preloadCount, viewedFilter).then(() => {
+          setPreloadStatus(preloadManager.getCacheStatus())
+          console.log(`随机模式初始预加载完成，筛选条件: ${viewedFilter}`)
+        }).catch(error => {
+          console.warn('随机模式初始预加载失败:', error)
+        })
+      }
     }
-  }, [allFiles.length, viewedFiles.size, viewedFilter, preloadEnabled, config])
+  }, [allFiles.length, viewedFiles.size, preloadEnabled, config])
 
   // 加载已看过文件列表
   const loadViewedFiles = async () => {
@@ -335,11 +360,8 @@ export default function HomePage() {
         console.log('启动后台扫描:', data.pendingPaths)
         startBackgroundScan(cfg, data.pendingPaths)
       }
-
-      // 如果启用了预加载，开始预加载
-      if (preloadEnabled && files.length > 0) {
-        startPreload(cfg, files)
-      }
+      
+      // 预加载将在第二个useEffect中根据viewMode统一处理
     } catch (e: any) {
       console.error('增量加载失败:', e)
       // 如果增量加载失败，回退到正常加载
@@ -478,10 +500,7 @@ export default function HomePage() {
         console.log('重新扫描完成')
       }
 
-      // 如果启用了预加载，开始预加载
-      if (preloadEnabled && files.length > 0) {
-        startPreload(cfg, files)
-      }
+      // 预加载将在第二个useEffect中根据viewMode统一处理
     } catch (e: any) {
       console.error('加载统计信息失败:', e)
       setError(`加载统计信息失败: ${e.message}`)
@@ -542,6 +561,24 @@ export default function HomePage() {
     }
   }
 
+  // 为图组模式重新加载缓存
+  const reloadCacheForGalleryMode = async () => {
+    if (!preloadEnabled || !config) return
+
+    try {
+      console.log('[DEBUG] 图组模式：清除现有缓存并重新加载')
+      
+      // 使用预加载管理器的图组模式优化方法
+      const preloadCount = config.scanSettings?.preloadCount || 10
+      const result = await preloadManager.preloadForGalleryMode(config, allFiles, preloadCount, viewedFilter)
+      
+      setPreloadStatus(preloadManager.getCacheStatus())
+      console.log(`[DEBUG] 图组模式：缓存重新加载完成 - ${result.message}`)
+    } catch (error) {
+      console.error('图组模式缓存重新加载失败:', error)
+    }
+  }
+
   // 标记当前文件为已观看并从缓存中移除，然后补齐缓存（后台异步进行）
   const markFileAsViewedAndRefill = async (file: MediaFile) => {
     if (!preloadEnabled || !config) return
@@ -589,7 +626,14 @@ export default function HomePage() {
         
         // 后台异步补齐缓存
         const preloadCount = config.scanSettings?.preloadCount || 10
-        await preloadManager.refillCache(config, allFiles, preloadCount, viewedFilter)
+        
+        if (viewMode === 'gallery') {
+          // 图组模式：使用图组模式专用预加载
+          await preloadManager.preloadForGalleryMode(config, allFiles, preloadCount, viewedFilter)
+        } else {
+          // 随机模式：使用随机预加载
+          await preloadManager.refillCache(config, allFiles, preloadCount, viewedFilter)
+        }
         
         // 补齐完成后再次更新状态
         setPreloadStatus(preloadManager.getCacheStatus())
@@ -599,7 +643,11 @@ export default function HomePage() {
         const cachedFilepaths = preloadManager.getCachedFilepaths()
         if (cachedFilepaths.length === 0) {
           console.log('缓存为空，重新启动预加载')
-          await startPreload(config, allFiles)
+          if (viewMode === 'gallery') {
+            await preloadManager.preloadForGalleryMode(config, allFiles, preloadCount, viewedFilter)
+          } else {
+            await startPreload(config, allFiles)
+          }
         }
       }
     } catch (error) {
@@ -650,6 +698,8 @@ export default function HomePage() {
 
   // 随机选择一个图组
   const loadRandomGroup = () => {
+    console.log(`[DEBUG] loadRandomGroup 开始，当前筛选条件: ${viewedFilter}`)
+    
     const filteredFiles = getFilteredFiles()
     
     if (filteredFiles.length === 0) {
@@ -664,13 +714,27 @@ export default function HomePage() {
       return
     }
     
+    console.log(`[DEBUG] 找到 ${groups.length} 个图组`)
+    
     // 随机选择一个图组（优先选择文件多的）
     const randomGroup = groups[Math.floor(Math.random() * Math.min(groups.length, 20))]
     setCurrentGroup(randomGroup.files)
     setCurrentGroupIndex(0)
     
+    console.log(`[DEBUG] 选择图组: ${randomGroup.folderPath}, 包含 ${randomGroup.files.length} 个文件`)
+    
     // 加载该组的第一个文件
     loadFileFromGroup(randomGroup.files, 0)
+    
+    // 异步预加载当前图组的所有文件（延迟执行，避免阻塞UI）
+    if (preloadEnabled && config) {
+      // 延迟500ms执行，确保UI已经响应
+      setTimeout(() => {
+        preloadManager.preloadCurrentGroup(config, randomGroup.files, viewedFilter).catch(error => {
+          console.error('预加载当前图组失败:', error)
+        })
+      }, 500)
+    }
   }
 
   // 加载图组中的指定文件
@@ -695,9 +759,10 @@ export default function HomePage() {
       if (preloadedBlob) {
         // 使用预加载的文件
         blob = preloadedBlob
-        console.log(`使用预加载文件: ${file.basename}`)
+        console.log(`[DEBUG] 图组模式使用预加载文件: ${file.basename}`)
       } else {
         // 正常加载文件
+        console.log(`[DEBUG] 图组模式文件不在预加载缓存中，正常加载: ${file.basename}`)
         const streamResponse = await fetch('/api/webdav/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -709,6 +774,17 @@ export default function HomePage() {
 
         if (!streamResponse.ok) throw new Error('获取文件流失败')
         blob = await streamResponse.blob()
+        
+        // 将新加载的文件添加到缓存中（如果缓存未满）
+        if (preloadEnabled && config) {
+          const cacheStatus = preloadManager.getCacheStatus()
+          if (cacheStatus.cacheSize < cacheStatus.maxCacheSize) {
+            // 异步添加到缓存
+            preloadManager.preloadFiles(config, [file], 1, viewedFilter).catch(error => {
+              console.warn('添加文件到缓存失败:', error)
+            })
+          }
+        }
       }
 
       const url = URL.createObjectURL(blob)
@@ -993,16 +1069,7 @@ export default function HomePage() {
         }
       }
       
-      // 异步预加载符合新筛选条件的文件
-      if (preloadEnabled && config) {
-        const preloadCount = config.scanSettings?.preloadCount || 10
-        preloadManager.refillCache(config, allFiles, preloadCount, newFilter).then(() => {
-          setPreloadStatus(preloadManager.getCacheStatus())
-          console.log(`切换筛选条件后缓存补齐完成: ${newFilter}`)
-        }).catch(error => {
-          console.warn('切换筛选条件后缓存补齐失败:', error)
-        })
-      }
+      // 预加载将在关闭抽屉时根据配置变化统一处理
     }
   }
 
@@ -1020,7 +1087,15 @@ export default function HomePage() {
     // 重新预加载已看过的文件
     if (preloadEnabled) {
       const preloadCount = config.scanSettings?.preloadCount || 10
-      await preloadManager.refillCache(config, allFiles, preloadCount, 'viewed')
+      
+      if (viewMode === 'gallery') {
+        // 图组模式：使用图组模式专用预加载
+        await preloadManager.preloadForGalleryMode(config, allFiles, preloadCount, 'viewed')
+      } else {
+        // 随机模式：使用随机预加载
+        await preloadManager.refillCache(config, allFiles, preloadCount, 'viewed')
+      }
+      
       setPreloadStatus(preloadManager.getCacheStatus())
     }
     
@@ -1055,6 +1130,51 @@ export default function HomePage() {
   }
 
   const toggleDrawer = (open: boolean) => () => {
+    if (open) {
+      // 打开抽屉时，保存当前配置快照
+      configSnapshotRef.current = { mediaFilter, viewedFilter, viewMode }
+    } else {
+      // 关闭抽屉时，检查配置是否变化
+      const hasConfigChanged = configSnapshotRef.current && (
+        configSnapshotRef.current.mediaFilter !== mediaFilter ||
+        configSnapshotRef.current.viewedFilter !== viewedFilter ||
+        configSnapshotRef.current.viewMode !== viewMode
+      )
+      
+      if (hasConfigChanged) {
+        console.log('配置已变化，准备重新加载')
+        // 清空当前显示，页面回到初始化状态
+        setCurrentFile(null)
+        setMediaUrl(null)
+        setCurrentGroup([])
+        setCurrentGroupIndex(0)
+        
+        // 触发预加载重新加载
+        if (preloadEnabled && config && allFiles.length > 0) {
+          const preloadCount = config.scanSettings?.preloadCount || 10
+          
+          if (viewMode === 'gallery') {
+            // 图组模式：使用图组模式专用预加载
+            preloadManager.preloadForGalleryMode(config, allFiles, preloadCount, viewedFilter).then((result) => {
+              setPreloadStatus(preloadManager.getCacheStatus())
+              console.log(`配置变化后图组模式预加载完成: ${result.message}`)
+            }).catch(error => {
+              console.warn('配置变化后图组模式预加载失败:', error)
+            })
+          } else {
+            // 随机模式：配置变化时先清空缓存，然后重新预加载
+            preloadManager.clearCache()
+            preloadManager.refillCache(config, allFiles, preloadCount, viewedFilter).then(() => {
+              setPreloadStatus(preloadManager.getCacheStatus())
+              console.log(`配置变化后随机模式预加载完成，筛选条件: ${viewedFilter}`)
+            }).catch(error => {
+              console.warn('配置变化后随机模式预加载失败:', error)
+            })
+          }
+        }
+      }
+    }
+    
     setDrawerOpen(open)
   }
 
@@ -1868,11 +1988,14 @@ export default function HomePage() {
               onChange={(e, newMode) => {
                 if (newMode) {
                   setViewMode(newMode)
+                  localStorage.setItem('view_mode', newMode)
+                  
                   // 切换到图组模式时，清空当前组
                   if (newMode === 'gallery') {
                     setCurrentGroup([])
                     setCurrentGroupIndex(0)
                   }
+                  // 预加载将在关闭抽屉时根据配置变化统一处理
                 }
               }}
               orientation="vertical"

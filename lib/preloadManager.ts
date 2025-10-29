@@ -300,10 +300,6 @@ class PreloadManager {
     return this.localViewedFiles.size
   }
 
-  getLocalViewed(): number {
-    return this.localViewedFiles
-  }
-
   // 智能预加载 - 根据当前文件预测下一个可能查看的文件
   async smartPreload(config: any, allFiles: any[], currentFile: any, maxCount: number = 10, viewedFilter: string = 'unviewed'): Promise<void> {
     if (!currentFile) return
@@ -358,6 +354,118 @@ class PreloadManager {
     if (filesToPreload.length > 0) {
       await this.preloadFiles(config, filesToPreload, filesToPreload.length, viewedFilter)
     }
+  }
+
+  // 为图组模式优化的预加载方法
+  async preloadForGalleryMode(config: any, allFiles: any[], count: number = 10, viewedFilter: string = 'unviewed'): Promise<{
+    successCount: number
+    failedCount: number
+    message: string
+  }> {
+    console.log(`[DEBUG] 图组模式预加载：目标数量 ${count}，筛选条件 ${viewedFilter}`)
+    
+    // 清除现有缓存
+    this.clearCache()
+    
+    // 从数据库获取已看过的文件列表
+    await this.loadViewedFilesFromDatabase()
+    
+    // 筛选符合条件的文件
+    const eligibleFiles = allFiles.filter(file => {
+      // 根据筛选条件决定是否包含已观看的文件
+      if (viewedFilter === 'viewed') {
+        if (!this.viewedFiles.has(file.filename)) {
+          return false
+        }
+      } else if (viewedFilter === 'unviewed') {
+        if (this.viewedFiles.has(file.filename)) {
+          return false
+        }
+      }
+      
+      const isImage = /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(file.basename)
+      const isVideo = /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(file.basename)
+      
+      if (isImage) return true
+      if (isVideo && file.size <= this.maxVideoSize) return true
+      return false
+    })
+
+    if (eligibleFiles.length === 0) {
+      return {
+        successCount: 0,
+        failedCount: 0,
+        message: '未找到符合条件的媒体文件'
+      }
+    }
+
+    // 图组模式专用策略：优先预加载文件多的图组
+    const groups = this.groupFilesByFolder(eligibleFiles)
+    
+    // 按文件数量排序，优先预加载文件多的图组
+    const sortedGroups = groups.sort((a, b) => b.files.length - a.files.length)
+    
+    // 选择前几个图组进行预加载
+    const filesToPreload: any[] = []
+    for (const group of sortedGroups) {
+      if (filesToPreload.length >= count) break
+      
+      // 从每个图组中选择文件（优先选择前几个）
+      const groupFilesToAdd = group.files.slice(0, Math.min(3, count - filesToPreload.length))
+      filesToPreload.push(...groupFilesToAdd)
+    }
+    
+    console.log(`[DEBUG] 图组模式预加载：选择了 ${filesToPreload.length} 个文件，来自 ${sortedGroups.length} 个图组`)
+    
+    // 开始预加载
+    const preloadPromises = filesToPreload.map(file => this.preloadFile(config, file))
+    const results = await Promise.allSettled(preloadPromises)
+
+    const successCount = results.filter(result => result.status === 'fulfilled').length
+    const failedCount = results.filter(result => result.status === 'rejected').length
+
+    return {
+      successCount,
+      failedCount,
+      message: `图组模式预加载完成：成功 ${successCount} 个，失败 ${failedCount} 个`
+    }
+  }
+
+  // 按文件夹分组（图组模式专用）
+  private groupFilesByFolder(files: any[]): Array<{folderPath: string, files: any[]}> {
+    const groups = new Map<string, any[]>()
+    
+    files.forEach(file => {
+      const folderPath = file.filename.substring(0, file.filename.lastIndexOf('/'))
+      
+      if (!groups.has(folderPath)) {
+        groups.set(folderPath, [])
+      }
+      groups.get(folderPath)!.push(file)
+    })
+    
+    return Array.from(groups.entries())
+      .map(([folderPath, files]) => ({ folderPath, files }))
+      .sort((a, b) => b.files.length - a.files.length)
+  }
+
+  // 智能预加载当前图组
+  async preloadCurrentGroup(config: any, currentGroup: any[], viewedFilter: string = 'unviewed'): Promise<void> {
+    if (!currentGroup || currentGroup.length === 0) return
+
+    console.log(`[DEBUG] 智能预加载当前图组：${currentGroup.length} 个文件`)
+    
+    // 限制预加载数量，避免阻塞UI
+    const maxPreloadCount = Math.min(currentGroup.length, 5) // 最多预加载5个文件
+    const filesToPreload = currentGroup.slice(0, maxPreloadCount)
+    
+    console.log(`[DEBUG] 实际预加载：${filesToPreload.length} 个文件（限制最大5个）`)
+    
+    // 预加载当前图组中的文件（限制数量）
+    const preloadPromises = filesToPreload.map(file => this.preloadFile(config, file))
+    await Promise.allSettled(preloadPromises)
+    
+    console.log(`[DEBUG] 当前图组预加载完成`)
   }
 
   // 自动补齐缓存到目标数量
