@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getWebDAVClient, recursiveScanDirectory } from '@/lib/webdav'
 import { scanCache } from '@/lib/database'
 import { writeScanLog } from '@/lib/scanLogger'
+import { scanTaskManager } from '@/lib/scanTaskManager'
 
 // 存储扫描进度（实际应用中应该使用Redis等）
 const scanProgressMap = new Map<string, any>()
@@ -50,6 +51,20 @@ export async function POST(request: NextRequest) {
 
     const client = getWebDAVClient({ url, username, password })
     const scanProgressId = progressId || `scan_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+
+    // 检查是否有相同的扫描任务正在进行
+    if (scanTaskManager.isTaskRunning(url, username, [path])) {
+      const runningTask = scanTaskManager.getRunningTask(url, username, [path])
+      return NextResponse.json({
+        success: true,
+        message: '扫描任务正在进行中',
+        taskId: runningTask?.taskId,
+        taskRunning: true
+      })
+    }
+
+    // 启动扫描任务
+    const taskId = scanTaskManager.startTask(url, username, [path])
 
     // 记录扫描开始日志
     writeScanLog({
@@ -129,6 +144,9 @@ export async function POST(request: NextRequest) {
       // 清理进度映射
       scanProgressMap.delete(scanProgressId)
 
+      // 标记任务完成
+      scanTaskManager.completeTask(taskId)
+
       return NextResponse.json({
         path,
         total: result.totalFiles,
@@ -140,7 +158,8 @@ export async function POST(request: NextRequest) {
           fromCache: false,
           duration: duration
         },
-        files: filesData
+        files: filesData,
+        taskId
       })
 
     } catch (error: any) {
@@ -163,6 +182,9 @@ export async function POST(request: NextRequest) {
 
       // 清理进度映射
       scanProgressMap.delete(scanProgressId)
+      
+      // 标记任务失败
+      scanTaskManager.failTask(taskId, error.message)
       
       console.error('递归扫描失败:', error)
       return NextResponse.json(

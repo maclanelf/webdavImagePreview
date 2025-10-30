@@ -3,6 +3,7 @@ import { scheduledScans } from '@/lib/database'
 import { getWebDAVClient, recursiveScanDirectory } from '@/lib/webdav'
 import { scanCache } from '@/lib/database'
 import { writeScanLog } from '@/lib/scanLogger'
+import { scanTaskManager } from '@/lib/scanTaskManager'
 
 interface ScheduledTask {
   id: number
@@ -49,6 +50,20 @@ export async function POST(request: NextRequest) {
 
     const mediaPaths = task.media_paths ? JSON.parse(task.media_paths) : []
     const scanSettings = task.scan_settings ? JSON.parse(task.scan_settings) : {}
+    
+    // 检查是否有相同的扫描任务正在进行
+    if (scanTaskManager.isTaskRunning(task.webdav_url, task.webdav_username, mediaPaths)) {
+      const runningTask = scanTaskManager.getRunningTask(task.webdav_url, task.webdav_username, mediaPaths)
+      return NextResponse.json({
+        success: true,
+        message: '定时扫描任务正在进行中',
+        taskId: runningTask?.taskId,
+        taskRunning: true
+      })
+    }
+
+    // 启动扫描任务
+    const taskId = scanTaskManager.startTask(task.webdav_url, task.webdav_username, mediaPaths)
     
     let totalFiles = 0
     let totalImages = 0
@@ -153,6 +168,9 @@ export async function POST(request: NextRequest) {
     // 更新任务最后运行时间
     scheduledScans.updateLastRun(taskId)
 
+    // 标记扫描任务完成
+    scanTaskManager.completeTask(taskId)
+
     return NextResponse.json({
       message: '定时扫描执行成功',
       result: {
@@ -160,9 +178,15 @@ export async function POST(request: NextRequest) {
         totalImages,
         totalVideos,
         scannedPaths: mediaPaths.length
-      }
+      },
+      taskId
     })
   } catch (error: any) {
+    // 如果任务已启动，标记为失败
+    if (typeof taskId !== 'undefined') {
+      scanTaskManager.failTask(taskId, error.message)
+    }
+    
     console.error('执行定时扫描失败:', error)
     return NextResponse.json(
       { error: `执行定时扫描失败: ${error.message}` },

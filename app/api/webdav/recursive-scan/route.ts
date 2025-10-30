@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getWebDAVClient, recursiveScanDirectory } from '@/lib/webdav'
 import { scanCache } from '@/lib/database'
 import { writeScanLog } from '@/lib/scanLogger'
+import { scanTaskManager } from '@/lib/scanTaskManager'
 
 export async function POST(request: NextRequest) {
   try {
@@ -28,6 +29,20 @@ export async function POST(request: NextRequest) {
     if (forceRescan) {
       scanCache.delete(url, username, path)
     }
+
+    // 检查是否有相同的扫描任务正在进行
+    if (scanTaskManager.isTaskRunning(url, username, [path])) {
+      const runningTask = scanTaskManager.getRunningTask(url, username, [path])
+      return NextResponse.json({
+        success: true,
+        message: '扫描任务正在进行中',
+        taskId: runningTask?.taskId,
+        taskRunning: true
+      })
+    }
+
+    // 启动扫描任务
+    const taskId = scanTaskManager.startTask(url, username, [path])
 
     // 记录扫描开始日志
     writeScanLog({
@@ -94,6 +109,9 @@ export async function POST(request: NextRequest) {
         ].join('\n')
       })
 
+      // 标记任务完成
+      scanTaskManager.completeTask(taskId)
+
       return NextResponse.json({
         success: true,
         message: '递归扫描完成',
@@ -102,7 +120,8 @@ export async function POST(request: NextRequest) {
           imageCount: result.imageCount,
           videoCount: result.videoCount,
           duration: duration
-        }
+        },
+        taskId
       })
 
     } catch (error: any) {
@@ -123,6 +142,9 @@ export async function POST(request: NextRequest) {
         ].join('\n') : `扫描失败: ${error.message}`
       })
 
+      // 标记任务失败
+      scanTaskManager.failTask(taskId, error.message)
+      
       console.error('递归扫描失败:', error)
       return NextResponse.json(
         { error: `递归扫描失败: ${error.message}` },

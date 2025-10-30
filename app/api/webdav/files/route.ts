@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getWebDAVClient, recursiveScanDirectory } from '@/lib/webdav'
 import { scanCache } from '@/lib/database'
 import { writeScanLog } from '@/lib/scanLogger'
+import { scanTaskManager } from '@/lib/scanTaskManager'
 
 export async function POST(request: NextRequest) {
   try {
@@ -70,7 +71,27 @@ export async function POST(request: NextRequest) {
     if (uncachedPaths.length > 0) {
       const client = getWebDAVClient({ url, username, password })
       
-      for (const path of uncachedPaths) {
+      // 检查是否有相同的扫描任务正在进行
+      const pathsToScan = scanTaskManager.getPathsToScan(url, username, uncachedPaths)
+      
+      // 如果没有需要扫描的路径，直接返回缓存的结果
+      if (pathsToScan.length === 0) {
+        const runningTask = scanTaskManager.getRunningTask(url, username, uncachedPaths)
+        if (runningTask) {
+          return NextResponse.json({
+            files: allFiles,
+            fromCache: true,
+            taskRunning: true,
+            taskId: runningTask.taskId,
+            message: '扫描任务正在进行中，返回缓存数据'
+          })
+        }
+      }
+      
+      // 启动扫描任务
+      const taskId = scanTaskManager.startTask(url, username, pathsToScan)
+      
+      for (const path of pathsToScan) {
         console.log(`开始递归扫描路径: ${path}`)
         
         // 记录扫描开始日志
@@ -161,9 +182,14 @@ export async function POST(request: NextRequest) {
           })
           
           console.error(`路径 ${path} 递归扫描失败:`, error)
+          // 标记任务失败
+          scanTaskManager.failTask(taskId, `路径 ${path} 扫描失败: ${error.message}`)
           throw error
         }
       }
+      
+      // 所有路径扫描完成，标记任务完成
+      scanTaskManager.completeTask(taskId)
     }
     
     console.log(`所有路径扫描完成，总共找到 ${allFiles.length} 个文件`)
