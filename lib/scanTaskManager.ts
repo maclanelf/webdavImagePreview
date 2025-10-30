@@ -90,15 +90,16 @@ class ScanTaskManager {
     return Array.from(this.activeTasks.values())
   }
 
-  // 清理过期任务（超过30分钟的任务）
+  // 清理过期任务（只清理已完成或失败的任务，不清理正在运行的任务）
   cleanupExpiredTasks() {
     const now = Date.now()
     const expiredTime = 30 * 60 * 1000 // 30分钟
 
     for (const [taskId, task] of this.activeTasks.entries()) {
-      if (now - task.startTime > expiredTime) {
+      // 只清理已完成或失败的任务，不清理正在运行的任务
+      if (now - task.startTime > expiredTime && task.status !== 'running') {
         this.activeTasks.delete(taskId)
-        console.log(`清理过期任务: ${taskId}`)
+        console.log(`清理过期任务: ${taskId} (状态: ${task.status})`)
       }
     }
   }
