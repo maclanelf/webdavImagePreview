@@ -7,12 +7,24 @@ class PreloadManager {
     filepath: string
   }>()
   
+  // 图组模式专用：下一组预加载缓存（独立缓存，不占用当前组缓存）
+  private nextGroupCache = new Map<string, {
+    blob: Blob
+    url: string
+    timestamp: number
+    filepath: string
+  }>()
+  
   private queue = new Set<string>()
   private maxCacheSize = 10
   private maxVideoSize = 100 * 1024 * 1024 // 100MB
   private cacheExpireTime = 5 * 60 * 1000 // 5分钟
   private viewedFiles = new Set<string>() // 已观看的文件路径（缓存）
   private localViewedFiles = new Set<string>() // 本地已观看的文件路径（用于已看过模式）
+  
+  // 图组模式相关状态
+  private currentGroupFiles: any[] = [] // 当前图组的所有文件
+  private nextGroupFiles: any[] = [] // 下一组预加载的文件列表
 
   // 设置缓存大小
   setMaxCacheSize(size: number) {
@@ -140,9 +152,21 @@ class PreloadManager {
 
   // 获取预加载的文件
   getPreloadedFile(filepath: string): Blob | null {
+    // 从当前组缓存获取
     const cached = this.cache.get(filepath)
     if (cached) {
       // 更新访问时间
+      cached.timestamp = Date.now()
+      return cached.blob
+    }
+    
+    return null
+  }
+  
+  // 从下一组缓存获取文件（专门用于图组切换时）
+  getNextGroupFile(filepath: string): Blob | null {
+    const cached = this.nextGroupCache.get(filepath)
+    if (cached) {
       cached.timestamp = Date.now()
       return cached.blob
     }
@@ -193,6 +217,14 @@ class PreloadManager {
     }
     this.cache.clear()
     this.queue.clear()
+  }
+
+  // 清理下一组缓存
+  clearNextGroupCache() {
+    for (const cached of this.nextGroupCache.values()) {
+      URL.revokeObjectURL(cached.url)
+    }
+    this.nextGroupCache.clear()
   }
 
   // 获取缓存状态
@@ -356,7 +388,7 @@ class PreloadManager {
     }
   }
 
-  // 为图组模式优化的预加载方法
+  // 为图组模式优化的预加载方法（初始化时使用）
   async preloadForGalleryMode(config: any, allFiles: any[], count: number = 10, viewedFilter: string = 'unviewed'): Promise<{
     successCount: number
     failedCount: number
@@ -364,7 +396,7 @@ class PreloadManager {
   }> {
     console.log(`[DEBUG] 图组模式预加载：目标数量 ${count}，筛选条件 ${viewedFilter}`)
     
-    // 清除现有缓存
+    // 清除现有缓存（不清理下一组缓存）
     this.clearCache()
     
     // 从数据库获取已看过的文件列表
@@ -399,27 +431,37 @@ class PreloadManager {
       }
     }
 
-    // 图组模式专用策略：优先预加载文件多的图组
+    // 随机选择一个图组
     const groups = this.groupFilesByFolder(eligibleFiles)
     
-    // 按文件数量排序，优先预加载文件多的图组
-    const sortedGroups = groups.sort((a, b) => b.files.length - a.files.length)
-    
-    // 选择前几个图组进行预加载
-    const filesToPreload: any[] = []
-    for (const group of sortedGroups) {
-      if (filesToPreload.length >= count) break
-      
-      // 从每个图组中选择文件（优先选择前几个）
-      const groupFilesToAdd = group.files.slice(0, Math.min(3, count - filesToPreload.length))
-      filesToPreload.push(...groupFilesToAdd)
+    if (groups.length === 0) {
+      return {
+        successCount: 0,
+        failedCount: 0,
+        message: '未找到图组'
+      }
     }
     
-    console.log(`[DEBUG] 图组模式预加载：选择了 ${filesToPreload.length} 个文件，来自 ${sortedGroups.length} 个图组`)
+    // 随机选择一个图组
+    const randomGroup = groups[Math.floor(Math.random() * groups.length)]
+    const selectedGroup = randomGroup.files
     
-    // 开始预加载
+    // 记录当前图组
+    this.currentGroupFiles = selectedGroup
+    
+    // 只预加载当前图组的前 count 个文件
+    const filesToPreload = selectedGroup.slice(0, Math.min(count, selectedGroup.length))
+    
+    console.log(`[DEBUG] 图组模式预加载：选择了图组 ${randomGroup.folderPath}，包含 ${selectedGroup.length} 个文件，预加载前 ${filesToPreload.length} 个`)
+    
+    // 先开始预加载当前组的文件（优先级高）
     const preloadPromises = filesToPreload.map(file => this.preloadFile(config, file))
     const results = await Promise.allSettled(preloadPromises)
+    
+    // 当前组加载完成后，再异步预加载下一组（不阻塞后续流程）
+    this.preloadNextGroup(config, allFiles, count, viewedFilter).catch(error => {
+      console.error('预加载下一组失败:', error)
+    })
 
     const successCount = results.filter(result => result.status === 'fulfilled').length
     const failedCount = results.filter(result => result.status === 'rejected').length
@@ -429,6 +471,283 @@ class PreloadManager {
       failedCount,
       message: `图组模式预加载完成：成功 ${successCount} 个，失败 ${failedCount} 个`
     }
+  }
+
+  // 预加载下一组图组（异步后台任务，不占用当前组缓存）
+  async preloadNextGroup(config: any, allFiles: any[], count: number = 10, viewedFilter: string = 'unviewed'): Promise<void> {
+    console.log(`[DEBUG] 开始后台预加载下一组图组...`)
+    
+    // 从数据库获取已看过的文件列表
+    await this.loadViewedFilesFromDatabase()
+    
+    // 筛选符合条件的文件
+    const eligibleFiles = allFiles.filter(file => {
+      if (viewedFilter === 'viewed') {
+        if (!this.viewedFiles.has(file.filename)) {
+          return false
+        }
+      } else if (viewedFilter === 'unviewed') {
+        if (this.viewedFiles.has(file.filename)) {
+          return false
+        }
+      }
+      
+      const isImage = /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(file.basename)
+      const isVideo = /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(file.basename)
+      
+      if (isImage) return true
+      if (isVideo && file.size <= this.maxVideoSize) return true
+      return false
+    })
+    
+    // 排除当前图组
+    const currentGroupFolderPath = this.currentGroupFiles.length > 0 
+      ? this.currentGroupFiles[0].filename.substring(0, this.currentGroupFiles[0].filename.lastIndexOf('/'))
+      : ''
+    
+    const availableFiles = eligibleFiles.filter(file => {
+      const folderPath = file.filename.substring(0, file.filename.lastIndexOf('/'))
+      return folderPath !== currentGroupFolderPath
+    })
+    
+    if (availableFiles.length === 0) {
+      console.log('[DEBUG] 没有可用的图组进行预加载')
+      return
+    }
+    
+    // 随机选择一个图组
+    const groups = this.groupFilesByFolder(availableFiles)
+    if (groups.length === 0) {
+      console.log('[DEBUG] 没有找到可用的图组')
+      return
+    }
+    
+    const randomGroup = groups[Math.floor(Math.random() * groups.length)]
+    const selectedGroup = randomGroup.files
+    
+    // 记录下一组
+    this.nextGroupFiles = selectedGroup
+    
+    // 只预加载下一组的前 count 个文件到独立的下一组缓存
+    const filesToPreload = selectedGroup.slice(0, Math.min(count, selectedGroup.length))
+    
+    console.log(`[DEBUG] 下一组预加载：图组 ${randomGroup.folderPath}，包含 ${selectedGroup.length} 个文件，预加载前 ${filesToPreload.length} 个`)
+    
+    // 预加载到下一组缓存（使用独立的预加载方法）
+    const preloadPromises = filesToPreload.map(file => this.preloadFileToNextGroup(config, file))
+    await Promise.allSettled(preloadPromises)
+    
+    console.log(`[DEBUG] 下一组预加载完成`)
+  }
+  
+  // 预加载文件到下一组缓存（独立方法）
+  private async preloadFileToNextGroup(config: any, file: any): Promise<void> {
+    const filepath = file.filename
+    
+    // 如果已经在下组缓存中，跳过
+    if (this.nextGroupCache.has(filepath)) {
+      return
+    }
+    
+    // 如果正在预加载队列中，跳过
+    if (this.queue.has(filepath)) {
+      return
+    }
+    
+    try {
+      this.queue.add(filepath)
+      
+      // 获取文件流
+      const streamResponse = await fetch('/api/webdav/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...config,
+          filepath: file.filename,
+        }),
+      })
+      
+      if (!streamResponse.ok) {
+        throw new Error('获取文件流失败')
+      }
+      
+      const blob = await streamResponse.blob()
+      const url = URL.createObjectURL(blob)
+      
+      // 存储到下一组缓存
+      this.nextGroupCache.set(filepath, {
+        blob,
+        url,
+        timestamp: Date.now(),
+        filepath
+      })
+      
+      // 限制下一组缓存大小
+      if (this.nextGroupCache.size > this.maxCacheSize) {
+        this.evictOldestNextGroupCache()
+      }
+      
+      console.log(`下一组预加载完成: ${file.basename}`)
+    } catch (error) {
+      console.error(`下一组预加载失败 ${file.basename}:`, error)
+      throw error
+    } finally {
+      this.queue.delete(filepath)
+    }
+  }
+  
+  // 删除最旧的下一组缓存
+  private evictOldestNextGroupCache() {
+    let oldestKey = ''
+    let oldestTime = Date.now()
+    
+    for (const [key, cached] of this.nextGroupCache.entries()) {
+      if (cached.timestamp < oldestTime) {
+        oldestTime = cached.timestamp
+        oldestKey = key
+      }
+    }
+    
+    if (oldestKey) {
+      const oldest = this.nextGroupCache.get(oldestKey)
+      if (oldest) {
+        URL.revokeObjectURL(oldest.url)
+        this.nextGroupCache.delete(oldestKey)
+      }
+    }
+  }
+  
+  // 切换到下一组（将下一组缓存转移到当前缓存）
+  switchToNextGroup(): void {
+    console.log('[DEBUG] 切换到下一组图组')
+    
+    // 清除当前组缓存
+    this.clearCache()
+    
+    // 将下一组缓存转移到当前缓存
+    for (const [key, cached] of this.nextGroupCache.entries()) {
+      this.cache.set(key, cached)
+    }
+    
+    // 清空下一组缓存
+    this.nextGroupCache.clear()
+    
+    // 更新当前组文件列表
+    this.currentGroupFiles = [...this.nextGroupFiles]
+    this.nextGroupFiles = []
+    
+    console.log('[DEBUG] 切换完成，当前缓存大小:', this.cache.size)
+  }
+  
+  // 预加载当前图组剩余的所有文件
+  async preloadRemainingCurrentGroup(config: any): Promise<void> {
+    if (this.currentGroupFiles.length === 0) {
+      console.log('[DEBUG] 没有当前图组，跳过剩余文件预加载')
+      return
+    }
+    
+    // 获取已缓存的当前组文件
+    const cachedPaths = this.getCachedFilepaths()
+    const remainingFiles = this.currentGroupFiles.filter(file => !cachedPaths.includes(file.filename))
+    
+    if (remainingFiles.length === 0) {
+      console.log('[DEBUG] 当前图组所有文件已缓存')
+      return
+    }
+    
+    console.log(`[DEBUG] 开始预加载当前图组剩余 ${remainingFiles.length} 个文件`)
+    
+    // 加载剩余文件到缓存，即使超过maxCacheSize也保留（当前图组优先）
+    const preloadPromises = remainingFiles.map(file => this.preloadFileWithoutLimit(config, file))
+    await Promise.allSettled(preloadPromises)
+    
+    console.log('[DEBUG] 当前图组剩余文件预加载完成')
+  }
+  
+  // 预加载文件但不限制缓存大小（用于预加载当前组的所有文件）
+  private async preloadFileWithoutLimit(config: any, file: any): Promise<void> {
+    const filepath = file.filename
+    
+    // 如果已经在缓存中，跳过
+    if (this.cache.has(filepath)) {
+      return
+    }
+    
+    // 如果正在预加载队列中，跳过
+    if (this.queue.has(filepath)) {
+      return
+    }
+    
+    try {
+      this.queue.add(filepath)
+      
+      // 获取文件流
+      const streamResponse = await fetch('/api/webdav/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...config,
+          filepath: file.filename,
+        }),
+      })
+      
+      if (!streamResponse.ok) {
+        throw new Error('获取文件流失败')
+      }
+      
+      const blob = await streamResponse.blob()
+      const url = URL.createObjectURL(blob)
+      
+      // 存储到缓存（不检查缓存大小限制）
+      this.cache.set(filepath, {
+        blob,
+        url,
+        timestamp: Date.now(),
+        filepath
+      })
+      
+      console.log(`预加载完成: ${file.basename}`)
+      
+    } catch (error) {
+      console.error(`预加载失败 ${file.basename}:`, error)
+      throw error
+    } finally {
+      this.queue.delete(filepath)
+    }
+  }
+  
+  // 获取当前图组信息
+  getCurrentGroup(): any[] {
+    return [...this.currentGroupFiles]
+  }
+  
+  // 获取下一组信息
+  getNextGroup(): any[] {
+    return [...this.nextGroupFiles]
+  }
+  
+  // 检查是否有下一组缓存
+  hasNextGroupCache(): boolean {
+    return this.nextGroupCache.size > 0 && this.nextGroupFiles.length > 0
+  }
+  
+  // 检查是否有当前图组缓存
+  hasCurrentGroupCache(): boolean {
+    return this.currentGroupFiles.length > 0 && this.cache.size > 0
+  }
+  
+  // 检查是否应该预加载剩余文件
+  isBrowseHalfway(currentIndex: number): boolean {
+    if (this.currentGroupFiles.length === 0) return false
+    
+    // 如果文件数量小于等于预加载数量，不需要预加载剩余文件
+    if (this.currentGroupFiles.length <= this.maxCacheSize) {
+      return false
+    }
+    
+    // 如果文件数量大于预加载数量，当浏览超过已预加载文件的一半时触发
+    // 例如：预加载了10个，在浏览到第5个时开始预加载剩余的
+    return currentIndex >= Math.floor(this.maxCacheSize / 2)
   }
 
   // 按文件夹分组（图组模式专用）

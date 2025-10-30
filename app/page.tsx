@@ -700,6 +700,47 @@ export default function HomePage() {
   const loadRandomGroup = () => {
     console.log(`[DEBUG] loadRandomGroup 开始，当前筛选条件: ${viewedFilter}`)
     
+    // 优先检查：如果有当前图组的缓存但页面未显示（首次点击），使用当前组
+    if (preloadEnabled && preloadManager.hasCurrentGroupCache() && currentGroup.length === 0) {
+      const currentGroupFromCache = preloadManager.getCurrentGroup()
+      console.log('[DEBUG] 首次点击，使用预加载的当前图组')
+      setCurrentGroup(currentGroupFromCache)
+      setCurrentGroupIndex(0)
+      
+      // 加载该组的第一个文件
+      loadFileFromGroup(currentGroupFromCache, 0)
+      
+      // 注意：下一组的预加载已经在useEffect中的preloadForGalleryMode完成，无需重复触发
+      return
+    }
+    
+    // 如果预加载管理器中有下一组缓存，切换到下一组
+    if (preloadEnabled && preloadManager.hasNextGroupCache()) {
+      const nextGroup = preloadManager.getNextGroup()
+      console.log('[DEBUG] 使用预加载的下一组图组')
+      preloadManager.switchToNextGroup()
+      
+      // 注意：switchToNextGroup()已经将下一组变为当前组，从preloadManager获取更新后的当前组
+      const currentGroupFromManager = preloadManager.getCurrentGroup()
+      setCurrentGroup(currentGroupFromManager)
+      setCurrentGroupIndex(0)
+      
+      // 加载该组的第一个文件（此时文件已在当前缓存中）
+      loadFileFromGroup(currentGroupFromManager, 0)
+      
+      // 继续预加载下一组（为下次切换做准备）
+      if (config) {
+        setTimeout(() => {
+          const preloadCount = config.scanSettings?.preloadCount || 10
+          preloadManager.preloadNextGroup(config, allFiles, preloadCount, viewedFilter).catch(error => {
+            console.error('预加载下一组失败:', error)
+          })
+        }, 500)
+      }
+      return
+    }
+    
+    // 如果没有下一组缓存，重新选择图组
     const filteredFiles = getFilteredFiles()
     
     if (filteredFiles.length === 0) {
@@ -726,12 +767,17 @@ export default function HomePage() {
     // 加载该组的第一个文件
     loadFileFromGroup(randomGroup.files, 0)
     
-    // 异步预加载当前图组的所有文件（延迟执行，避免阻塞UI）
+    // 异步预加载当前图组的前几个文件（延迟执行，避免阻塞UI）
     if (preloadEnabled && config) {
-      // 延迟500ms执行，确保UI已经响应
       setTimeout(() => {
+        const preloadCount = config.scanSettings?.preloadCount || 10
         preloadManager.preloadCurrentGroup(config, randomGroup.files, viewedFilter).catch(error => {
           console.error('预加载当前图组失败:', error)
+        })
+        
+        // 异步预加载下一组
+        preloadManager.preloadNextGroup(config, allFiles, preloadCount, viewedFilter).catch(error => {
+          console.error('预加载下一组失败:', error)
         })
       }, 500)
     }
@@ -754,6 +800,7 @@ export default function HomePage() {
 
       // 尝试从预加载缓存获取
       const preloadedBlob = preloadManager.getPreloadedFile(file.filename)
+      console.log('preloadedBlob',preloadedBlob)
       
       let blob: Blob
       if (preloadedBlob) {
@@ -802,8 +849,13 @@ export default function HomePage() {
       // 启动自动标记已看过的定时器（传递文件参数避免状态更新延迟）
       startAutoMarkTimer(file)
 
-      // 智能预加载下一个可能查看的文件
-      setTimeout(() => smartPreload(file), 1000)
+      // 检查是否浏览过半，如果是则预加载当前图组剩余的所有文件
+      if (preloadEnabled && config && preloadManager.isBrowseHalfway(index)) {
+        console.log('[DEBUG] 浏览过半，开始预加载当前图组剩余文件')
+        preloadManager.preloadRemainingCurrentGroup(config).catch(error => {
+          console.error('预加载当前图组剩余文件失败:', error)
+        })
+      }
     } catch (e: any) {
       setError(e.message)
     } finally {
