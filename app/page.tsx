@@ -128,6 +128,10 @@ export default function HomePage() {
   const [preloadProgress, setPreloadProgress] = useState<{ current: number, total: number, message: string } | null>(null)
   const [preloadStatus, setPreloadStatus] = useState<{ cacheSize: number, maxCacheSize: number } | null>(null)
   
+  // 图组模式初始预加载状态（必须完成才能预览）
+  const [galleryPreloadProgress, setGalleryPreloadProgress] = useState<{ current: number, total: number } | null>(null)
+  const [galleryPreloadReady, setGalleryPreloadReady] = useState(false) // 图组模式预加载是否完成
+  
   // 扫描状态相关状态
   const [scanStatus, setScanStatus] = useState<{ 
     scannedPaths: string[], 
@@ -218,6 +222,29 @@ export default function HomePage() {
     loadViewedFiles()
   }, [])
 
+  // 监听缓存状态变化，自动更新进度显示（图组模式和随机模式都支持）
+  useEffect(() => {
+    if (preloadEnabled && config && preloadStatus) {
+      const preloadCount = config.scanSettings?.preloadCount || 10
+      // 如果进度显示已初始化且缓存大小发生变化，自动更新进度显示
+      setGalleryPreloadProgress(prev => {
+        if (prev && prev.current !== preloadStatus.cacheSize) {
+          return { 
+            current: preloadStatus.cacheSize, 
+            total: preloadCount 
+          }
+        } else if (!prev) {
+          // 如果还没有初始化，初始化进度显示
+          return { 
+            current: preloadStatus.cacheSize, 
+            total: preloadCount 
+          }
+        }
+        return prev
+      })
+    }
+  }, [preloadStatus?.cacheSize, preloadEnabled, config])
+
   // 当文件列表和已看过文件都加载完成后，触发初始预加载
   // 注意：配置变化时的预加载由 toggleDrawer 处理
   useEffect(() => {
@@ -226,24 +253,79 @@ export default function HomePage() {
       const preloadCount = config.scanSettings?.preloadCount || 10
       
       if (viewMode === 'gallery') {
-        // 图组模式：使用图组模式专用预加载
-        preloadManager.preloadForGalleryMode(config, allFiles, preloadCount, viewedFilter).then((result) => {
-          setPreloadStatus(preloadManager.getCacheStatus())
+        // 图组模式：重置预加载状态
+        setGalleryPreloadReady(false)
+        setGalleryPreloadProgress({ current: 0, total: preloadCount })
+        
+        // 使用图组模式专用预加载，带进度回调
+        preloadManager.preloadForGalleryMode(
+          config, 
+          allFiles, 
+          preloadCount, 
+          viewedFilter,
+          (current, total) => {
+            setGalleryPreloadProgress({ current, total })
+            // 当所有文件加载完成时，标记为就绪，但保持显示进度
+            if (current >= total) {
+              setGalleryPreloadReady(true)
+              // 不设置为 null，保持显示完成状态
+            }
+          }
+        ).then((result) => {
+          const cacheStatus = preloadManager.getCacheStatus()
+          setPreloadStatus(cacheStatus)
+          setGalleryPreloadReady(true)
+          // 保持显示进度，基于当前缓存状态
+          setGalleryPreloadProgress({ 
+            current: cacheStatus.cacheSize, 
+            total: preloadCount 
+          })
           console.log(`图组模式初始预加载完成: ${result.message}`)
         }).catch(error => {
           console.warn('图组模式初始预加载失败:', error)
+          setGalleryPreloadReady(true) // 即使失败也允许预览
+          const cacheStatus = preloadManager.getCacheStatus()
+          // 即使失败也显示当前缓存状态
+          setGalleryPreloadProgress({ 
+            current: cacheStatus.cacheSize, 
+            total: preloadCount 
+          })
         })
       } else {
-        // 随机模式：使用随机预加载
-        preloadManager.refillCache(config, allFiles, preloadCount, viewedFilter).then(() => {
-          setPreloadStatus(preloadManager.getCacheStatus())
+        // 随机模式：初始化进度显示
+        setGalleryPreloadReady(true) // 随机模式不需要等待预加载完成
+        setGalleryPreloadProgress({ current: 0, total: preloadCount })
+        
+        preloadManager.refillCache(
+          config, 
+          allFiles, 
+          preloadCount, 
+          viewedFilter,
+          (current, total) => {
+            // 实时更新进度显示
+            setGalleryPreloadProgress({ current, total })
+          }
+        ).then(() => {
+          const cacheStatus = preloadManager.getCacheStatus()
+          setPreloadStatus(cacheStatus)
+          // 更新进度显示
+          setGalleryPreloadProgress({ 
+            current: cacheStatus.cacheSize, 
+            total: preloadCount 
+          })
           console.log(`随机模式初始预加载完成，筛选条件: ${viewedFilter}`)
         }).catch(error => {
           console.warn('随机模式初始预加载失败:', error)
+          const cacheStatus = preloadManager.getCacheStatus()
+          // 即使失败也显示当前缓存状态
+          setGalleryPreloadProgress({ 
+            current: cacheStatus.cacheSize, 
+            total: preloadCount 
+          })
         })
       }
     }
-  }, [allFiles.length, viewedFiles.size, preloadEnabled, config])
+  }, [allFiles.length, viewedFiles.size, preloadEnabled, config, viewMode, viewedFilter])
 
   // 加载已看过文件列表
   const loadViewedFiles = async () => {
@@ -565,17 +647,49 @@ export default function HomePage() {
   const reloadCacheForGalleryMode = async () => {
     if (!preloadEnabled || !config) return
 
+    const preloadCount = config.scanSettings?.preloadCount || 10
+    
     try {
       console.log('[DEBUG] 图组模式：清除现有缓存并重新加载')
       
-      // 使用预加载管理器的图组模式优化方法
-      const preloadCount = config.scanSettings?.preloadCount || 10
-      const result = await preloadManager.preloadForGalleryMode(config, allFiles, preloadCount, viewedFilter)
+      // 重置预加载状态
+      setGalleryPreloadReady(false)
+      setGalleryPreloadProgress({ current: 0, total: preloadCount })
       
-      setPreloadStatus(preloadManager.getCacheStatus())
+      // 使用预加载管理器的图组模式优化方法，带进度回调
+      const result = await preloadManager.preloadForGalleryMode(
+        config, 
+        allFiles, 
+        preloadCount, 
+        viewedFilter,
+        (current, total) => {
+          setGalleryPreloadProgress({ current, total })
+          // 当所有文件加载完成时，标记为就绪，但保持显示进度
+          if (current >= total) {
+            setGalleryPreloadReady(true)
+            // 不设置为 null，保持显示完成状态
+          }
+        }
+      )
+      
+      const cacheStatus = preloadManager.getCacheStatus()
+      setPreloadStatus(cacheStatus)
+      setGalleryPreloadReady(true)
+      // 保持显示进度，基于当前缓存状态
+      setGalleryPreloadProgress({ 
+        current: cacheStatus.cacheSize, 
+        total: preloadCount 
+      })
       console.log(`[DEBUG] 图组模式：缓存重新加载完成 - ${result.message}`)
     } catch (error) {
       console.error('图组模式缓存重新加载失败:', error)
+      setGalleryPreloadReady(true) // 即使失败也允许预览
+      const cacheStatus = preloadManager.getCacheStatus()
+      // 即使失败也显示当前缓存状态
+      setGalleryPreloadProgress({ 
+        current: cacheStatus.cacheSize, 
+        total: preloadCount 
+      })
     }
   }
 
@@ -606,14 +720,38 @@ export default function HomePage() {
         
         // 后台异步补齐缓存
         const preloadCount = config.scanSettings?.preloadCount || 10
-        await preloadManager.refillCache(config, allFiles, preloadCount, viewedFilter)
+        
+        // 更新进度显示（显示当前缓存状态）
+        const cacheStatusBefore = preloadManager.getCacheStatus()
+        setPreloadStatus(cacheStatusBefore)
+        setGalleryPreloadProgress({ 
+          current: cacheStatusBefore.cacheSize, 
+          total: preloadCount 
+        })
+        
+        await preloadManager.refillCache(
+          config, 
+          allFiles, 
+          preloadCount, 
+          viewedFilter,
+          (current, total) => {
+            // 实时更新进度显示
+            setGalleryPreloadProgress({ current, total })
+          }
+        )
         
         // 补齐完成后再次更新状态
-        setPreloadStatus(preloadManager.getCacheStatus())
+        const cacheStatusAfter = preloadManager.getCacheStatus()
+        setPreloadStatus(cacheStatusAfter)
+        // 更新进度显示
+        setGalleryPreloadProgress({ 
+          current: cacheStatusAfter.cacheSize, 
+          total: preloadCount 
+        })
         console.log(`缓存补齐完成: ${file.basename}`)
         
       } else {
-        // 其他模式使用原有逻辑
+        // 其他模式使用原有逻辑, 此处与调用markFileAsViewedAndRefill的saveAndSwitch有略微的冲突,因为saveAndSwitch方法中有自动评分,自动评分会把记录标记为已看过
         await preloadManager.markAsViewed(file.filename)
         
         // 更新本地状态
@@ -622,32 +760,45 @@ export default function HomePage() {
         console.log(`已标记为观看: ${file.basename}，开始后台补齐缓存`)
         
         // 更新缓存状态（立即更新UI）
-        setPreloadStatus(preloadManager.getCacheStatus())
+        const cacheStatusBefore = preloadManager.getCacheStatus()
+        setPreloadStatus(cacheStatusBefore)
         
-        // 后台异步补齐缓存
+        // 更新进度显示（图组模式和随机模式都支持）
         const preloadCount = config.scanSettings?.preloadCount || 10
+        setGalleryPreloadProgress({ 
+          current: cacheStatusBefore.cacheSize, 
+          total: preloadCount 
+        })
         
-        if (viewMode === 'gallery') {
-          // 图组模式：使用图组模式专用预加载
-          await preloadManager.preloadForGalleryMode(config, allFiles, preloadCount, viewedFilter)
-        } else {
-          // 随机模式：使用随机预加载
-          await preloadManager.refillCache(config, allFiles, preloadCount, viewedFilter)
-        }
+        // 后台异步补齐缓存,这里不需要考虑图组模式,只有随机模式,图组模式使用另一套剩余文件预加载模式
+        // 随机模式：使用随机预加载，带进度回调
+        await preloadManager.refillCache(
+          config, 
+          allFiles, 
+          preloadCount, 
+          viewedFilter,
+          (current, total) => {
+            // 实时更新进度显示
+            setGalleryPreloadProgress({ current, total })
+          }
+        )
         
         // 补齐完成后再次更新状态
-        setPreloadStatus(preloadManager.getCacheStatus())
+        const cacheStatusAfter = preloadManager.getCacheStatus()
+        setPreloadStatus(cacheStatusAfter)
+        
+        // 更新进度显示（图组模式和随机模式都支持）
+        setGalleryPreloadProgress({ 
+          current: cacheStatusAfter.cacheSize, 
+          total: preloadCount 
+        })
         console.log(`缓存补齐完成: ${file.basename}`)
         
         // 检查缓存是否为空，如果为空则重新预加载
         const cachedFilepaths = preloadManager.getCachedFilepaths()
         if (cachedFilepaths.length === 0) {
           console.log('缓存为空，重新启动预加载')
-          if (viewMode === 'gallery') {
-            await preloadManager.preloadForGalleryMode(config, allFiles, preloadCount, viewedFilter)
-          } else {
-            await startPreload(config, allFiles)
-          }
+          await startPreload(config, allFiles)
         }
       }
     } catch (error) {
@@ -720,6 +871,14 @@ export default function HomePage() {
       console.log('[DEBUG] 使用预加载的下一组图组')
       preloadManager.switchToNextGroup()
       
+      // 更新缓存状态（切换后立即更新）
+      const cacheStatus = preloadManager.getCacheStatus()
+      setPreloadStatus(cacheStatus)
+      if (config) {
+        const preloadCount = config.scanSettings?.preloadCount || 10
+        setGalleryPreloadProgress({ current: cacheStatus.cacheSize, total: preloadCount })
+      }
+      
       // 注意：switchToNextGroup()已经将下一组变为当前组，从preloadManager获取更新后的当前组
       const currentGroupFromManager = preloadManager.getCurrentGroup()
       setCurrentGroup(currentGroupFromManager)
@@ -741,7 +900,7 @@ export default function HomePage() {
     }
     
     // 如果没有下一组缓存，重新选择图组
-    const filteredFiles = getFilteredFiles()
+    /* const filteredFiles = getFilteredFiles()
     
     if (filteredFiles.length === 0) {
       setError('没有找到媒体文件')
@@ -780,7 +939,7 @@ export default function HomePage() {
           console.error('预加载下一组失败:', error)
         })
       }, 500)
-    }
+    } */
   }
 
   // 加载图组中的指定文件
@@ -797,9 +956,8 @@ export default function HomePage() {
       const file = group[index]
       setCurrentFile(file)
       setCurrentGroupIndex(index)
-
       // 尝试从预加载缓存获取
-      const preloadedBlob = preloadManager.getPreloadedFile(file.filename)
+      let preloadedBlob = preloadManager.getPreloadedFile(file.filename)
       console.log('preloadedBlob',preloadedBlob)
       
       let blob: Blob
@@ -808,28 +966,61 @@ export default function HomePage() {
         blob = preloadedBlob
         console.log(`[DEBUG] 图组模式使用预加载文件: ${file.basename}`)
       } else {
-        // 正常加载文件
-        console.log(`[DEBUG] 图组模式文件不在预加载缓存中，正常加载: ${file.basename}`)
-        const streamResponse = await fetch('/api/webdav/stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...config,
-            filepath: file.filename,
-          }),
-        })
-
-        if (!streamResponse.ok) throw new Error('获取文件流失败')
-        blob = await streamResponse.blob()
-        
-        // 将新加载的文件添加到缓存中（如果缓存未满）
-        if (preloadEnabled && config) {
-          const cacheStatus = preloadManager.getCacheStatus()
-          if (cacheStatus.cacheSize < cacheStatus.maxCacheSize) {
-            // 异步添加到缓存
-            preloadManager.preloadFiles(config, [file], 1, viewedFilter).catch(error => {
-              console.warn('添加文件到缓存失败:', error)
+        // 检查是否正在预加载中
+        if (preloadManager.isPreloading(file.filename)) {
+          console.log(`[DEBUG] 图组模式文件正在预加载中，等待完成: ${file.basename}`)
+          // 等待预加载完成
+          preloadedBlob = await preloadManager.waitForPreload(file.filename)
+          if (preloadedBlob) {
+            blob = preloadedBlob
+            console.log(`[DEBUG] 图组模式预加载完成，使用缓存文件: ${file.basename}`)
+          } else {
+            // 等待超时，正常加载
+            console.log(`[DEBUG] 图组模式预加载等待超时，正常加载: ${file.basename}`)
+            const streamResponse = await fetch('/api/webdav/stream', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                ...config,
+                filepath: file.filename,
+              }),
             })
+
+            if (!streamResponse.ok) throw new Error('获取文件流失败')
+            blob = await streamResponse.blob()
+            
+            // 将新加载的文件添加到缓存中
+            if (preloadEnabled && config) {
+              // 直接添加到缓存（避免重复请求）
+              preloadManager.addToCacheDirectly(file.filename, blob)
+              // 更新缓存状态
+              const updatedCacheStatus = preloadManager.getCacheStatus()
+              setPreloadStatus(updatedCacheStatus)
+            }
+          }
+        } else {
+          debugger
+          // 正常加载文件
+          console.log(`[DEBUG] 图组模式文件不在预加载缓存中，正常加载: ${file.basename}`)
+          const streamResponse = await fetch('/api/webdav/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ...config,
+              filepath: file.filename,
+            }),
+          })
+
+          if (!streamResponse.ok) throw new Error('获取文件流失败')
+          blob = await streamResponse.blob()
+          
+          // 将新加载的文件添加到缓存中
+          if (preloadEnabled && config) {
+            // 直接添加到缓存（避免重复请求）
+            preloadManager.addToCacheDirectly(file.filename, blob)
+            // 更新缓存状态
+            const updatedCacheStatus = preloadManager.getCacheStatus()
+            setPreloadStatus(updatedCacheStatus)
           }
         }
       }
@@ -843,18 +1034,30 @@ export default function HomePage() {
       
       setMediaUrl(url)
       
-      // 加载当前文件的评分
+      // 加载当前文件的评分（优先执行，确保不被预加载阻塞）
       await loadMediaRating(file.filename)
       
       // 启动自动标记已看过的定时器（传递文件参数避免状态更新延迟）
       startAutoMarkTimer(file)
-
+      
       // 检查是否浏览过半，如果是则预加载当前图组剩余的所有文件
+      // 使用setTimeout延迟执行，确保评分加载完成后再开始预加载，避免占用网络资源
       if (preloadEnabled && config && preloadManager.isBrowseHalfway(index)) {
-        console.log('[DEBUG] 浏览过半，开始预加载当前图组剩余文件')
-        preloadManager.preloadRemainingCurrentGroup(config).catch(error => {
-          console.error('预加载当前图组剩余文件失败:', error)
-        })
+        // 延迟执行预加载，给评分API等关键请求留出时间
+        setTimeout(() => {
+          console.log('[DEBUG] 浏览超过预设数量一半，开始预加载当前图组剩余文件')
+          const preloadCount = config.scanSettings?.preloadCount || 10
+          preloadManager.preloadRemainingCurrentGroup(config, (current) => {
+            // 实时更新进度显示（total固定为preloadCount）
+            setGalleryPreloadProgress({ current, total: preloadCount })
+          }).then(() => {
+            // 更新缓存状态
+            const cacheStatus = preloadManager.getCacheStatus()
+            setPreloadStatus(cacheStatus)
+          }).catch(error => {
+            console.error('预加载当前图组剩余文件失败:', error)
+          })
+        }, 100) // 延迟100ms，确保评分加载请求优先完成
       }
     } catch (e: any) {
       setError(e.message)
@@ -1141,14 +1344,38 @@ export default function HomePage() {
       const preloadCount = config.scanSettings?.preloadCount || 10
       
       if (viewMode === 'gallery') {
-        // 图组模式：使用图组模式专用预加载
-        await preloadManager.preloadForGalleryMode(config, allFiles, preloadCount, 'viewed')
+        // 图组模式：使用图组模式专用预加载，带进度回调
+        await preloadManager.preloadForGalleryMode(
+          config, 
+          allFiles, 
+          preloadCount, 
+          'viewed',
+          (current, total) => {
+            // 实时更新进度显示
+            setGalleryPreloadProgress({ current, total })
+          }
+        )
       } else {
-        // 随机模式：使用随机预加载
-        await preloadManager.refillCache(config, allFiles, preloadCount, 'viewed')
+        // 随机模式：使用随机预加载，带进度回调
+        await preloadManager.refillCache(
+          config, 
+          allFiles, 
+          preloadCount, 
+          'viewed',
+          (current, total) => {
+            // 实时更新进度显示
+            setGalleryPreloadProgress({ current, total })
+          }
+        )
       }
       
-      setPreloadStatus(preloadManager.getCacheStatus())
+      const cacheStatus = preloadManager.getCacheStatus()
+      setPreloadStatus(cacheStatus)
+      // 更新进度显示
+      setGalleryPreloadProgress({ 
+        current: cacheStatus.cacheSize, 
+        total: preloadCount 
+      })
     }
     
     setSnackbarMessage('🔄 已重新开始观看已看过的文件')
@@ -1206,21 +1433,75 @@ export default function HomePage() {
           const preloadCount = config.scanSettings?.preloadCount || 10
           
           if (viewMode === 'gallery') {
-            // 图组模式：使用图组模式专用预加载
-            preloadManager.preloadForGalleryMode(config, allFiles, preloadCount, viewedFilter).then((result) => {
-              setPreloadStatus(preloadManager.getCacheStatus())
+            // 图组模式：重置预加载状态
+            setGalleryPreloadReady(false)
+            setGalleryPreloadProgress({ current: 0, total: preloadCount })
+            
+            // 使用图组模式专用预加载，带进度回调
+            preloadManager.preloadForGalleryMode(
+              config, 
+              allFiles, 
+              preloadCount, 
+              viewedFilter,
+              (current, total) => {
+                setGalleryPreloadProgress({ current, total })
+                // 当所有文件加载完成时，标记为就绪，但保持显示进度
+                if (current >= total) {
+                  setGalleryPreloadReady(true)
+                  // 不设置为 null，保持显示完成状态
+                }
+              }
+            ).then((result) => {
+              const cacheStatus = preloadManager.getCacheStatus()
+              setPreloadStatus(cacheStatus)
+              setGalleryPreloadReady(true)
+              // 保持显示进度，基于当前缓存状态
+              setGalleryPreloadProgress({ 
+                current: cacheStatus.cacheSize, 
+                total: preloadCount 
+              })
               console.log(`配置变化后图组模式预加载完成: ${result.message}`)
             }).catch(error => {
               console.warn('配置变化后图组模式预加载失败:', error)
+              setGalleryPreloadReady(true) // 即使失败也允许预览
+              const cacheStatus = preloadManager.getCacheStatus()
+              // 即使失败也显示当前缓存状态
+              setGalleryPreloadProgress({ 
+                current: cacheStatus.cacheSize, 
+                total: preloadCount 
+              })
             })
           } else {
             // 随机模式：配置变化时先清空缓存，然后重新预加载
+            setGalleryPreloadReady(true) // 随机模式不需要等待预加载完成
+            setGalleryPreloadProgress({ current: 0, total: preloadCount })
             preloadManager.clearCache()
-            preloadManager.refillCache(config, allFiles, preloadCount, viewedFilter).then(() => {
-              setPreloadStatus(preloadManager.getCacheStatus())
+            preloadManager.refillCache(
+              config, 
+              allFiles, 
+              preloadCount, 
+              viewedFilter,
+              (current, total) => {
+                // 实时更新进度显示
+                setGalleryPreloadProgress({ current, total })
+              }
+            ).then(() => {
+              const cacheStatus = preloadManager.getCacheStatus()
+              setPreloadStatus(cacheStatus)
+              // 更新进度显示
+              setGalleryPreloadProgress({ 
+                current: cacheStatus.cacheSize, 
+                total: preloadCount 
+              })
               console.log(`配置变化后随机模式预加载完成，筛选条件: ${viewedFilter}`)
             }).catch(error => {
               console.warn('配置变化后随机模式预加载失败:', error)
+              const cacheStatus = preloadManager.getCacheStatus()
+              // 即使失败也显示当前缓存状态
+              setGalleryPreloadProgress({ 
+                current: cacheStatus.cacheSize, 
+                total: preloadCount 
+              })
             })
           }
         }
@@ -1766,9 +2047,42 @@ export default function HomePage() {
       >
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Typography variant="h6" fontWeight="bold">
-            WebDAV 媒体预览器
+            See it
           </Typography>
-          <Box sx={{ display: 'flex', gap: 1 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            {/* 预加载进度显示 - 紧挨着筛选与统计图标（图组模式和随机模式都支持） */}
+            {preloadEnabled && galleryPreloadProgress && (
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mr: 0.5 }}>
+                <DownloadIcon 
+                  sx={{ 
+                    fontSize: 18,
+                    animation: 'download 1.5s ease-in-out infinite',
+                    '@keyframes download': {
+                      '0%': {
+                        transform: 'translateY(0px)',
+                        opacity: 1,
+                      },
+                      '50%': {
+                        transform: 'translateY(4px)',
+                        opacity: 0.7,
+                      },
+                      '100%': {
+                        transform: 'translateY(0px)',
+                        opacity: 1,
+                      },
+                    },
+                  }} 
+                  color="primary"
+                />
+                <Typography 
+                  variant="body2" 
+                  color="text.secondary" 
+                  sx={{ minWidth: '32px', fontWeight: 'bold' }}
+                >
+                  {galleryPreloadProgress.current}/{galleryPreloadProgress.total}
+                </Typography>
+              </Box>
+            )}
             <Tooltip title="筛选与统计">
               <IconButton onClick={toggleDrawer(true)} color="primary">
                 <FilterListIcon />
@@ -1940,24 +2254,37 @@ export default function HomePage() {
           >
             <ShuffleIcon sx={{ fontSize: 80, color: 'text.secondary', mb: 2 }} />
             <Typography variant="h5" gutterBottom>
-              准备好了！
+              {viewMode === 'gallery' && preloadEnabled && !galleryPreloadReady ? '正在加载中...' : '准备好了！'}
             </Typography>
-            <Typography variant="body1" color="text.secondary" sx={{ mb: 1 }}>
-              从 {config.mediaPaths.length} 个目录中
-            </Typography>
-            <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-              随机加载{filteredStats.label === '全部' ? '媒体文件' : filteredStats.label}
-            </Typography>
-            <Typography variant="body2" color="primary" sx={{ mb: 3 }}>
-              当前筛选：{filteredStats.label} - {filteredStats.total} 个文件
-            </Typography>
+            {viewMode === 'gallery' && preloadEnabled && galleryPreloadProgress && (
+              <Box sx={{ mb: 3 }}>
+                <CircularProgress sx={{ mb: 2 }} />
+                <Typography variant="body1" color="text.secondary">
+                  正在加载 ({galleryPreloadProgress.current}/{galleryPreloadProgress.total})
+                </Typography>
+              </Box>
+            )}
+            {(!galleryPreloadProgress || (viewMode !== 'gallery') || !preloadEnabled || galleryPreloadReady) && (
+              <>
+                <Typography variant="body1" color="text.secondary" sx={{ mb: 1 }}>
+                  从 {config.mediaPaths.length} 个目录中
+                </Typography>
+                <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
+                  随机加载{filteredStats.label === '全部' ? '媒体文件' : filteredStats.label}
+                </Typography>
+                <Typography variant="body2" color="primary" sx={{ mb: 3 }}>
+                  当前筛选：{filteredStats.label} - {filteredStats.total} 个文件
+                </Typography>
+              </>
+            )}
             <Button
               variant="contained"
               size="large"
-              startIcon={<ShuffleIcon />}
+              startIcon={viewMode === 'gallery' && !galleryPreloadReady && preloadEnabled ? <CircularProgress size={20} color="inherit" /> : <ShuffleIcon />}
               onClick={loadRandomMedia}
+              disabled={viewMode === 'gallery' && !galleryPreloadReady && preloadEnabled}
             >
-              开始预览
+              {viewMode === 'gallery' && !galleryPreloadReady && preloadEnabled ? '加载中...' : '开始预览'}
             </Button>
           </Paper>
         )}
@@ -2046,6 +2373,10 @@ export default function HomePage() {
                   if (newMode === 'gallery') {
                     setCurrentGroup([])
                     setCurrentGroupIndex(0)
+                  } else if (newMode === 'random') {
+                    // 切换到随机模式时，允许预览（不需要等待预加载）
+                    setGalleryPreloadReady(true)
+                    setGalleryPreloadProgress(null)
                   }
                   // 预加载将在关闭抽屉时根据配置变化统一处理
                 }
@@ -2433,12 +2764,21 @@ export default function HomePage() {
       )}
 
       {/* 悬浮按钮 - 固定在右下角 */}
-      <Tooltip title={loading ? '加载中...' : '换一个'} placement="left">
+      <Tooltip 
+        title={
+          loading 
+            ? '加载中...' 
+            : viewMode === 'gallery' && !galleryPreloadReady && preloadEnabled
+              ? '正在加载预加载文件，请稍候...' 
+              : '换一个'
+        } 
+        placement="left"
+      >
         <Fab
           color="primary"
           aria-label="换一个"
           onClick={loadRandomMedia}
-          disabled={loading || isSwitching}
+          disabled={loading || isSwitching || (viewMode === 'gallery' && !galleryPreloadReady && preloadEnabled)}
           sx={{
             position: 'fixed',
             bottom: 24,
@@ -2446,7 +2786,7 @@ export default function HomePage() {
             zIndex: 1000,
           }}
         >
-          {loading ? (
+          {loading || (viewMode === 'gallery' && !galleryPreloadReady && preloadEnabled && galleryPreloadProgress) ? (
             <CircularProgress size={24} color="inherit" />
           ) : (
             <ShuffleIcon />

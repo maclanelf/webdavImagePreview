@@ -25,6 +25,7 @@ class PreloadManager {
   // 图组模式相关状态
   private currentGroupFiles: any[] = [] // 当前图组的所有文件
   private nextGroupFiles: any[] = [] // 下一组预加载的文件列表
+  private currentGroupPreloadTriggered = false // 当前图组是否已经触发过剩余文件预加载
 
   // 设置缓存大小
   setMaxCacheSize(size: number) {
@@ -178,6 +179,34 @@ class PreloadManager {
     return this.cache.has(filepath)
   }
 
+  // 检查文件是否正在预加载中
+  isPreloading(filepath: string): boolean {
+    return this.queue.has(filepath)
+  }
+
+  // 等待文件预加载完成（如果正在预加载）
+  async waitForPreload(filepath: string, maxWaitTime: number = 10000): Promise<Blob | null> {
+    if (!this.queue.has(filepath)) {
+      // 如果不在队列中，直接返回当前缓存（如果存在）
+      return this.getPreloadedFile(filepath)
+    }
+    
+    // 等待文件完成预加载
+    const startTime = Date.now()
+    while (this.queue.has(filepath)) {
+      // 检查是否超时
+      if (Date.now() - startTime > maxWaitTime) {
+        console.warn(`等待预加载超时: ${filepath}`)
+        return null
+      }
+      // 等待一小段时间后重试
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    
+    // 预加载完成，返回缓存中的文件
+    return this.getPreloadedFile(filepath)
+  }
+
   // 清理过期缓存
   private cleanupExpiredCache() {
     const now = Date.now()
@@ -312,6 +341,26 @@ class PreloadManager {
     this.viewedFiles.clear()
   }
 
+  // 直接添加文件到缓存（用于已经加载的文件）
+  addToCacheDirectly(filepath: string, blob: Blob): void {
+    // 如果已经在缓存中，跳过
+    if (this.cache.has(filepath)) {
+      return
+    }
+
+    const url = URL.createObjectURL(blob)
+    
+    // 存储到缓存
+    this.cache.set(filepath, {
+      blob,
+      url,
+      timestamp: Date.now(),
+      filepath
+    })
+
+    console.log(`直接添加到缓存: ${filepath}`)
+  }
+
   // 本地已看过文件管理（用于已看过模式）
   addLocalViewedFile(filepath: string) {
     this.localViewedFiles.add(filepath)
@@ -389,7 +438,13 @@ class PreloadManager {
   }
 
   // 为图组模式优化的预加载方法（初始化时使用）
-  async preloadForGalleryMode(config: any, allFiles: any[], count: number = 10, viewedFilter: string = 'unviewed'): Promise<{
+  async preloadForGalleryMode(
+    config: any, 
+    allFiles: any[], 
+    count: number = 10, 
+    viewedFilter: string = 'unviewed',
+    onProgress?: (current: number, total: number) => void
+  ): Promise<{
     successCount: number
     failedCount: number
     message: string
@@ -448,14 +503,59 @@ class PreloadManager {
     
     // 记录当前图组
     this.currentGroupFiles = selectedGroup
+    // 重置预加载触发标志（切换到新图组时重置）
+    this.currentGroupPreloadTriggered = false
     
     // 只预加载当前图组的前 count 个文件
     const filesToPreload = selectedGroup.slice(0, Math.min(count, selectedGroup.length))
     
     console.log(`[DEBUG] 图组模式预加载：选择了图组 ${randomGroup.folderPath}，包含 ${selectedGroup.length} 个文件，预加载前 ${filesToPreload.length} 个`)
     
-    // 先开始预加载当前组的文件（优先级高）
-    const preloadPromises = filesToPreload.map(file => this.preloadFile(config, file))
+    // 并发预加载当前组的文件（图组模式需要预加载完10个文件后才能预览，可以使用并发提高速度）
+    const totalFiles = filesToPreload.length
+    
+    // 触发初始进度（0/total）
+    if (onProgress) {
+      onProgress(0, totalFiles)
+    }
+    
+    // 使用计数器跟踪已完成的文件数量
+    let completedCount = 0
+    
+    // 并发预加载所有文件，每个文件完成时更新进度
+    const preloadPromises = filesToPreload.map((file) =>
+      this.preloadFileWithoutLimit(config, file)
+        .then(() => {
+          completedCount++
+          // 触发进度更新
+          if (onProgress) {
+            onProgress(completedCount, totalFiles)
+          }
+        })
+        .catch((error) => {
+          completedCount++
+          console.error(`预加载文件失败: ${file.filename}`, error)
+          
+          // 使用 Material UI 的 Snackbar 进行错误提示
+          if (typeof window !== 'undefined' && (window as any).enqueueSnackbar) {
+            (window as any).enqueueSnackbar(`❌ 预加载失败: ${file.basename || file.filename}`, { 
+              variant: 'error',
+              autoHideDuration: 2500,
+              anchorOrigin: { vertical: 'top', horizontal: 'center' }
+            })
+          }
+          
+          // 即使失败也更新进度
+          if (onProgress) {
+            onProgress(completedCount, totalFiles)
+          }
+          
+          // 重新抛出错误，让 Promise.allSettled 正确标记为 rejected
+          throw error
+        })
+    )
+    
+    // 等待所有文件预加载完成
     const results = await Promise.allSettled(preloadPromises)
     
     // 当前组加载完成后，再异步预加载下一组（不阻塞后续流程）
@@ -635,14 +735,22 @@ class PreloadManager {
     // 更新当前组文件列表
     this.currentGroupFiles = [...this.nextGroupFiles]
     this.nextGroupFiles = []
+    // 重置预加载触发标志（切换到新图组时重置）
+    this.currentGroupPreloadTriggered = false
     
     console.log('[DEBUG] 切换完成，当前缓存大小:', this.cache.size)
   }
   
   // 预加载当前图组剩余的所有文件
-  async preloadRemainingCurrentGroup(config: any): Promise<void> {
+  async preloadRemainingCurrentGroup(config: any, onProgress?: (current: number) => void): Promise<void> {
     if (this.currentGroupFiles.length === 0) {
       console.log('[DEBUG] 没有当前图组，跳过剩余文件预加载')
+      return
+    }
+    
+    // 如果当前图组已经触发过预加载，跳过（避免重复触发）
+    if (this.currentGroupPreloadTriggered) {
+      console.log('[DEBUG] 当前图组已经触发过预加载，跳过')
       return
     }
     
@@ -652,14 +760,64 @@ class PreloadManager {
     
     if (remainingFiles.length === 0) {
       console.log('[DEBUG] 当前图组所有文件已缓存')
+      // 即使没有剩余文件，也标记为已触发，避免重复检查
+      this.currentGroupPreloadTriggered = true
       return
     }
     
+    // 标记为已触发，避免重复触发
+    this.currentGroupPreloadTriggered = true
+    
     console.log(`[DEBUG] 开始预加载当前图组剩余 ${remainingFiles.length} 个文件`)
     
-    // 加载剩余文件到缓存，即使超过maxCacheSize也保留（当前图组优先）
-    const preloadPromises = remainingFiles.map(file => this.preloadFileWithoutLimit(config, file))
-    await Promise.allSettled(preloadPromises)
+    // 限制并发数量，避免阻塞其他API请求（如评分加载）
+    // 最多同时进行3个预加载请求，为评分API等留出资源
+    const maxConcurrent = 3
+    let currentIndex = 0
+    let completedCount = 0
+    
+    // 保存当前图组的文件路径集合，用于验证（防止切换图组后仍然处理上一图组的文件）
+    const currentGroupFilepaths = new Set(this.currentGroupFiles.map(f => f.filename))
+    
+    // 并发控制：每次最多启动maxConcurrent个请求
+    while (currentIndex < remainingFiles.length) {
+      // 检查是否已经切换图组（通过检查文件是否还在当前图组中）
+      const firstFileInBatch = remainingFiles[currentIndex]
+      if (!currentGroupFilepaths.has(firstFileInBatch.filename)) {
+        // 已经切换图组，停止预加载
+        console.log('[DEBUG] 检测到图组已切换，停止预加载上一图组的剩余文件')
+        break
+      }
+      
+      // 获取当前批次需要预加载的文件
+      const batch = remainingFiles.slice(currentIndex, currentIndex + maxConcurrent)
+      
+      // 并发预加载当前批次，每个文件完成时更新进度
+      const batchPromises = batch.map((file) => 
+        this.preloadFileWithoutLimit(config, file).then(() => {
+          completedCount++
+          // 每个文件加载完成时更新进度
+          if (onProgress) {
+            const currentLoaded = this.cache.size
+            onProgress(currentLoaded)
+          }
+        }).catch(error => {
+          completedCount++
+          console.error(`预加载文件失败: ${file.filename}`, error)
+          // 即使失败也更新进度
+          if (onProgress) {
+            const currentLoaded = this.cache.size
+            onProgress(currentLoaded)
+          }
+        })
+      )
+      
+      // 等待当前批次完成
+      await Promise.allSettled(batchPromises)
+      
+      // 移动到下一批次
+      currentIndex += maxConcurrent
+    }
     
     console.log('[DEBUG] 当前图组剩余文件预加载完成')
   }
@@ -697,6 +855,24 @@ class PreloadManager {
       
       const blob = await streamResponse.blob()
       const url = URL.createObjectURL(blob)
+      
+      // 检查文件是否还属于当前图组（可能在预加载过程中切换了图组）
+      const isFileInCurrentGroup = this.currentGroupFiles.some(f => f.filename === filepath)
+      
+      if (!isFileInCurrentGroup) {
+        // 已经切换图组，丢弃这个文件，不添加到缓存
+        URL.revokeObjectURL(url)
+        console.log(`[DEBUG] 预加载完成但图组已切换，丢弃文件: ${file.basename}`)
+        return
+      }
+      
+      // 再次检查文件是否已经在缓存中（可能在预加载过程中已经被其他方式加载）
+      if (this.cache.has(filepath)) {
+        // 已经存在，丢弃这个文件
+        URL.revokeObjectURL(url)
+        console.log(`[DEBUG] 预加载完成但文件已在缓存中，丢弃: ${file.basename}`)
+        return
+      }
       
       // 存储到缓存（不检查缓存大小限制）
       this.cache.set(filepath, {
@@ -788,18 +964,33 @@ class PreloadManager {
   }
 
   // 自动补齐缓存到目标数量
-  async refillCache(config: any, allFiles: any[], targetCount: number = 10, viewedFilter: string = 'unviewed'): Promise<void> {
+  async refillCache(
+    config: any, 
+    allFiles: any[], 
+    targetCount: number = 10, 
+    viewedFilter: string = 'unviewed',
+    onProgress?: (current: number, total: number) => void
+  ): Promise<void> {
     // 从数据库获取已看过的文件列表
     await this.loadViewedFilesFromDatabase()
     
     const currentCacheSize = this.cache.size
     if (currentCacheSize >= targetCount) {
       console.log('缓存已满，无需补齐')
+      // 如果缓存已满，也触发一次进度回调
+      if (onProgress) {
+        onProgress(currentCacheSize, targetCount)
+      }
       return // 缓存已满，无需补齐
     }
 
     const needCount = targetCount - currentCacheSize
     console.log(`缓存不足，需要补齐 ${needCount} 个文件，筛选条件: ${viewedFilter}`)
+
+    // 触发初始进度
+    if (onProgress) {
+      onProgress(currentCacheSize, targetCount)
+    }
 
     // 根据筛选条件过滤文件
     const filteredFiles = allFiles.filter(file => {
@@ -828,7 +1019,24 @@ class PreloadManager {
 
       // 只预加载需要的数量
       const filesToPreload = availableFiles.slice(0, needCount)
-      await this.preloadFiles(config, filesToPreload, filesToPreload.length, viewedFilter)
+      // 并发预加载，每个文件完成时更新进度
+      const preloadPromises = filesToPreload.map((file) => 
+        this.preloadFile(config, file).then(() => {
+          // 每个文件加载完成时更新进度
+          if (onProgress) {
+            const currentLoaded = this.cache.size
+            onProgress(currentLoaded, targetCount)
+          }
+        }).catch(error => {
+          console.error(`预加载文件失败: ${file.filename}`, error)
+          // 即使失败也更新进度
+          if (onProgress) {
+            const currentLoaded = this.cache.size
+            onProgress(currentLoaded, targetCount)
+          }
+        })
+      )
+      await Promise.allSettled(preloadPromises)
     } else {
       // 其他模式使用原有逻辑
       const cachedPaths = this.getCachedFilepaths()
@@ -843,7 +1051,24 @@ class PreloadManager {
 
       // 只预加载需要的数量
       const filesToPreload = availableFiles.slice(0, needCount)
-      await this.preloadFiles(config, filesToPreload, filesToPreload.length, viewedFilter)
+      // 并发预加载，每个文件完成时更新进度
+      const preloadPromises = filesToPreload.map((file) => 
+        this.preloadFile(config, file).then(() => {
+          // 每个文件加载完成时更新进度
+          if (onProgress) {
+            const currentLoaded = this.cache.size
+            onProgress(currentLoaded, targetCount)
+          }
+        }).catch(error => {
+          console.error(`预加载文件失败: ${file.filename}`, error)
+          // 即使失败也更新进度
+          if (onProgress) {
+            const currentLoaded = this.cache.size
+            onProgress(currentLoaded, targetCount)
+          }
+        })
+      )
+      await Promise.allSettled(preloadPromises)
     }
   }
 }
