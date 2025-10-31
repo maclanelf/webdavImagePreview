@@ -2402,7 +2402,19 @@ export default function HomePage() {
                 <Typography variant="body2" fontWeight="medium">
                   {currentGroupIndex + 1} / {currentGroup.length} 张
                 </Typography>
-                <Typography variant="caption" color="text.secondary" noWrap>
+                <Typography 
+                  variant="caption" 
+                  color="text.secondary" 
+                  sx={{ 
+                    display: 'block',
+                    wordBreak: 'break-all',
+                    wordWrap: 'break-word',
+                    overflowWrap: 'break-word',
+                    whiteSpace: 'normal',
+                    width: '100%',
+                    boxSizing: 'border-box'
+                  }}
+                >
                   {currentFile?.filename.substring(0, currentFile.filename.lastIndexOf('/'))}
                 </Typography>
               </Paper>
