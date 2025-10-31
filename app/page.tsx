@@ -179,25 +179,79 @@ export default function HomePage() {
     
     initApp()
     
-    // 从localStorage加载配置
-    const savedConfig = localStorage.getItem('webdav_config')
-    if (savedConfig) {
+    // 优先从数据库加载配置，如果没有则从 localStorage 加载（向后兼容）
+    const loadConfig = async () => {
       try {
-        const parsed = JSON.parse(savedConfig)
-        // 兼容旧版本配置
-        if (parsed.mediaPath && !parsed.mediaPaths) {
-          parsed.mediaPaths = [parsed.mediaPath]
+        // 先从数据库加载默认配置
+        const response = await fetch('/api/webdav-config/default')
+        if (response.ok) {
+          const dbConfig = await response.json()
+          if (dbConfig.url && dbConfig.username) {
+            const config = {
+              url: dbConfig.url,
+              username: dbConfig.username,
+              password: dbConfig.password,
+              mediaPaths: dbConfig.mediaPaths || ['/'],
+              scanSettings: dbConfig.scanSettings || {
+                batchSize: 10,
+                preloadCount: 10
+              }
+            }
+            setConfig(config)
+            // 优先从缓存加载，避免不必要的扫描
+            loadStatsFromCache(config)
+            return
+          }
         }
-        if (!parsed.mediaPaths || parsed.mediaPaths.length === 0) {
-          parsed.mediaPaths = ['/']
+      } catch (error) {
+        console.error('从数据库加载配置失败:', error)
+      }
+      
+      // 如果数据库中没有配置，尝试从 localStorage 加载（向后兼容）
+      const savedConfig = localStorage.getItem('webdav_config')
+      if (savedConfig) {
+        try {
+          const parsed = JSON.parse(savedConfig)
+          // 兼容旧版本配置
+          if (parsed.mediaPath && !parsed.mediaPaths) {
+            parsed.mediaPaths = [parsed.mediaPath]
+          }
+          if (!parsed.mediaPaths || parsed.mediaPaths.length === 0) {
+            parsed.mediaPaths = ['/']
+          }
+          setConfig(parsed)
+          // 优先从缓存加载，避免不必要的扫描
+          loadStatsFromCache(parsed)
+          
+          // 如果 localStorage 中有配置，尝试将其保存到数据库（迁移）
+          if (parsed.url && parsed.username) {
+            try {
+              await fetch('/api/webdav-config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  url: parsed.url,
+                  username: parsed.username,
+                  password: parsed.password,
+                  mediaPaths: parsed.mediaPaths || ['/'],
+                  scanSettings: parsed.scanSettings || {
+                    batchSize: 10,
+                    preloadCount: 10
+                  },
+                  isDefault: true // 迁移时设为默认配置
+                })
+              })
+            } catch (migrationError) {
+              console.error('迁移配置到数据库失败:', migrationError)
+            }
+          }
+        } catch (e) {
+          console.error('加载配置失败:', e)
         }
-        setConfig(parsed)
-        // 优先从缓存加载，避免不必要的扫描
-        loadStatsFromCache(parsed)
-      } catch (e) {
-        console.error('加载配置失败:', e)
       }
     }
+    
+    loadConfig()
 
     // 加载保存的筛选偏好
     const savedFilter = localStorage.getItem('media_filter')

@@ -186,6 +186,22 @@ export function initDatabase() {
     db.exec(`
     `)
 
+    // 创建 WebDAV 配置表
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS webdav_configs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        url TEXT NOT NULL,
+        username TEXT NOT NULL,
+        password TEXT NOT NULL,
+        media_paths TEXT NOT NULL,
+        scan_settings TEXT NOT NULL,
+        is_default BOOLEAN DEFAULT FALSE,
+        created_at DATETIME DEFAULT (datetime('now', 'localtime')),
+        updated_at DATETIME DEFAULT (datetime('now', 'localtime')),
+        UNIQUE(url, username)
+      )
+    `)
+
     console.log('数据库表创建完成')
   } catch (error) {
     console.error('数据库表创建失败:', error)
@@ -792,6 +808,165 @@ export const recursiveScanTasks = {
   cleanup: () => {
     const stmt = db.prepare('DELETE FROM recursive_scan_tasks WHERE created_at < datetime("now", "-7 days")')
     return stmt.run()
+  }
+}
+
+// WebDAV 配置相关操作
+export const webdavConfigs = {
+  // 获取所有配置
+  getAll: () => {
+    try {
+      ensureInitialized()
+      const stmt = db.prepare('SELECT * FROM webdav_configs ORDER BY is_default DESC, created_at DESC')
+      const rows = stmt.all()
+      // 解析 JSON 字段
+      return rows.map((row: any) => ({
+        ...row,
+        mediaPaths: JSON.parse(row.media_paths || '[]'),
+        scanSettings: JSON.parse(row.scan_settings || '{}'),
+        isDefault: row.is_default === 1
+      }))
+    } catch (error) {
+      console.error('获取 WebDAV 配置失败:', error)
+      return []
+    }
+  },
+
+  // 获取默认配置
+  getDefault: () => {
+    try {
+      ensureInitialized()
+      const stmt = db.prepare('SELECT * FROM webdav_configs WHERE is_default = TRUE LIMIT 1')
+      const row: any = stmt.get()
+      if (!row) return null
+      
+      return {
+        ...row,
+        mediaPaths: JSON.parse(row.media_paths || '[]'),
+        scanSettings: JSON.parse(row.scan_settings || '{}'),
+        isDefault: true
+      }
+    } catch (error) {
+      console.error('获取默认配置失败:', error)
+      return null
+    }
+  },
+
+  // 根据 URL 和用户名获取配置
+  get: (url: string, username: string) => {
+    try {
+      ensureInitialized()
+      const stmt = db.prepare('SELECT * FROM webdav_configs WHERE url = ? AND username = ?')
+      const row: any = stmt.get(url, username)
+      if (!row) return null
+      
+      return {
+        ...row,
+        mediaPaths: JSON.parse(row.media_paths || '[]'),
+        scanSettings: JSON.parse(row.scan_settings || '{}'),
+        isDefault: row.is_default === 1
+      }
+    } catch (error) {
+      console.error('获取 WebDAV 配置失败:', error)
+      return null
+    }
+  },
+
+  // 创建或更新配置
+  save: (data: {
+    url: string
+    username: string
+    password: string
+    mediaPaths: string[]
+    scanSettings?: any
+    isDefault?: boolean
+  }) => {
+    try {
+      ensureInitialized()
+      const existing = webdavConfigs.get(data.url, data.username)
+      
+      // 如果设置为默认配置，先将其他配置取消默认
+      if (data.isDefault) {
+        const stmt = db.prepare('UPDATE webdav_configs SET is_default = FALSE WHERE is_default = TRUE')
+        stmt.run()
+      }
+      
+      const mediaPathsStr = JSON.stringify(data.mediaPaths || [])
+      const scanSettingsStr = JSON.stringify(data.scanSettings || {})
+      
+      if (existing) {
+        // 更新
+        const stmt = db.prepare(`
+          UPDATE webdav_configs 
+          SET password = ?, media_paths = ?, scan_settings = ?, 
+              is_default = ?, updated_at = datetime('now', 'localtime')
+          WHERE url = ? AND username = ?
+        `)
+        return stmt.run(
+          data.password,
+          mediaPathsStr,
+          scanSettingsStr,
+          data.isDefault ? 1 : 0,
+          data.url,
+          data.username
+        )
+      } else {
+        // 插入
+        // 如果没有其他配置，第一个配置自动设为默认
+        const allConfigs = webdavConfigs.getAll()
+        const shouldBeDefault = data.isDefault !== false && allConfigs.length === 0
+        
+        const stmt = db.prepare(`
+          INSERT INTO webdav_configs 
+          (url, username, password, media_paths, scan_settings, is_default)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `)
+        return stmt.run(
+          data.url,
+          data.username,
+          data.password,
+          mediaPathsStr,
+          scanSettingsStr,
+          shouldBeDefault ? 1 : (data.isDefault ? 1 : 0)
+        )
+      }
+    } catch (error) {
+      console.error('保存 WebDAV 配置失败:', error)
+      throw error
+    }
+  },
+
+  // 删除配置
+  delete: (url: string, username: string) => {
+    try {
+      ensureInitialized()
+      const stmt = db.prepare('DELETE FROM webdav_configs WHERE url = ? AND username = ?')
+      return stmt.run(url, username)
+    } catch (error) {
+      console.error('删除 WebDAV 配置失败:', error)
+      throw error
+    }
+  },
+
+  // 设置默认配置
+  setDefault: (url: string, username: string) => {
+    try {
+      ensureInitialized()
+      // 先取消所有默认
+      const stmt1 = db.prepare('UPDATE webdav_configs SET is_default = FALSE')
+      stmt1.run()
+      
+      // 设置新的默认
+      const stmt2 = db.prepare(`
+        UPDATE webdav_configs 
+        SET is_default = TRUE, updated_at = datetime('now', 'localtime')
+        WHERE url = ? AND username = ?
+      `)
+      return stmt2.run(url, username)
+    } catch (error) {
+      console.error('设置默认配置失败:', error)
+      throw error
+    }
   }
 }
 

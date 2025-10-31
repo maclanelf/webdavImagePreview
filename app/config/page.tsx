@@ -155,24 +155,88 @@ export default function ConfigPage() {
   }
 
   useEffect(() => {
-    // 加载已保存的配置
-    const savedConfig = localStorage.getItem('webdav_config')
-    if (savedConfig) {
+    // 优先从数据库加载配置，如果没有则从 localStorage 加载（向后兼容）
+    const loadConfig = async () => {
       try {
-        const parsed = JSON.parse(savedConfig)
-        // 兼容旧版本配置
-        if (parsed.mediaPath && !parsed.mediaPaths) {
-          parsed.mediaPaths = [parsed.mediaPath]
+        // 先从数据库加载默认配置
+        const response = await fetch('/api/webdav-config/default')
+        if (response.ok) {
+          const dbConfig = await response.json()
+          if (dbConfig.url && dbConfig.username) {
+            setConfig({
+              url: dbConfig.url,
+              username: dbConfig.username,
+              password: dbConfig.password,
+              mediaPaths: dbConfig.mediaPaths || ['/'],
+              scanSettings: dbConfig.scanSettings || {
+                batchSize: 10,
+                preloadCount: 10
+              }
+            })
+            setSelectedPaths(new Set(dbConfig.mediaPaths || []))
+            
+            // 加载扫描缓存数据
+            loadScanCache({
+              url: dbConfig.url,
+              username: dbConfig.username,
+              password: dbConfig.password,
+              mediaPaths: dbConfig.mediaPaths || ['/'],
+              scanSettings: dbConfig.scanSettings || {
+                batchSize: 10,
+                preloadCount: 10
+              }
+            })
+            return
+          }
         }
-        setConfig(parsed)
-        setSelectedPaths(new Set(parsed.mediaPaths || []))
-        
-        // 加载扫描缓存数据
-        loadScanCache(parsed)
-      } catch (e) {
-        console.error('加载配置失败:', e)
+      } catch (error) {
+        console.error('从数据库加载配置失败:', error)
+      }
+      
+      // 如果数据库中没有配置，尝试从 localStorage 加载（向后兼容）
+      const savedConfig = localStorage.getItem('webdav_config')
+      if (savedConfig) {
+        try {
+          const parsed = JSON.parse(savedConfig)
+          // 兼容旧版本配置
+          if (parsed.mediaPath && !parsed.mediaPaths) {
+            parsed.mediaPaths = [parsed.mediaPath]
+          }
+          setConfig(parsed)
+          setSelectedPaths(new Set(parsed.mediaPaths || []))
+          
+          // 加载扫描缓存数据
+          loadScanCache(parsed)
+          
+          // 如果 localStorage 中有配置，尝试将其保存到数据库（迁移）
+          if (parsed.url && parsed.username) {
+            try {
+              await fetch('/api/webdav-config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  url: parsed.url,
+                  username: parsed.username,
+                  password: parsed.password,
+                  mediaPaths: parsed.mediaPaths || ['/'],
+                  scanSettings: parsed.scanSettings || {
+                    batchSize: 10,
+                    preloadCount: 10
+                  },
+                  isDefault: true // 迁移时设为默认配置
+                })
+              })
+            } catch (migrationError) {
+              console.error('迁移配置到数据库失败:', migrationError)
+            }
+          }
+        } catch (e) {
+          console.error('加载配置失败:', e)
+        }
       }
     }
+    
+    loadConfig()
     
     // 加载定时扫描任务
     loadScheduledScans()
@@ -281,6 +345,35 @@ export default function ConfigPage() {
         ...config,
         mediaPaths: Array.from(selectedPaths),
       }
+      
+      // 同时保存到数据库和 localStorage（向后兼容）
+      try {
+        // 保存到数据库
+        const dbResponse = await fetch('/api/webdav-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: configToSave.url,
+            username: configToSave.username,
+            password: configToSave.password,
+            mediaPaths: configToSave.mediaPaths,
+            scanSettings: configToSave.scanSettings || {
+              batchSize: 10,
+              preloadCount: 10
+            },
+            isDefault: true // 当前配置设为默认
+          })
+        })
+        
+        if (!dbResponse.ok) {
+          console.error('保存到数据库失败:', await dbResponse.text())
+        }
+      } catch (dbError) {
+        console.error('保存到数据库失败:', dbError)
+        // 数据库保存失败不影响继续保存到 localStorage
+      }
+      
+      // 保存到 localStorage（向后兼容）
       localStorage.setItem('webdav_config', JSON.stringify(configToSave))
       
       // 保存成功后，启动后台扫描
