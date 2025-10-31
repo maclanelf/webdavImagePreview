@@ -1898,6 +1898,67 @@ export default function HomePage() {
           />
         )}
 
+        {/* 左上角：索引信息 */}
+        <Box
+          sx={{
+            position: 'fixed',
+            top: 24,
+            left: 24,
+            backgroundColor: 'rgba(0, 0, 0, 0.7)',
+            color: 'white',
+            px: 2.5,
+            py: 1.5,
+            borderRadius: 2,
+            zIndex: 2001,
+            backdropFilter: 'blur(10px)',
+          }}
+        >
+          <Typography variant="body1" fontWeight="medium">
+            {viewMode === 'gallery' && currentGroup.length > 0
+              ? `${currentGroupIndex + 1} / ${currentGroup.length}`
+              : (() => {
+                  const filteredFiles = getFilteredFiles()
+                  const currentIndex = currentFile 
+                    ? filteredFiles.findIndex(f => f.filename === currentFile.filename)
+                    : -1
+                  return currentIndex >= 0 
+                    ? `${currentIndex + 1} / ${filteredFiles.length}`
+                    : '1 / 1'
+                })()}
+          </Typography>
+        </Box>
+
+        {/* 左下角：星星等级设置 - 鼠标悬停显示，避免遮挡图片 */}
+        <Box
+          sx={{
+            position: 'fixed',
+            bottom: 24,
+            left: 24,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            backdropFilter: 'blur(8px)',
+            px: 1.5,
+            py: 1,
+            borderRadius: 1.5,
+            zIndex: 2001,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 0.5,
+            opacity: 0.5,
+            transition: 'opacity 0.3s ease-in-out',
+            '&:hover': {
+              opacity: 1,
+            },
+          }}
+        >
+          <QuickRating
+            currentRating={currentRating?.rating}
+            onQuickRate={handleQuickRate}
+            disabled={loading || isSwitching}
+            fullscreen={false}
+            hideText={true}
+          />
+        </Box>
+
         {/* 退出全屏按钮 */}
         <Tooltip title="退出全屏" placement="left">
           <Fab
@@ -1907,6 +1968,7 @@ export default function HomePage() {
               position: 'fixed',
               top: 24,
               right: 24,
+              zIndex: 2001,
             }}
           >
             <FullscreenExitIcon />
@@ -1925,9 +1987,10 @@ export default function HomePage() {
                   disabled={loading || isSwitching}
                   sx={{
                     position: 'fixed',
-                    bottom: 100,
+                    bottom: 120,
                     left: 24,
                     backgroundColor: 'rgba(255, 255, 255, 0.9)',
+                    zIndex: 2001,
                   }}
                 >
                   <ArrowBackIcon />
@@ -1952,24 +2015,6 @@ export default function HomePage() {
               </Fab>
             </Tooltip>
 
-            {/* 进度指示 */}
-            <Box
-              sx={{
-                position: 'fixed',
-                bottom: 24,
-                left: '50%',
-                transform: 'translateX(-50%)',
-                backgroundColor: 'rgba(0, 0, 0, 0.7)',
-                color: 'white',
-                px: 2,
-                py: 1,
-                borderRadius: 2,
-              }}
-            >
-              <Typography variant="body2">
-                {currentGroupIndex + 1} / {currentGroup.length}
-              </Typography>
-            </Box>
 
             {/* 换组按钮 */}
             <Tooltip title="换下一组" placement="left">

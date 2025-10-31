@@ -18,6 +18,8 @@ interface QuickRatingProps {
   currentRating?: number
   onQuickRate: (rating: number, evaluation: string) => void
   disabled?: boolean
+  fullscreen?: boolean // 全屏模式，显示更大的星星
+  hideText?: boolean // 隐藏文字标签，只显示星星
 }
 
 const quickRatingConfig = [
@@ -28,14 +30,17 @@ const quickRatingConfig = [
   { rating: 5, evaluation: '爽死了', color: 'success' as const },
 ]
 
-export default function QuickRating({ currentRating, onQuickRate, disabled }: QuickRatingProps) {
+export default function QuickRating({ currentRating, onQuickRate, disabled, fullscreen = false, hideText = false }: QuickRatingProps) {
   const handleQuickRate = (rating: number, evaluation: string) => {
     onQuickRate(rating, evaluation)
   }
 
+  const iconSize = fullscreen ? 'medium' : 'small'
+  const buttonSize = fullscreen ? 'medium' : 'small'
+
   return (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-      <Stack direction="row" spacing={0.5} alignItems="center">
+      <Stack direction="row" spacing={fullscreen ? 1 : 0.5} alignItems="center">
         {quickRatingConfig.map((config) => {
           // 判断这颗星是否应该点亮
           const isLit = currentRating && currentRating >= config.rating
@@ -47,23 +52,30 @@ export default function QuickRating({ currentRating, onQuickRate, disabled }: Qu
               placement="top"
             >
               <IconButton
-                size="small"
+                size={buttonSize as any}
                 onClick={() => handleQuickRate(config.rating, config.evaluation)}
                 disabled={disabled}
                 sx={{
-                  // 点亮的星星统一使用橙色，未点亮的使用灰色
-                  color: isLit ? 'warning.main' : 'text.secondary',
+                  // 点亮的星星统一使用橙色，未点亮的根据模式调整颜色
+                  color: isLit 
+                    ? 'warning.main' 
+                    : fullscreen 
+                      ? 'rgba(255, 255, 255, 0.7)' // 全屏模式：白色半透明
+                      : 'text.secondary', // 非全屏模式：灰色
                   '&:hover': {
                     backgroundColor: `${config.color}.light`,
                     color: `${config.color}.main`,
                   },
                   transition: 'all 0.2s ease-in-out',
+                  ...(fullscreen && {
+                    fontSize: '1.5rem',
+                  })
                 }}
               >
                 {isLit ? (
-                  <Star fontSize="small" />
+                  <Star fontSize={iconSize} />
                 ) : (
-                  <StarBorder fontSize="small" />
+                  <StarBorder fontSize={iconSize} />
                 )}
               </IconButton>
             </Tooltip>
@@ -71,12 +83,18 @@ export default function QuickRating({ currentRating, onQuickRate, disabled }: Qu
         })}
       </Stack>
       
-      {currentRating && (
+      {currentRating && !hideText && (
         <Chip
           label={`${currentRating}星 - ${quickRatingConfig[currentRating - 1]?.evaluation || '已评分'}`}
-          size="small"
+          size={fullscreen ? 'medium' : 'small'}
           color={quickRatingConfig[currentRating - 1]?.color || 'default'}
           variant="outlined"
+          sx={{
+            ...(fullscreen && {
+              color: 'white',
+              borderColor: 'rgba(255, 255, 255, 0.5)',
+            })
+          }}
         />
       )}
     </Box>
