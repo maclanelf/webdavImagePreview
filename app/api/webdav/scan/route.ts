@@ -104,7 +104,17 @@ export async function POST(request: NextRequest) {
 
       const duration = Date.now() - startTime
 
-      // 保存到缓存
+      // 检查扫描结果是否有效（有文件内容且没有错误）
+      if (!result || !result.files || result.files.length === 0) {
+        throw new Error('扫描完成但未找到任何文件')
+      }
+
+      // 如果强制重新扫描，在扫描成功后再清除并替换缓存
+      if (forceRescan) {
+        scanCache.delete(url, username, path)
+      }
+
+      // 保存到缓存（扫描成功且确认有文件内容）
       const filesData = result.files.map(file => ({
         filename: file.filename,
         basename: file.basename,
