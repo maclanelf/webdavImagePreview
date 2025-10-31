@@ -2159,8 +2159,19 @@ export default function HomePage() {
             
             {/* 文件信息 - 紧凑显示 */}
             <CardContent sx={{ py: 1.5 }}>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Typography variant="body1" fontWeight="medium" noWrap sx={{ flex: 1 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 1 }}>
+                <Typography 
+                  variant="body1" 
+                  fontWeight="medium" 
+                  sx={{ 
+                    flex: 1,
+                    wordBreak: 'break-all',
+                    wordWrap: 'break-word',
+                    overflowWrap: 'break-word',
+                    whiteSpace: 'normal',
+                    minWidth: 0  // 允许收缩
+                  }}
+                >
                   {currentFile.basename}
                 </Typography>
                 {viewMode === 'gallery' && currentGroup.length > 0 && (
@@ -2168,10 +2179,23 @@ export default function HomePage() {
                     label={`${currentGroupIndex + 1}/${currentGroup.length}`} 
                     size="small" 
                     color="primary"
+                    sx={{ flexShrink: 0 }}  // 防止Chip被压缩
                   />
                 )}
               </Box>
-              <Typography variant="body2" color="text.secondary" noWrap sx={{ mt: 0.5 }}>
+              <Typography 
+                variant="body2" 
+                color="text.secondary" 
+                sx={{ 
+                  mt: 0.5,
+                  wordBreak: 'break-all',
+                  wordWrap: 'break-word',
+                  overflowWrap: 'break-word',
+                  whiteSpace: 'normal',
+                  width: '100%',
+                  boxSizing: 'border-box'
+                }}
+              >
                 {currentFile.filename}
               </Typography>
               <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', mt: 0.5 }}>
