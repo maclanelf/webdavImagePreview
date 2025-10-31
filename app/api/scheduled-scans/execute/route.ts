@@ -20,6 +20,7 @@ interface ScheduledTask {
 
 // 手动执行定时扫描任务
 export async function POST(request: NextRequest) {
+  let scanTaskId: string | undefined
   try {
     const body = await request.json()
     const { taskId } = body
@@ -63,7 +64,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 启动扫描任务
-    const taskId = scanTaskManager.startTask(task.webdav_url, task.webdav_username, mediaPaths)
+    scanTaskId = scanTaskManager.startTask(task.webdav_url, task.webdav_username, mediaPaths)
     
     let totalFiles = 0
     let totalImages = 0
@@ -169,7 +170,7 @@ export async function POST(request: NextRequest) {
     scheduledScans.updateLastRun(taskId)
 
     // 标记扫描任务完成
-    scanTaskManager.completeTask(taskId)
+    scanTaskManager.completeTask(scanTaskId)
 
     return NextResponse.json({
       message: '定时扫描执行成功',
@@ -179,12 +180,13 @@ export async function POST(request: NextRequest) {
         totalVideos,
         scannedPaths: mediaPaths.length
       },
-      taskId
+      taskId,
+      scanTaskId
     })
   } catch (error: any) {
     // 如果任务已启动，标记为失败
-    if (typeof taskId !== 'undefined') {
-      scanTaskManager.failTask(taskId, error.message)
+    if (typeof scanTaskId !== 'undefined') {
+      scanTaskManager.failTask(scanTaskId, error.message)
     }
     
     console.error('执行定时扫描失败:', error)
