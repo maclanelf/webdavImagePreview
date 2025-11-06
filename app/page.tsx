@@ -45,6 +45,7 @@ import {
   ArrowForward as ArrowForwardIcon,
   SkipNext as SkipNextIcon,
   Star as StarIcon,
+  StarBorder as StarBorderIcon,
   RateReview as RateReviewIcon,
   ManageAccounts as ManageAccountsIcon,
   Refresh as RefreshIcon,
@@ -56,6 +57,15 @@ import RatingDialog from '@/components/RatingDialog'
 import RatingStatus from '@/components/RatingStatus'
 import QuickRating from '@/components/QuickRating'
 import preloadManager from '@/lib/preloadManager'
+
+// 快速评分配置
+const QUICK_RATING_CONFIG = [
+  { rating: 1, evaluation: '丑死了' },
+  { rating: 2, evaluation: '一般' },
+  { rating: 3, evaluation: '还行' },
+  { rating: 4, evaluation: '非常爽' },
+  { rating: 5, evaluation: '爽死了' },
+] as const
 
 interface WebDAVConfig {
   url: string
@@ -1750,7 +1760,7 @@ export default function HomePage() {
       // 自动标记为已看过，默认2星，评价"一般"
       const autoRatingData = {
         rating: 2,
-        customEvaluation: ['一般'],
+        customEvaluation: [QUICK_RATING_CONFIG[1].evaluation],
         isViewed: true
       }
 
@@ -1834,15 +1844,7 @@ export default function HomePage() {
       if (key >= '1' && key <= '5') {
         event.preventDefault() // 阻止默认行为
         const rating = parseInt(key)
-        const quickRatingConfig = [
-          { rating: 1, evaluation: '丑死了' },
-          { rating: 2, evaluation: '一般' },
-          { rating: 3, evaluation: '还行' },
-          { rating: 4, evaluation: '非常爽' },
-          { rating: 5, evaluation: '爽死了' },
-        ]
-        
-        const config = quickRatingConfig[rating - 1]
+        const config = QUICK_RATING_CONFIG[rating - 1]
         if (config) {
           handleQuickRate(config.rating, config.evaluation)
         }
@@ -1982,19 +1984,21 @@ export default function HomePage() {
           </Typography>
         </Box>
 
-        {/* 左下角：星星等级设置 - 鼠标悬停显示，避免遮挡图片 */}
+        {/* 左侧边：星星等级设置 - 纵向显示，避免遮挡视频进度条和按钮 */}
         <Box
           sx={{
             position: 'fixed',
-            bottom: 24,
-            left: 24,
+            left: 8,
+            top: '75%',
+            transform: 'translateY(-50%)',
             backgroundColor: 'rgba(0, 0, 0, 0.5)',
             backdropFilter: 'blur(8px)',
-            px: 1.5,
-            py: 1,
+            px: 1,
+            py: 1.5,
             borderRadius: 1.5,
             zIndex: 2001,
             display: 'flex',
+            flexDirection: 'column',
             alignItems: 'center',
             gap: 0.5,
             opacity: 0.5,
@@ -2002,15 +2006,65 @@ export default function HomePage() {
             '&:hover': {
               opacity: 1,
             },
+            // 图组模式下，稍微上移避免与"上一张"按钮重叠
+            ...(viewMode === 'gallery' && currentGroup.length > 0 && {
+              top: '65%',
+            }),
+            // 移动端优化：确保不遮挡内容
+            '@media (max-width: 768px)': {
+              left: 4,
+              px: 0.5,
+              py: 1,
+              // 移动端图组模式下进一步上移
+              ...(viewMode === 'gallery' && currentGroup.length > 0 && {
+                top: '60%',
+              }),
+            },
           }}
         >
-          <QuickRating
-            currentRating={currentRating?.rating}
-            onQuickRate={handleQuickRate}
-            disabled={loading || isSwitching}
-            fullscreen={false}
-            hideText={true}
-          />
+          <Box
+            sx={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: 0.5,
+            }}
+          >
+            {QUICK_RATING_CONFIG.map((config) => {
+              const isLit = currentRating?.rating && currentRating.rating >= config.rating
+              
+              return (
+                <Tooltip
+                  key={config.rating}
+                  title={`快捷键 ${config.rating}: ${config.rating}星 - ${config.evaluation} - 已看过`}
+                  placement="right"
+                >
+                  <IconButton
+                    size="small"
+                    onClick={() => handleQuickRate(config.rating, config.evaluation)}
+                    disabled={loading || isSwitching}
+                    sx={{
+                      color: isLit 
+                        ? 'warning.main' 
+                        : 'rgba(255, 255, 255, 0.7)',
+                      '&:hover': {
+                        backgroundColor: 'rgba(255, 255, 255, 0.2)',
+                        color: 'warning.main',
+                      },
+                      transition: 'all 0.2s ease-in-out',
+                      p: 0.5,
+                    }}
+                  >
+                    {isLit ? (
+                      <StarIcon fontSize="small" />
+                    ) : (
+                      <StarBorderIcon fontSize="small" />
+                    )}
+                  </IconButton>
+                </Tooltip>
+              )
+            })}
+          </Box>
         </Box>
 
         {/* 退出全屏按钮 */}
@@ -2587,10 +2641,14 @@ export default function HomePage() {
                 快捷键：
               </Typography>
               <Typography variant="caption" color="text.secondary" display="block">
-                1键: 1星-丑死了 | 2键: 2星-一般 | 3键: 3星-还行
+                {QUICK_RATING_CONFIG.slice(0, 3).map(config => 
+                  `${config.rating}键: ${config.rating}星-${config.evaluation}`
+                ).join(' | ')}
               </Typography>
               <Typography variant="caption" color="text.secondary" display="block">
-                4键: 4星-非常爽 | 5键: 5星-爽死了
+                {QUICK_RATING_CONFIG.slice(3).map(config => 
+                  `${config.rating}键: ${config.rating}星-${config.evaluation}`
+                ).join(' | ')}
               </Typography>
               <Typography variant="caption" color="primary.main" display="block" sx={{ mt: 1, fontWeight: 'medium' }}>
                 R键: 打开详细评分对话框
