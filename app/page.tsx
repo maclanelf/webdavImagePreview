@@ -175,6 +175,9 @@ export default function HomePage() {
   // 视频元素引用
   const videoRef = useRef<HTMLVideoElement>(null)
   const fullscreenVideoRef = useRef<HTMLVideoElement>(null)
+  
+  // 视频播放状态保存（用于全屏切换时保持播放状态）
+  const videoStateRef = useRef<{ currentTime: number; paused: boolean } | null>(null)
 
   useEffect(() => {
     // 初始化应用服务
@@ -1013,6 +1016,9 @@ export default function HomePage() {
     // 切换文件时立即重置自动评分标志
     hasAutoRatedRef.current = false
     
+    // 清除保存的视频状态，确保新视频可以自动播放
+    videoStateRef.current = null
+    
     setLoading(true)
     setError(null)
     
@@ -1296,6 +1302,9 @@ export default function HomePage() {
     // 切换文件时立即重置自动评分标志
     hasAutoRatedRef.current = false
     
+    // 清除保存的视频状态，确保新视频可以自动播放
+    videoStateRef.current = null
+    
     setLoading(true)
     setError(null)
 
@@ -1576,6 +1585,25 @@ export default function HomePage() {
   }
 
   const toggleFullscreen = () => {
+    const isVideoFile = currentFile && isVideo(currentFile.filename)
+    
+    if (isVideoFile) {
+      // 保存当前视频播放状态（注意：fullscreen 是切换前的状态）
+      // 如果当前是全屏，保存全屏视频的状态；如果当前不是全屏，保存非全屏视频的状态
+      const activeVideo = fullscreen ? fullscreenVideoRef.current : videoRef.current
+      if (activeVideo) {
+        videoStateRef.current = {
+          currentTime: activeVideo.currentTime,
+          paused: activeVideo.paused
+        }
+        console.log('保存视频状态:', {
+          currentTime: activeVideo.currentTime,
+          paused: activeVideo.paused,
+          fromFullscreen: fullscreen
+        })
+      }
+    }
+    
     setFullscreen(!fullscreen)
   }
 
@@ -1878,6 +1906,113 @@ export default function HomePage() {
     }
   }, [autoMarkTimer])
 
+  // 全屏切换时恢复视频播放状态
+  useEffect(() => {
+    if (!currentFile || !isVideo(currentFile.filename)) return
+    
+    const savedState = videoStateRef.current
+    if (!savedState) return
+    
+    // 等待 React 渲染完成，确保视频元素已经挂载
+    const timeoutId = setTimeout(() => {
+      const targetVideo = fullscreen ? fullscreenVideoRef.current : videoRef.current
+      
+      if (!targetVideo) {
+        console.warn('视频元素未找到，无法恢复状态')
+        return
+      }
+      
+      console.log('准备恢复视频状态:', {
+        currentTime: savedState.currentTime,
+        paused: savedState.paused,
+        toFullscreen: fullscreen,
+        videoReadyState: targetVideo.readyState
+      })
+      
+      // 先暂停视频，避免自动播放干扰
+      targetVideo.pause()
+      
+      // 恢复播放状态的函数
+      const restorePlayback = () => {
+        console.log('视频时间设置完成，准备恢复播放状态')
+        // 恢复播放状态
+        if (!savedState.paused) {
+          targetVideo.play().catch(error => {
+            console.warn('恢复视频播放失败:', error)
+          })
+        }
+        // 恢复完成后清除保存的状态
+        videoStateRef.current = null
+      }
+      
+      // 设置视频时间
+      const restoreTime = () => {
+        const timeDiff = Math.abs(targetVideo.currentTime - savedState.currentTime)
+        // 如果时间差很小（小于0.1秒），认为已经设置成功
+        if (timeDiff < 0.1) {
+          console.log('视频时间已接近目标时间，直接恢复播放状态')
+          restorePlayback()
+          return
+        }
+        
+        targetVideo.currentTime = savedState.currentTime
+        console.log('已设置视频时间:', savedState.currentTime)
+        
+        // 监听时间设置完成事件
+        const handleSeeked = () => {
+          restorePlayback()
+        }
+        targetVideo.addEventListener('seeked', handleSeeked, { once: true })
+      }
+      
+      let handleLoadedMetadata: (() => void) | null = null
+      
+      // 如果视频已经加载了元数据，可以直接设置时间
+      if (targetVideo.readyState >= 1) {
+        restoreTime()
+      } else {
+        // 等待视频加载元数据
+        handleLoadedMetadata = () => {
+          restoreTime()
+        }
+        targetVideo.addEventListener('loadedmetadata', handleLoadedMetadata, { once: true })
+      }
+    }, 0)
+    
+    return () => {
+      clearTimeout(timeoutId)
+    }
+  }, [fullscreen, currentFile])
+
+  // 确保视频加载完成后自动播放（修复从图片切换到视频不自动播放的问题）
+  useEffect(() => {
+    if (!currentFile || !isVideo(currentFile.filename)) return
+    
+    const targetVideo = fullscreen ? fullscreenVideoRef.current : videoRef.current
+    
+    if (targetVideo) {
+      const handleCanPlay = () => {
+        // 只有在没有保存状态时才自动播放（避免与恢复状态冲突）
+        if (!videoStateRef.current) {
+          targetVideo.play().catch(error => {
+            // 浏览器可能阻止自动播放，这是正常的
+            console.log('视频自动播放被阻止:', error)
+          })
+        }
+      }
+      
+      if (targetVideo.readyState >= 3) {
+        // 视频已经可以播放
+        handleCanPlay()
+      } else {
+        targetVideo.addEventListener('canplay', handleCanPlay, { once: true })
+        return () => {
+          targetVideo.removeEventListener('canplay', handleCanPlay)
+        }
+      }
+    }
+  }, [currentFile, fullscreen, mediaUrl])
+
   if (!config) {
     return (
       <Container maxWidth="md" sx={{ py: 8 }}>
@@ -1942,7 +2077,7 @@ export default function HomePage() {
             ref={fullscreenVideoRef}
             src={mediaUrl}
             controls
-            autoPlay
+            autoPlay={!videoStateRef.current}
             onTimeUpdate={handleVideoTimeUpdate}
             onEnded={handleVideoEnded}
             sx={{
@@ -2298,7 +2433,7 @@ export default function HomePage() {
                   ref={videoRef}
                   src={mediaUrl}
                   controls
-                  autoPlay
+                  autoPlay={!videoStateRef.current}
                   onTimeUpdate={handleVideoTimeUpdate}
                   onEnded={handleVideoEnded}
                   sx={{
