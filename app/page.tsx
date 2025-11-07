@@ -56,6 +56,10 @@ import { useRouter } from 'next/navigation'
 import RatingDialog from '@/components/RatingDialog'
 import RatingStatus from '@/components/RatingStatus'
 import QuickRating from '@/components/QuickRating'
+// 适用于全屏的评分组件可拖拽
+import DraggableBox from '@/components/DraggableBox'
+// 适用于全屏模式换一个按钮,非全屏模式换一个按钮可拖拽
+import DraggableFab from '@/components/DraggableFab'
 import preloadManager from '@/lib/preloadManager'
 
 // 快速评分配置
@@ -179,29 +183,6 @@ export default function HomePage() {
   // 视频播放状态保存（用于全屏切换时保持播放状态）
   const videoStateRef = useRef<{ currentTime: number; paused: boolean } | null>(null)
   
-  // 可拖动组件的位置状态
-  const [fullscreenRatingPosition, setFullscreenRatingPosition] = useState<{ x: number; y: number } | null>(null)
-  const [fullscreenShufflePosition, setFullscreenShufflePosition] = useState<{ x: number; y: number } | null>(null)
-  const [normalShufflePosition, setNormalShufflePosition] = useState<{ x: number; y: number } | null>(null)
-  
-  // 拖动状态
-  const dragStateRef = useRef<{ 
-    isDragging: boolean
-    startX: number
-    startY: number
-    elementX: number
-    elementY: number
-    target: 'fullscreen-rating' | 'fullscreen-shuffle' | 'normal-shuffle' | null
-    lastPosition: { x: number; y: number } | null
-  }>({
-    isDragging: false,
-    startX: 0,
-    startY: 0,
-    elementX: 0,
-    elementY: 0,
-    target: null,
-    lastPosition: null
-  })
 
   useEffect(() => {
     // 初始化应用服务
@@ -311,30 +292,6 @@ export default function HomePage() {
 
     // 加载已看过文件列表
     loadViewedFiles()
-    
-    // 从localStorage加载可拖动组件的位置
-    const loadDraggablePositions = () => {
-      try {
-        const fullscreenRatingPos = localStorage.getItem('draggable_fullscreen_rating_position')
-        if (fullscreenRatingPos) {
-          setFullscreenRatingPosition(JSON.parse(fullscreenRatingPos))
-        }
-        
-        const fullscreenShufflePos = localStorage.getItem('draggable_fullscreen_shuffle_position')
-        if (fullscreenShufflePos) {
-          setFullscreenShufflePosition(JSON.parse(fullscreenShufflePos))
-        }
-        
-        const normalShufflePos = localStorage.getItem('draggable_normal_shuffle_position')
-        if (normalShufflePos) {
-          setNormalShufflePosition(JSON.parse(normalShufflePos))
-        }
-      } catch (error) {
-        console.error('加载可拖动组件位置失败:', error)
-      }
-    }
-    
-    loadDraggablePositions()
   }, [])
 
   // 监听缓存状态变化，自动更新进度显示（图组模式和随机模式都支持）
@@ -1632,239 +1589,6 @@ export default function HomePage() {
     setDrawerOpen(open)
   }
 
-  // 保存位置到localStorage
-  const savePosition = (target: 'fullscreen-rating' | 'fullscreen-shuffle' | 'normal-shuffle', position: { x: number; y: number }) => {
-    try {
-      const key = `draggable_${target.replace('-', '_')}_position`
-      localStorage.setItem(key, JSON.stringify(position))
-    } catch (error) {
-      console.error('保存位置失败:', error)
-    }
-  }
-
-  // 拖动处理函数
-  const handleDragStart = (e: React.MouseEvent | React.TouchEvent, target: 'fullscreen-rating' | 'fullscreen-shuffle' | 'normal-shuffle') => {
-    // 注意：不在这里调用preventDefault，让事件正常传播
-    
-    const isMouseEvent = e.type === 'mousedown'
-    const isTouchEvent = e.type === 'touchstart'
-    const element = e.currentTarget as HTMLElement
-    
-    let longPressTimer: NodeJS.Timeout | null = null
-    let startX = 0
-    let startY = 0
-    let isLongPressActivated = false
-    
-    const preventDefault = (event: Event) => {
-      event.preventDefault()
-    }
-    
-    const handleStart = (clientX: number, clientY: number) => {
-      isLongPressActivated = true
-      
-      // 防止默认行为（如文本选择、链接跳转等）
-      if (isMouseEvent) {
-        document.addEventListener('selectstart', preventDefault, { once: true })
-      }
-      
-      const currentPosition = 
-        target === 'fullscreen-rating' ? fullscreenRatingPosition :
-        target === 'fullscreen-shuffle' ? fullscreenShufflePosition :
-        normalShufflePosition
-      
-      // 如果没有保存的位置，计算默认位置
-      let elementX = currentPosition?.x || 0
-      let elementY = currentPosition?.y || 0
-      
-      if (!currentPosition && element) {
-        // 计算当前元素的位置
-        const rect = element.getBoundingClientRect()
-        elementX = rect.left
-        elementY = rect.top
-      }
-      
-      dragStateRef.current = {
-        isDragging: true,
-        startX: clientX,
-        startY: clientY,
-        elementX,
-        elementY,
-        target,
-        lastPosition: null
-      }
-      
-      // 添加拖动样式
-      document.body.style.cursor = 'grabbing'
-      document.body.style.userSelect = 'none'
-      
-      console.log('开始拖动:', target, { elementX, elementY, clientX, clientY })
-      
-      // 直接在这里添加事件监听器
-      const handleMove = (moveClientX: number, moveClientY: number) => {
-        if (!dragStateRef.current.isDragging) return
-        
-        const { startX, startY, elementX, elementY, target } = dragStateRef.current
-        const deltaX = moveClientX - startX
-        const deltaY = moveClientY - startY
-        
-        const newPosition = {
-          x: elementX + deltaX,
-          y: elementY + deltaY
-        }
-        
-        // 限制在视口内
-        const maxX = window.innerWidth - 50
-        const maxY = window.innerHeight - 50
-        newPosition.x = Math.max(0, Math.min(maxX, newPosition.x))
-        newPosition.y = Math.max(0, Math.min(maxY, newPosition.y))
-        
-        console.log('拖动中:', target, newPosition)
-        
-        // 更新位置状态
-        if (target === 'fullscreen-rating') {
-          setFullscreenRatingPosition(newPosition)
-          dragStateRef.current.lastPosition = newPosition
-        } else if (target === 'fullscreen-shuffle') {
-          setFullscreenShufflePosition(newPosition)
-          dragStateRef.current.lastPosition = newPosition
-        } else if (target === 'normal-shuffle') {
-          setNormalShufflePosition(newPosition)
-          dragStateRef.current.lastPosition = newPosition
-        }
-      }
-      
-      const handleMouseMove = (e: MouseEvent) => {
-        e.preventDefault()
-        handleMove(e.clientX, e.clientY)
-      }
-      
-      const handleTouchMove = (e: TouchEvent) => {
-        e.preventDefault()
-        if (e.touches.length > 0) {
-          handleMove(e.touches[0].clientX, e.touches[0].clientY)
-        }
-      }
-      
-      const handleEnd = () => {
-        if (dragStateRef.current.isDragging) {
-          const { target, lastPosition } = dragStateRef.current
-          
-          console.log('拖动结束:', target, lastPosition)
-          
-          // 保存位置
-          if (lastPosition && target) {
-            savePosition(target, lastPosition)
-          }
-          
-          dragStateRef.current.isDragging = false
-          dragStateRef.current.target = null
-          dragStateRef.current.lastPosition = null
-          document.body.style.cursor = ''
-          document.body.style.userSelect = ''
-          
-          // 移除事件监听器
-          document.removeEventListener('mousemove', handleMouseMove)
-          document.removeEventListener('touchmove', handleTouchMove)
-        }
-      }
-      
-      // 添加事件监听器
-      document.addEventListener('mousemove', handleMouseMove, { passive: false })
-      document.addEventListener('touchmove', handleTouchMove, { passive: false })
-      document.addEventListener('mouseup', handleEnd, { once: true })
-      document.addEventListener('touchend', handleEnd, { once: true })
-      document.addEventListener('touchcancel', handleEnd, { once: true })
-    }
-    
-    const cleanup = () => {
-      if (longPressTimer) {
-        clearTimeout(longPressTimer)
-        longPressTimer = null
-      }
-    }
-    
-    if (isMouseEvent) {
-      const mouseEvent = e as React.MouseEvent
-      if (mouseEvent.button !== 0) return // 只处理左键
-      
-      startX = mouseEvent.clientX
-      startY = mouseEvent.clientY
-      
-      longPressTimer = setTimeout(() => {
-        if (!isLongPressActivated) {
-          handleStart(startX, startY)
-        }
-        cleanup()
-      }, 300)
-      
-      const handleMouseUp = () => {
-        cleanup()
-        if (!isLongPressActivated) {
-          document.removeEventListener('mouseup', handleMouseUp)
-          document.removeEventListener('mousemove', handleMouseMove)
-        }
-      }
-      
-      const handleMouseMove = (moveEvent: MouseEvent) => {
-        // 只有在长按激活前才检查移动距离
-        if (!isLongPressActivated) {
-          const moveDistance = Math.abs(moveEvent.clientX - startX) + Math.abs(moveEvent.clientY - startY)
-          if (moveDistance > 10) {
-            // 移动距离超过10px，取消长按检测
-            cleanup()
-            document.removeEventListener('mouseup', handleMouseUp)
-            document.removeEventListener('mousemove', handleMouseMove)
-          }
-        }
-      }
-      
-      document.addEventListener('mouseup', handleMouseUp, { once: true })
-      document.addEventListener('mousemove', handleMouseMove)
-    } else if (isTouchEvent) {
-      const touchEvent = e as React.TouchEvent
-      const touch = touchEvent.touches[0]
-      if (!touch) return
-      
-      startX = touch.clientX
-      startY = touch.clientY
-      
-      longPressTimer = setTimeout(() => {
-        if (!isLongPressActivated) {
-          handleStart(startX, startY)
-        }
-        cleanup()
-      }, 300)
-      
-      const handleTouchEnd = () => {
-        cleanup()
-        if (!isLongPressActivated) {
-          document.removeEventListener('touchend', handleTouchEnd)
-          document.removeEventListener('touchcancel', handleTouchEnd)
-          document.removeEventListener('touchmove', handleTouchMove)
-        }
-      }
-      
-      const handleTouchMove = (moveEvent: TouchEvent) => {
-        if (!isLongPressActivated && moveEvent.touches.length > 0) {
-          const moveTouch = moveEvent.touches[0]
-          const moveDistance = Math.abs(moveTouch.clientX - startX) + Math.abs(moveTouch.clientY - startY)
-          if (moveDistance > 10) {
-            // 移动距离超过10px，取消长按检测
-            cleanup()
-            document.removeEventListener('touchend', handleTouchEnd)
-            document.removeEventListener('touchcancel', handleTouchEnd)
-            document.removeEventListener('touchmove', handleTouchMove)
-          }
-        }
-      }
-      
-      document.addEventListener('touchend', handleTouchEnd, { once: true })
-      document.addEventListener('touchcancel', handleTouchEnd, { once: true })
-      document.addEventListener('touchmove', handleTouchMove)
-    }
-  }
-
-  // 拖动过程处理已移到 handleStart 中直接处理
 
   const toggleFullscreen = () => {
     const isVideoFile = currentFile && isVideo(currentFile.filename)
@@ -2402,20 +2126,9 @@ export default function HomePage() {
         </Box>
 
         {/* 左侧边：星星等级设置 - 纵向显示，可拖动 */}
-        <Box
-          onMouseDown={(e) => {
-            e.stopPropagation()
-            handleDragStart(e, 'fullscreen-rating')
-          }}
-          onTouchStart={(e) => {
-            e.stopPropagation()
-            handleDragStart(e, 'fullscreen-rating')
-          }}
-          sx={{
-            position: 'fixed',
-            left: fullscreenRatingPosition ? `${fullscreenRatingPosition.x}px` : 8,
-            top: fullscreenRatingPosition ? `${fullscreenRatingPosition.y}px` : '75%',
-            transform: fullscreenRatingPosition ? 'none' : 'translateY(-50%)',
+        <DraggableBox
+          storageKey="fullscreen_rating"
+          defaultSx={{
             backgroundColor: 'rgba(0, 0, 0, 0.5)',
             backdropFilter: 'blur(8px)',
             px: 1,
@@ -2426,34 +2139,29 @@ export default function HomePage() {
             flexDirection: 'column',
             alignItems: 'center',
             gap: 0.5,
-            opacity: dragStateRef.current.isDragging && dragStateRef.current.target === 'fullscreen-rating' ? 0.8 : 0.5,
-            transition: dragStateRef.current.isDragging && dragStateRef.current.target === 'fullscreen-rating' ? 'none' : 'opacity 0.3s ease-in-out',
-            cursor: 'grab',
-            userSelect: 'none',
+            opacity: 0.5,
             '&:hover': {
               opacity: 1,
             },
-            '&:active': {
-              cursor: 'grabbing',
+            '@media (max-width: 768px)': {
+              px: 0.5,
+              py: 1,
             },
+          }}
+          sx={({ position }: { position: { x: number; y: number } | null; isDragging: boolean }) => ({
             // 如果没有保存位置，使用默认位置和响应式样式
-            ...(!fullscreenRatingPosition && {
-              // 图组模式下，稍微上移避免与"上一张"按钮重叠
-              ...(viewMode === 'gallery' && currentGroup.length > 0 && {
-                top: '65%',
-              }),
-              // 移动端优化：确保不遮挡内容
+            ...(!position && {
+              left: 8,
+              top: viewMode === 'gallery' && currentGroup.length > 0 ? '65%' : '75%',
+              transform: 'translateY(-50%)',
               '@media (max-width: 768px)': {
                 left: 4,
-                px: 0.5,
-                py: 1,
-                // 移动端图组模式下进一步上移
                 ...(viewMode === 'gallery' && currentGroup.length > 0 && {
                   top: '60%',
                 }),
               },
             }),
-          }}
+          })}
         >
           <Box
             sx={{
@@ -2498,7 +2206,7 @@ export default function HomePage() {
               )
             })}
           </Box>
-        </Box>
+        </DraggableBox>
 
         {/* 退出全屏按钮 */}
         <Tooltip title="退出全屏" placement="left">
@@ -2577,45 +2285,19 @@ export default function HomePage() {
 
         {/* 换一个按钮（随机模式或图组模式下的默认按钮）- 可拖动 */}
         <Tooltip title={loading ? '加载中...' : (viewMode === 'gallery' ? '下一张' : '换一个')} placement="left">
-          <Fab
+          <DraggableFab
+            storageKey="fullscreen_shuffle"
             color="primary"
             aria-label="换一个"
-            onClick={(e) => {
-              if (dragStateRef.current.isDragging) {
-                e.preventDefault()
-                e.stopPropagation()
-                return
-              }
-              loadRandomMedia()
-            }}
+            onClick={loadRandomMedia}
             disabled={loading || isSwitching}
-            onMouseDown={(e) => {
-              e.stopPropagation()
-              handleDragStart(e, 'fullscreen-shuffle')
-            }}
-            onTouchStart={(e) => {
-              e.stopPropagation()
-              handleDragStart(e, 'fullscreen-shuffle')
-            }}
-            sx={{
-              position: 'fixed',
-              left: fullscreenShufflePosition ? `${fullscreenShufflePosition.x}px` : undefined,
-              top: fullscreenShufflePosition ? `${fullscreenShufflePosition.y}px` : undefined,
-              bottom: fullscreenShufflePosition ? undefined : 24,
-              right: fullscreenShufflePosition ? undefined : 24,
-              cursor: dragStateRef.current.isDragging && dragStateRef.current.target === 'fullscreen-shuffle' ? 'grabbing' : 'grab',
-              userSelect: 'none',
-              '&:active': {
-                cursor: 'grabbing',
-              },
-            }}
           >
             {loading ? (
               <CircularProgress size={24} color="inherit" />
             ) : (
               viewMode === 'gallery' ? <ArrowForwardIcon /> : <ShuffleIcon />
             )}
-          </Fab>
+          </DraggableFab>
         </Tooltip>
 
         {/* 评分提示 - 全屏模式 */}
@@ -3422,38 +3104,14 @@ export default function HomePage() {
         } 
         placement="left"
       >
-        <Fab
+        <DraggableFab
+          storageKey="normal_shuffle"
           color="primary"
           aria-label="换一个"
-          onClick={(e) => {
-            if (dragStateRef.current.isDragging) {
-              e.preventDefault()
-              e.stopPropagation()
-              return
-            }
-            loadRandomMedia()
-          }}
+          onClick={loadRandomMedia}
           disabled={loading || isSwitching || (viewMode === 'gallery' && !galleryPreloadReady && preloadEnabled)}
-          onMouseDown={(e) => {
-            e.stopPropagation()
-            handleDragStart(e, 'normal-shuffle')
-          }}
-          onTouchStart={(e) => {
-            e.stopPropagation()
-            handleDragStart(e, 'normal-shuffle')
-          }}
-          sx={{
-            position: 'fixed',
-            left: normalShufflePosition ? `${normalShufflePosition.x}px` : undefined,
-            top: normalShufflePosition ? `${normalShufflePosition.y}px` : undefined,
-            bottom: normalShufflePosition ? undefined : 24,
-            right: normalShufflePosition ? undefined : 24,
+          defaultSx={{
             zIndex: 1000,
-            cursor: dragStateRef.current.isDragging && dragStateRef.current.target === 'normal-shuffle' ? 'grabbing' : 'grab',
-            userSelect: 'none',
-            '&:active': {
-              cursor: 'grabbing',
-            },
           }}
         >
           {loading || (viewMode === 'gallery' && !galleryPreloadReady && preloadEnabled && galleryPreloadProgress) ? (
@@ -3461,7 +3119,7 @@ export default function HomePage() {
           ) : (
             <ShuffleIcon />
           )}
-        </Fab>
+        </DraggableFab>
       </Tooltip>
 
       {/* 评分对话框 */}
