@@ -33,13 +33,15 @@ class PreloadManager {
   }
 
   // 预加载文件列表
-  async preloadFiles(config: any, files: any[], count: number = 10, viewedFilter: string = 'unviewed'): Promise<{
+  async preloadFiles(config: any, files: any[], count: number = 10, viewedFilter: string = 'unviewed', skipLoadViewedFiles: boolean = false): Promise<{
     successCount: number
     failedCount: number
     message: string
   }> {
-    // 从数据库获取已看过的文件列表
-    await this.loadViewedFilesFromDatabase()
+    // 从数据库获取已看过的文件列表（如果不需要跳过）
+    if (!skipLoadViewedFiles) {
+      await this.loadViewedFilesFromDatabase()
+    }
     
     // 筛选符合条件的文件（根据viewedFilter参数决定是否包含已观看的文件）
     const eligibleFiles = files.filter(file => {
@@ -382,7 +384,8 @@ class PreloadManager {
   }
 
   // 智能预加载 - 根据当前文件预测下一个可能查看的文件
-  async smartPreload(config: any, allFiles: any[], currentFile: any, maxCount: number = 10, viewedFilter: string = 'unviewed'): Promise<void> {
+  // randomness: 0-1之间的值，0表示优先当前目录，1表示完全随机
+  async smartPreload(config: any, allFiles: any[], currentFile: any, maxCount: number = 10, viewedFilter: string = 'unviewed', randomness: number = 0): Promise<void> {
     if (!currentFile) return
 
     // 从数据库获取已看过的文件列表
@@ -397,7 +400,7 @@ class PreloadManager {
       return
     }
 
-    console.log(`智能预加载：当前缓存 ${currentCacheSize} 个，需要补齐 ${needCount} 个，筛选条件: ${viewedFilter}`)
+    console.log(`智能预加载：当前缓存 ${currentCacheSize} 个，需要补齐 ${needCount} 个，筛选条件: ${viewedFilter}，随机性: ${randomness}`)
 
     // 根据筛选条件过滤文件
     const filteredFiles = allFiles.filter(file => {
@@ -409,31 +412,79 @@ class PreloadManager {
       return true // viewedFilter === 'all'
     })
 
-    // 获取当前文件所在目录的其他文件（排除当前文件和已缓存的）
-    const currentDir = currentFile.filename.substring(0, currentFile.filename.lastIndexOf('/'))
     const cachedPaths = this.getCachedFilepaths()
+    const currentDir = currentFile.filename.substring(0, currentFile.filename.lastIndexOf('/'))
     
-    const dirFiles = filteredFiles.filter(file => 
-      file.filename.startsWith(currentDir) && 
-      file.filename !== currentFile.filename &&
-      !cachedPaths.includes(file.filename)
-    )
+    let filesToPreload: any[] = []
 
-    // 如果目录内文件不够，从其他目录随机选择（排除已缓存的）
-    const remainingCount = needCount - dirFiles.length
-    if (remainingCount > 0) {
+    if (randomness >= 1) {
+      // 完全随机模式：从所有符合条件的文件中随机选择
+      const availableFiles = filteredFiles.filter(file => 
+        file.filename !== currentFile.filename &&
+        !cachedPaths.includes(file.filename)
+      )
+      const shuffledFiles = [...availableFiles].sort(() => Math.random() - 0.5)
+      filesToPreload = shuffledFiles.slice(0, needCount)
+    } else if (randomness <= 0) {
+      // 完全优先当前目录模式：优先选择当前目录的文件
+      const dirFiles = filteredFiles.filter(file => 
+        file.filename.startsWith(currentDir) && 
+        file.filename !== currentFile.filename &&
+        !cachedPaths.includes(file.filename)
+      )
+      
+      // 如果目录内文件不够，从其他目录随机选择（排除已缓存的）
+      const remainingCount = needCount - dirFiles.length
+      if (remainingCount > 0) {
+        const otherFiles = filteredFiles.filter(file => 
+          !file.filename.startsWith(currentDir) &&
+          !cachedPaths.includes(file.filename)
+        )
+        const randomFiles = [...otherFiles].sort(() => Math.random() - 0.5).slice(0, remainingCount)
+        filesToPreload = [...dirFiles, ...randomFiles]
+      } else {
+        filesToPreload = dirFiles.slice(0, needCount)
+      }
+    } else {
+      // 混合模式：根据randomness值决定当前目录和其他目录的比例
+      const dirFiles = filteredFiles.filter(file => 
+        file.filename.startsWith(currentDir) && 
+        file.filename !== currentFile.filename &&
+        !cachedPaths.includes(file.filename)
+      )
+      
       const otherFiles = filteredFiles.filter(file => 
         !file.filename.startsWith(currentDir) &&
         !cachedPaths.includes(file.filename)
       )
-      const randomFiles = [...otherFiles].sort(() => Math.random() - 0.5).slice(0, remainingCount)
-      dirFiles.push(...randomFiles)
+      
+      // 计算当前目录应该选择的数量（randomness越小，当前目录占比越大）
+      const dirCount = Math.floor(needCount * (1 - randomness))
+      const otherCount = needCount - dirCount
+      
+      // 从当前目录选择文件
+      const selectedDirFiles = dirFiles.slice(0, Math.min(dirCount, dirFiles.length))
+      
+      // 从其他目录随机选择文件
+      const shuffledOtherFiles = [...otherFiles].sort(() => Math.random() - 0.5)
+      const selectedOtherFiles = shuffledOtherFiles.slice(0, Math.min(otherCount, shuffledOtherFiles.length))
+      
+      filesToPreload = [...selectedDirFiles, ...selectedOtherFiles]
+      
+      // 如果还不够，随机补充
+      if (filesToPreload.length < needCount) {
+        const remaining = needCount - filesToPreload.length
+        const allAvailable = [...dirFiles, ...otherFiles].filter(file => 
+          !filesToPreload.some(f => f.filename === file.filename)
+        )
+        const shuffled = [...allAvailable].sort(() => Math.random() - 0.5)
+        filesToPreload.push(...shuffled.slice(0, remaining))
+      }
     }
 
     // 只预加载需要的数量
-    const filesToPreload = dirFiles.slice(0, needCount)
     if (filesToPreload.length > 0) {
-      await this.preloadFiles(config, filesToPreload, filesToPreload.length, viewedFilter)
+      await this.preloadFiles(config, filesToPreload, filesToPreload.length, viewedFilter, true) // 跳过重复加载已看过文件
     }
   }
 

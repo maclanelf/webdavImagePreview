@@ -26,6 +26,7 @@ import {
   Chip,
   Stack,
   Snackbar,
+  Slider,
 } from '@mui/material'
 import {
   Shuffle as ShuffleIcon,
@@ -147,6 +148,9 @@ export default function HomePage() {
 
   // 图组模式初始预加载状态（必须完成才能预览）
   const [galleryPreloadReady, setGalleryPreloadReady] = useState(false) // 图组模式预加载是否完成
+  
+  // 智能预加载随机性（0-1，0表示优先当前目录，1表示完全随机）
+  const [preloadRandomness, setPreloadRandomness] = useState(0)
   
   // 扫描状态相关状态
   const [scanStatus, setScanStatus] = useState<{ 
@@ -290,6 +294,15 @@ export default function HomePage() {
     if (savedViewMode && (savedViewMode === 'random' || savedViewMode === 'gallery')) {
       setViewMode(savedViewMode as ViewMode)
       // 预加载将在第二个useEffect中根据viewMode统一处理
+    }
+
+    // 加载保存的预加载随机性偏好
+    const savedRandomness = localStorage.getItem('preload_randomness')
+    if (savedRandomness !== null) {
+      const randomness = parseFloat(savedRandomness)
+      if (!isNaN(randomness) && randomness >= 0 && randomness <= 1) {
+        setPreloadRandomness(randomness)
+      }
     }
 
     // 加载已看过文件列表
@@ -710,7 +723,7 @@ export default function HomePage() {
     try {
       // 从配置中获取预加载数量，默认为10
       const preloadCount = config.scanSettings?.preloadCount || 10
-      await preloadManager.smartPreload(config, allFiles, currentFile, preloadCount, viewedFilter)
+      await preloadManager.smartPreload(config, allFiles, currentFile, preloadCount, viewedFilter, preloadRandomness)
       setPreloadStatus(preloadManager.getCacheStatus())
     } catch (error) {
       console.error('智能预加载失败:', error)
@@ -2825,6 +2838,33 @@ export default function HomePage() {
                 >
                   {preloadEnabled ? '已启用' : '已禁用'}
                 </Button>
+              </Box>
+              
+              {/* 智能预加载随机性设置 */}
+              <Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                  <Typography variant="body2">预加载随机性</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {preloadRandomness === 0 ? '优先当前目录' : preloadRandomness === 1 ? '完全随机' : `${Math.round(preloadRandomness * 100)}%随机`}
+                  </Typography>
+                </Box>
+                <Slider
+                  value={preloadRandomness}
+                  onChange={(_, newValue) => {
+                    const value = Array.isArray(newValue) ? newValue[0] : newValue
+                    setPreloadRandomness(value)
+                    localStorage.setItem('preload_randomness', value.toString())
+                  }}
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  valueLabelDisplay="auto"
+                  valueLabelFormat={(value) => `${Math.round(value * 100)}%`}
+                  sx={{ mt: 1 }}
+                />
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                  值越小出现同一个人的概率越大，值越大出现同一个人概率越小
+                </Typography>
               </Box>
               
               {preloadStatus && (
