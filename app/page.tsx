@@ -139,11 +139,13 @@ export default function HomePage() {
   
   // 预加载相关状态
   const [preloadEnabled, setPreloadEnabled] = useState(true)
-  const [preloadProgress, setPreloadProgress] = useState<{ current: number, total: number, message: string } | null>(null)
+  const [preloadProgress, setPreloadProgress] = useState<{ current: number, total: number, message: string } | null>(null)  // 设置预加载数量
   const [preloadStatus, setPreloadStatus] = useState<{ cacheSize: number, maxCacheSize: number } | null>(null)
   
+  // 缓存预加载进度状态（图组模式和随机模式都使用）
+  const [cachePreloadProgress, setCachePreloadProgress] = useState<{ current: number, total: number } | null>(null)
+
   // 图组模式初始预加载状态（必须完成才能预览）
-  const [galleryPreloadProgress, setGalleryPreloadProgress] = useState<{ current: number, total: number } | null>(null)
   const [galleryPreloadReady, setGalleryPreloadReady] = useState(false) // 图组模式预加载是否完成
   
   // 扫描状态相关状态
@@ -299,7 +301,7 @@ export default function HomePage() {
     if (preloadEnabled && config && preloadStatus) {
       const preloadCount = config.scanSettings?.preloadCount || 10
       // 如果进度显示已初始化且缓存大小发生变化，自动更新进度显示
-      setGalleryPreloadProgress(prev => {
+      setCachePreloadProgress(prev => {
         if (prev && prev.current !== preloadStatus.cacheSize) {
           return { 
             current: preloadStatus.cacheSize, 
@@ -327,7 +329,7 @@ export default function HomePage() {
       if (viewMode === 'gallery') {
         // 图组模式：重置预加载状态
         setGalleryPreloadReady(false)
-        setGalleryPreloadProgress({ current: 0, total: preloadCount })
+        setCachePreloadProgress({ current: 0, total: preloadCount })
         
         // 使用图组模式专用预加载，带进度回调
         preloadManager.preloadForGalleryMode(
@@ -336,7 +338,7 @@ export default function HomePage() {
           preloadCount, 
           viewedFilter,
           (current, total) => {
-            setGalleryPreloadProgress({ current, total })
+            setCachePreloadProgress({ current, total })
             // 当所有文件加载完成时，标记为就绪，但保持显示进度
             if (current >= total) {
               setGalleryPreloadReady(true)
@@ -348,7 +350,7 @@ export default function HomePage() {
           setPreloadStatus(cacheStatus)
           setGalleryPreloadReady(true)
           // 保持显示进度，基于当前缓存状态
-          setGalleryPreloadProgress({ 
+          setCachePreloadProgress({ 
             current: cacheStatus.cacheSize, 
             total: preloadCount 
           })
@@ -358,7 +360,7 @@ export default function HomePage() {
           setGalleryPreloadReady(true) // 即使失败也允许预览
           const cacheStatus = preloadManager.getCacheStatus()
           // 即使失败也显示当前缓存状态
-          setGalleryPreloadProgress({ 
+          setCachePreloadProgress({ 
             current: cacheStatus.cacheSize, 
             total: preloadCount 
           })
@@ -366,7 +368,7 @@ export default function HomePage() {
       } else {
         // 随机模式：初始化进度显示
         setGalleryPreloadReady(true) // 随机模式不需要等待预加载完成
-        setGalleryPreloadProgress({ current: 0, total: preloadCount })
+        setCachePreloadProgress({ current: 0, total: preloadCount })
         
         preloadManager.refillCache(
           config, 
@@ -375,13 +377,13 @@ export default function HomePage() {
           viewedFilter,
           (current, total) => {
             // 实时更新进度显示
-            setGalleryPreloadProgress({ current, total })
+            setCachePreloadProgress({ current, total })
           }
         ).then(() => {
           const cacheStatus = preloadManager.getCacheStatus()
           setPreloadStatus(cacheStatus)
           // 更新进度显示
-          setGalleryPreloadProgress({ 
+          setCachePreloadProgress({ 
             current: cacheStatus.cacheSize, 
             total: preloadCount 
           })
@@ -390,7 +392,7 @@ export default function HomePage() {
           console.warn('随机模式初始预加载失败:', error)
           const cacheStatus = preloadManager.getCacheStatus()
           // 即使失败也显示当前缓存状态
-          setGalleryPreloadProgress({ 
+          setCachePreloadProgress({ 
             current: cacheStatus.cacheSize, 
             total: preloadCount 
           })
@@ -726,7 +728,7 @@ export default function HomePage() {
       
       // 重置预加载状态
       setGalleryPreloadReady(false)
-      setGalleryPreloadProgress({ current: 0, total: preloadCount })
+      setCachePreloadProgress({ current: 0, total: preloadCount })
       
       // 使用预加载管理器的图组模式优化方法，带进度回调
       const result = await preloadManager.preloadForGalleryMode(
@@ -735,7 +737,7 @@ export default function HomePage() {
         preloadCount, 
         viewedFilter,
         (current, total) => {
-          setGalleryPreloadProgress({ current, total })
+          setCachePreloadProgress({ current, total })
           // 当所有文件加载完成时，标记为就绪，但保持显示进度
           if (current >= total) {
             setGalleryPreloadReady(true)
@@ -748,7 +750,7 @@ export default function HomePage() {
       setPreloadStatus(cacheStatus)
       setGalleryPreloadReady(true)
       // 保持显示进度，基于当前缓存状态
-      setGalleryPreloadProgress({ 
+      setCachePreloadProgress({ 
         current: cacheStatus.cacheSize, 
         total: preloadCount 
       })
@@ -758,7 +760,7 @@ export default function HomePage() {
       setGalleryPreloadReady(true) // 即使失败也允许预览
       const cacheStatus = preloadManager.getCacheStatus()
       // 即使失败也显示当前缓存状态
-      setGalleryPreloadProgress({ 
+      setCachePreloadProgress({ 
         current: cacheStatus.cacheSize, 
         total: preloadCount 
       })
@@ -796,7 +798,7 @@ export default function HomePage() {
         // 更新进度显示（显示当前缓存状态）
         const cacheStatusBefore = preloadManager.getCacheStatus()
         setPreloadStatus(cacheStatusBefore)
-        setGalleryPreloadProgress({ 
+        setCachePreloadProgress({ 
           current: cacheStatusBefore.cacheSize, 
           total: preloadCount 
         })
@@ -808,7 +810,7 @@ export default function HomePage() {
           viewedFilter,
           (current, total) => {
             // 实时更新进度显示
-            setGalleryPreloadProgress({ current, total })
+            setCachePreloadProgress({ current, total })
           }
         )
         
@@ -816,7 +818,7 @@ export default function HomePage() {
         const cacheStatusAfter = preloadManager.getCacheStatus()
         setPreloadStatus(cacheStatusAfter)
         // 更新进度显示
-        setGalleryPreloadProgress({ 
+        setCachePreloadProgress({ 
           current: cacheStatusAfter.cacheSize, 
           total: preloadCount 
         })
@@ -837,7 +839,7 @@ export default function HomePage() {
         
         // 更新进度显示（图组模式和随机模式都支持）
         const preloadCount = config.scanSettings?.preloadCount || 10
-        setGalleryPreloadProgress({ 
+        setCachePreloadProgress({ 
           current: cacheStatusBefore.cacheSize, 
           total: preloadCount 
         })
@@ -851,7 +853,7 @@ export default function HomePage() {
           viewedFilter,
           (current, total) => {
             // 实时更新进度显示
-            setGalleryPreloadProgress({ current, total })
+            setCachePreloadProgress({ current, total })
           }
         )
         
@@ -860,7 +862,7 @@ export default function HomePage() {
         setPreloadStatus(cacheStatusAfter)
         
         // 更新进度显示（图组模式和随机模式都支持）
-        setGalleryPreloadProgress({ 
+        setCachePreloadProgress({ 
           current: cacheStatusAfter.cacheSize, 
           total: preloadCount 
         })
@@ -948,7 +950,7 @@ export default function HomePage() {
       setPreloadStatus(cacheStatus)
       if (config) {
         const preloadCount = config.scanSettings?.preloadCount || 10
-        setGalleryPreloadProgress({ current: cacheStatus.cacheSize, total: preloadCount })
+        setCachePreloadProgress({ current: cacheStatus.cacheSize, total: preloadCount })
       }
       
       // 注意：switchToNextGroup()已经将下一组变为当前组，从preloadManager获取更新后的当前组
@@ -1124,7 +1126,7 @@ export default function HomePage() {
           const preloadCount = config.scanSettings?.preloadCount || 10
           preloadManager.preloadRemainingCurrentGroup(config, (current) => {
             // 实时更新进度显示（total固定为preloadCount）
-            setGalleryPreloadProgress({ current, total: preloadCount })
+            setCachePreloadProgress({ current, total: preloadCount })
           }).then(() => {
             // 更新缓存状态
             const cacheStatus = preloadManager.getCacheStatus()
@@ -1430,7 +1432,7 @@ export default function HomePage() {
           'viewed',
           (current, total) => {
             // 实时更新进度显示
-            setGalleryPreloadProgress({ current, total })
+            setCachePreloadProgress({ current, total })
           }
         )
       } else {
@@ -1442,7 +1444,7 @@ export default function HomePage() {
           'viewed',
           (current, total) => {
             // 实时更新进度显示
-            setGalleryPreloadProgress({ current, total })
+            setCachePreloadProgress({ current, total })
           }
         )
       }
@@ -1450,7 +1452,7 @@ export default function HomePage() {
       const cacheStatus = preloadManager.getCacheStatus()
       setPreloadStatus(cacheStatus)
       // 更新进度显示
-      setGalleryPreloadProgress({ 
+      setCachePreloadProgress({ 
         current: cacheStatus.cacheSize, 
         total: preloadCount 
       })
@@ -1513,7 +1515,7 @@ export default function HomePage() {
           if (viewMode === 'gallery') {
             // 图组模式：重置预加载状态
             setGalleryPreloadReady(false)
-            setGalleryPreloadProgress({ current: 0, total: preloadCount })
+            setCachePreloadProgress({ current: 0, total: preloadCount })
             
             // 使用图组模式专用预加载，带进度回调
             preloadManager.preloadForGalleryMode(
@@ -1522,7 +1524,7 @@ export default function HomePage() {
               preloadCount, 
               viewedFilter,
               (current, total) => {
-                setGalleryPreloadProgress({ current, total })
+                setCachePreloadProgress({ current, total })
                 // 当所有文件加载完成时，标记为就绪，但保持显示进度
                 if (current >= total) {
                   setGalleryPreloadReady(true)
@@ -1534,7 +1536,7 @@ export default function HomePage() {
               setPreloadStatus(cacheStatus)
               setGalleryPreloadReady(true)
               // 保持显示进度，基于当前缓存状态
-              setGalleryPreloadProgress({ 
+              setCachePreloadProgress({ 
                 current: cacheStatus.cacheSize, 
                 total: preloadCount 
               })
@@ -1544,7 +1546,7 @@ export default function HomePage() {
               setGalleryPreloadReady(true) // 即使失败也允许预览
               const cacheStatus = preloadManager.getCacheStatus()
               // 即使失败也显示当前缓存状态
-              setGalleryPreloadProgress({ 
+              setCachePreloadProgress({ 
                 current: cacheStatus.cacheSize, 
                 total: preloadCount 
               })
@@ -1552,7 +1554,7 @@ export default function HomePage() {
           } else {
             // 随机模式：配置变化时先清空缓存，然后重新预加载
             setGalleryPreloadReady(true) // 随机模式不需要等待预加载完成
-            setGalleryPreloadProgress({ current: 0, total: preloadCount })
+            setCachePreloadProgress({ current: 0, total: preloadCount })
             preloadManager.clearCache()
             preloadManager.refillCache(
               config, 
@@ -1561,13 +1563,13 @@ export default function HomePage() {
               viewedFilter,
               (current, total) => {
                 // 实时更新进度显示
-                setGalleryPreloadProgress({ current, total })
+                setCachePreloadProgress({ current, total })
               }
             ).then(() => {
               const cacheStatus = preloadManager.getCacheStatus()
               setPreloadStatus(cacheStatus)
               // 更新进度显示
-              setGalleryPreloadProgress({ 
+              setCachePreloadProgress({ 
                 current: cacheStatus.cacheSize, 
                 total: preloadCount 
               })
@@ -1576,7 +1578,7 @@ export default function HomePage() {
               console.warn('配置变化后随机模式预加载失败:', error)
               const cacheStatus = preloadManager.getCacheStatus()
               // 即使失败也显示当前缓存状态
-              setGalleryPreloadProgress({ 
+              setCachePreloadProgress({ 
                 current: cacheStatus.cacheSize, 
                 total: preloadCount 
               })
@@ -2341,7 +2343,7 @@ export default function HomePage() {
           </Typography>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             {/* 预加载进度显示 - 紧挨着筛选与统计图标（图组模式和随机模式都支持） */}
-            {preloadEnabled && galleryPreloadProgress && (
+            {preloadEnabled && cachePreloadProgress && (
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mr: 0.5 }}>
                 <DownloadIcon 
                   sx={{ 
@@ -2369,7 +2371,7 @@ export default function HomePage() {
                   color="text.secondary" 
                   sx={{ minWidth: '32px', fontWeight: 'bold' }}
                 >
-                  {galleryPreloadProgress.current}/{galleryPreloadProgress.total}
+                  {cachePreloadProgress.current}/{cachePreloadProgress.total}
                 </Typography>
               </Box>
             )}
@@ -2570,15 +2572,15 @@ export default function HomePage() {
             <Typography variant="h5" gutterBottom>
               {viewMode === 'gallery' && preloadEnabled && !galleryPreloadReady ? '正在加载中...' : '准备好了！'}
             </Typography>
-            {viewMode === 'gallery' && preloadEnabled && galleryPreloadProgress && (
+            {viewMode === 'gallery' && preloadEnabled && cachePreloadProgress && (
               <Box sx={{ mb: 3 }}>
                 <CircularProgress sx={{ mb: 2 }} />
                 <Typography variant="body1" color="text.secondary">
-                  正在加载 ({galleryPreloadProgress.current}/{galleryPreloadProgress.total})
+                  正在加载 ({cachePreloadProgress.current}/{cachePreloadProgress.total})
                 </Typography>
               </Box>
             )}
-            {(!galleryPreloadProgress || (viewMode !== 'gallery') || !preloadEnabled || galleryPreloadReady) && (
+            {(!cachePreloadProgress || (viewMode !== 'gallery') || !preloadEnabled || galleryPreloadReady) && (
               <>
                 <Typography variant="body1" color="text.secondary" sx={{ mb: 1 }}>
                   从 {config.mediaPaths.length} 个目录中
@@ -2690,7 +2692,7 @@ export default function HomePage() {
                   } else if (newMode === 'random') {
                     // 切换到随机模式时，允许预览（不需要等待预加载）
                     setGalleryPreloadReady(true)
-                    setGalleryPreloadProgress(null)
+                    setCachePreloadProgress(null)
                   }
                   // 预加载将在关闭抽屉时根据配置变化统一处理
                 }
@@ -3114,7 +3116,7 @@ export default function HomePage() {
             zIndex: 1000,
           }}
         >
-          {loading || (viewMode === 'gallery' && !galleryPreloadReady && preloadEnabled && galleryPreloadProgress) ? (
+          {loading || (viewMode === 'gallery' && !galleryPreloadReady && preloadEnabled && cachePreloadProgress) ? (
             <CircularProgress size={24} color="inherit" />
           ) : (
             <ShuffleIcon />
