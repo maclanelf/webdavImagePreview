@@ -415,70 +415,72 @@ class PreloadManager {
     const cachedPaths = this.getCachedFilepaths()
     const currentDir = currentFile.filename.substring(0, currentFile.filename.lastIndexOf('/'))
     
+    // 获取可用文件（排除当前文件和已缓存文件）
+    const availableFiles = filteredFiles.filter(file => 
+      file.filename !== currentFile.filename &&
+      !cachedPaths.includes(file.filename)
+    )
+
+    if (availableFiles.length === 0) {
+      console.log('没有可用的文件进行智能预加载')
+      return
+    }
+
     let filesToPreload: any[] = []
 
-    if (randomness >= 1) {
-      // 完全随机模式：从所有符合条件的文件中随机选择
-      const availableFiles = filteredFiles.filter(file => 
-        file.filename !== currentFile.filename &&
-        !cachedPaths.includes(file.filename)
-      )
-      const shuffledFiles = [...availableFiles].sort(() => Math.random() - 0.5)
-      filesToPreload = shuffledFiles.slice(0, needCount)
-    } else if (randomness <= 0) {
+    if (randomness <= 0) {
       // 完全优先当前目录模式：优先选择当前目录的文件
-      const dirFiles = filteredFiles.filter(file => 
-        file.filename.startsWith(currentDir) && 
-        file.filename !== currentFile.filename &&
-        !cachedPaths.includes(file.filename)
+      const dirFiles = availableFiles.filter(file => 
+        file.filename.startsWith(currentDir)
       )
       
-      // 如果目录内文件不够，从其他目录随机选择（排除已缓存的）
-      const remainingCount = needCount - dirFiles.length
-      if (remainingCount > 0) {
-        const otherFiles = filteredFiles.filter(file => 
-          !file.filename.startsWith(currentDir) &&
-          !cachedPaths.includes(file.filename)
-        )
-        const randomFiles = [...otherFiles].sort(() => Math.random() - 0.5).slice(0, remainingCount)
-        filesToPreload = [...dirFiles, ...randomFiles]
-      } else {
+      // 如果目录内文件不够，从其他目录选择
+      if (dirFiles.length >= needCount) {
         filesToPreload = dirFiles.slice(0, needCount)
+      } else {
+        const otherFiles = availableFiles.filter(file => 
+          !file.filename.startsWith(currentDir)
+        )
+        // 使用 orderWithRandomness 对其他目录文件进行排序
+        const orderedOtherFiles = this.orderWithRandomness(otherFiles, randomness)
+        const remainingCount = needCount - dirFiles.length
+        filesToPreload = [...dirFiles, ...orderedOtherFiles.slice(0, remainingCount)]
       }
+    } else if (randomness >= 1) {
+      // 完全随机模式：使用 orderWithRandomness 进行随机排序
+      const orderedFiles = this.orderWithRandomness(availableFiles, randomness)
+      filesToPreload = orderedFiles.slice(0, needCount)
     } else {
       // 混合模式：根据randomness值决定当前目录和其他目录的比例
-      const dirFiles = filteredFiles.filter(file => 
-        file.filename.startsWith(currentDir) && 
-        file.filename !== currentFile.filename &&
-        !cachedPaths.includes(file.filename)
+      const dirFiles = availableFiles.filter(file => 
+        file.filename.startsWith(currentDir)
       )
       
-      const otherFiles = filteredFiles.filter(file => 
-        !file.filename.startsWith(currentDir) &&
-        !cachedPaths.includes(file.filename)
+      const otherFiles = availableFiles.filter(file => 
+        !file.filename.startsWith(currentDir)
       )
       
       // 计算当前目录应该选择的数量（randomness越小，当前目录占比越大）
       const dirCount = Math.floor(needCount * (1 - randomness))
       const otherCount = needCount - dirCount
       
-      // 从当前目录选择文件
+      // 从当前目录选择文件（保持原始顺序）
       const selectedDirFiles = dirFiles.slice(0, Math.min(dirCount, dirFiles.length))
       
-      // 从其他目录随机选择文件
-      const shuffledOtherFiles = [...otherFiles].sort(() => Math.random() - 0.5)
-      const selectedOtherFiles = shuffledOtherFiles.slice(0, Math.min(otherCount, shuffledOtherFiles.length))
+      // 从其他目录使用 orderWithRandomness 选择文件
+      const orderedOtherFiles = this.orderWithRandomness(otherFiles, randomness)
+      const selectedOtherFiles = orderedOtherFiles.slice(0, Math.min(otherCount, orderedOtherFiles.length))
       
       filesToPreload = [...selectedDirFiles, ...selectedOtherFiles]
       
-      // 如果还不够，随机补充
+      // 如果还不够，从剩余文件中补充
       if (filesToPreload.length < needCount) {
         const remaining = needCount - filesToPreload.length
-        const allAvailable = [...dirFiles, ...otherFiles].filter(file => 
+        const allRemaining = availableFiles.filter(file => 
           !filesToPreload.some(f => f.filename === file.filename)
         )
-        const shuffled = [...allAvailable].sort(() => Math.random() - 0.5)
-        filesToPreload.push(...shuffled.slice(0, remaining))
+        const orderedRemaining = this.orderWithRandomness(allRemaining, randomness)
+        filesToPreload.push(...orderedRemaining.slice(0, remaining))
       }
     }
 
@@ -1020,7 +1022,8 @@ class PreloadManager {
     allFiles: any[], 
     targetCount: number = 10, 
     viewedFilter: string = 'unviewed',
-    onProgress?: (current: number, total: number) => void
+    onProgress?: (current: number, total: number) => void,
+    randomness?: number
   ): Promise<void> {
     // 从数据库获取已看过的文件列表
     await this.loadViewedFilesFromDatabase()
@@ -1068,8 +1071,9 @@ class PreloadManager {
         return
       }
 
-      // 只预加载需要的数量
-      const filesToPreload = availableFiles.slice(0, needCount)
+      // 按随机性排序后只预加载需要的数量
+      const ordered = this.orderWithRandomness(availableFiles, randomness)
+      const filesToPreload = ordered.slice(0, needCount)
       // 并发预加载，每个文件完成时更新进度
       const preloadPromises = filesToPreload.map((file) => 
         this.preloadFile(config, file).then(() => {
@@ -1100,8 +1104,9 @@ class PreloadManager {
         return
       }
 
-      // 只预加载需要的数量
-      const filesToPreload = availableFiles.slice(0, needCount)
+      // 按随机性排序后只预加载需要的数量
+      const ordered = this.orderWithRandomness(availableFiles, randomness)
+      const filesToPreload = ordered.slice(0, needCount)
       // 并发预加载，每个文件完成时更新进度
       const preloadPromises = filesToPreload.map((file) => 
         this.preloadFile(config, file).then(() => {
@@ -1121,6 +1126,30 @@ class PreloadManager {
       )
       await Promise.allSettled(preloadPromises)
     }
+  }
+
+  // 根据随机性对文件进行排序：
+  // randomness === undefined 或 0 -> 保持原始顺序
+  // randomness === 1 -> 完全随机
+  // 0-1 之间 -> 结合原始顺序与随机排序，randomness 越大越随机
+  private orderWithRandomness<T>(files: T[], randomness?: number): T[] {
+    if (files.length <= 1) return files
+    if (randomness === undefined || randomness <= 0) {
+      return files
+    }
+    if (randomness >= 1) {
+      return [...files].sort(() => Math.random() - 0.5)
+    }
+    // 介于 0 和 1：对元素打分= (1 - r) * 位置权重 + r * 随机数，然后按分值排序
+    const n = files.length
+    const decorated = files.map((item, index) => {
+      const positionScore = n > 1 ? index / (n - 1) : 0
+      const randomScore = Math.random()
+      const score = (1 - randomness) * positionScore + randomness * randomScore
+      return { item, score }
+    })
+    decorated.sort((a, b) => a.score - b.score)
+    return decorated.map(d => d.item)
   }
 }
 

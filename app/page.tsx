@@ -309,29 +309,6 @@ export default function HomePage() {
     loadViewedFiles()
   }, [])
 
-  // 监听缓存状态变化，自动更新进度显示（图组模式和随机模式都支持）
-  useEffect(() => {
-    if (preloadEnabled && config && preloadStatus) {
-      const preloadCount = config.scanSettings?.preloadCount || 10
-      // 如果进度显示已初始化且缓存大小发生变化，自动更新进度显示
-      setCachePreloadProgress(prev => {
-        if (prev && prev.current !== preloadStatus.cacheSize) {
-          return { 
-            current: preloadStatus.cacheSize, 
-            total: preloadCount 
-          }
-        } else if (!prev) {
-          // 如果还没有初始化，初始化进度显示
-          return { 
-            current: preloadStatus.cacheSize, 
-            total: preloadCount 
-          }
-        }
-        return prev
-      })
-    }
-  }, [preloadStatus?.cacheSize, preloadEnabled, config])
-
   // 当文件列表和已看过文件都加载完成后，触发初始预加载
   // 注意：配置变化时的预加载由 toggleDrawer 处理
   useEffect(() => {
@@ -391,7 +368,8 @@ export default function HomePage() {
           (current, total) => {
             // 实时更新进度显示
             setCachePreloadProgress({ current, total })
-          }
+          },
+          preloadRandomness
         ).then(() => {
           const cacheStatus = preloadManager.getCacheStatus()
           setPreloadStatus(cacheStatus)
@@ -413,6 +391,31 @@ export default function HomePage() {
       }
     }
   }, [allFiles.length, viewedFiles.size, preloadEnabled, config, viewMode, viewedFilter])
+
+  // 监听缓存状态变化，自动更新进度显示（图组模式和随机模式都支持）
+  useEffect(() => {
+    if (preloadEnabled && config && preloadStatus) {
+      const preloadCount = config.scanSettings?.preloadCount || 10
+      // 如果进度显示已初始化且缓存大小发生变化，自动更新进度显示
+      setCachePreloadProgress(prev => {
+        if (prev && prev.current !== preloadStatus.cacheSize) {
+          return { 
+            current: preloadStatus.cacheSize, 
+            total: preloadCount 
+          }
+        } else if (!prev) {
+          // 如果还没有初始化，初始化进度显示
+          return { 
+            current: preloadStatus.cacheSize, 
+            total: preloadCount 
+          }
+        }
+        return prev
+      })
+    }
+  }, [preloadStatus?.cacheSize, preloadEnabled, config])
+
+  
 
   // 加载已看过文件列表
   const loadViewedFiles = async () => {
@@ -824,7 +827,8 @@ export default function HomePage() {
           (current, total) => {
             // 实时更新进度显示
             setCachePreloadProgress({ current, total })
-          }
+          },
+          preloadRandomness
         )
         
         // 补齐完成后再次更新状态
@@ -867,7 +871,8 @@ export default function HomePage() {
           (current, total) => {
             // 实时更新进度显示
             setCachePreloadProgress({ current, total })
-          }
+          },
+          preloadRandomness
         )
         
         // 补齐完成后再次更新状态
@@ -1458,7 +1463,8 @@ export default function HomePage() {
           (current, total) => {
             // 实时更新进度显示
             setCachePreloadProgress({ current, total })
-          }
+          },
+          preloadRandomness
         )
       }
       
@@ -1577,7 +1583,8 @@ export default function HomePage() {
               (current, total) => {
                 // 实时更新进度显示
                 setCachePreloadProgress({ current, total })
-              }
+              },
+              preloadRandomness
             ).then(() => {
               const cacheStatus = preloadManager.getCacheStatus()
               setPreloadStatus(cacheStatus)
