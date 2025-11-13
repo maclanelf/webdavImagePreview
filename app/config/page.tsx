@@ -754,13 +754,28 @@ export default function ConfigPage() {
               label="批次大小"
               type="number"
               value={config.scanSettings?.batchSize || 10}
-              onChange={(e) => setConfig({
-                ...config,
-                scanSettings: {
-                  ...config.scanSettings,
-                  batchSize: parseInt(e.target.value) || 10
+              onChange={(e) => {
+                const value = e.target.value
+                setConfig({
+                  ...config,
+                  scanSettings: {
+                    ...config.scanSettings,
+                    batchSize: value === '' ? undefined : parseInt(value) || undefined
+                  }
+                })
+              }}
+              onBlur={(e) => {
+                const value = parseInt(e.target.value)
+                if (isNaN(value) || value < 5) {
+                  setConfig({
+                    ...config,
+                    scanSettings: {
+                      ...config.scanSettings,
+                      batchSize: 10
+                    }
+                  })
                 }
-              })}
+              }}
               helperText="每次处理的文件数量，影响扫描速度和内存使用"
               inputProps={{ min: 5, max: 50 }}
               sx={{ flex: 1 }}
@@ -769,13 +784,28 @@ export default function ConfigPage() {
               label="预加载数量"
               type="number"
               value={config.scanSettings?.preloadCount || 10}
-              onChange={(e) => setConfig({
-                ...config,
-                scanSettings: {
-                  ...config.scanSettings,
-                  preloadCount: parseInt(e.target.value) || 10
+              onChange={(e) => {
+                const value = e.target.value
+                setConfig({
+                  ...config,
+                  scanSettings: {
+                    ...config.scanSettings,
+                    preloadCount: value === '' ? undefined : parseInt(value) || undefined
+                  }
+                })
+              }}
+              onBlur={(e) => {
+                const value = parseInt(e.target.value)
+                if (isNaN(value) || value < 5) {
+                  setConfig({
+                    ...config,
+                    scanSettings: {
+                      ...config.scanSettings,
+                      preloadCount: 10
+                    }
+                  })
                 }
-              })}
+              }}
               helperText="预加载缓存的文件数量，影响浏览流畅度"
               inputProps={{ min: 5, max: 30 }}
               sx={{ flex: 1 }}
