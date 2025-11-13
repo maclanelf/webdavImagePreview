@@ -80,6 +80,7 @@ interface DirectoryItemProps {
   }
   onRecursiveScan?: (path: string, force?: boolean) => void
   onRemove: (path: string) => void
+  onForceRemoveCache?: (path: string) => void
 }
 
 export default function DirectoryItem({
@@ -89,7 +90,8 @@ export default function DirectoryItem({
   scanProgress,
   webdavConfig,
   onRecursiveScan,
-  onRemove
+  onRemove,
+  onForceRemoveCache
 }: DirectoryItemProps) {
   const [expanded, setExpanded] = useState(false)
   const [detailDialogOpen, setDetailDialogOpen] = useState(false)
@@ -337,6 +339,16 @@ export default function DirectoryItem({
                 >
                   查看日志
                 </Button>
+                {stats && onForceRemoveCache && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="secondary"
+                    onClick={() => onForceRemoveCache(path)}
+                  >
+                    清除缓存
+                  </Button>
+                )}
                 <Button
                   size="small"
                   variant="outlined"

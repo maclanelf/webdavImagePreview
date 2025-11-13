@@ -494,14 +494,13 @@ export default function ConfigPage() {
     const newSelected = new Set(selectedPaths)
     if (newSelected.has(path)) {
       newSelected.delete(path)
-      // 删除统计信息
-      const newStats = new Map(pathStats)
-      newStats.delete(path)
-      setPathStats(newStats)
+      // 不删除统计信息，保留缓存数据以便重新添加时直接使用
     } else {
       newSelected.add(path)
-      // 自动递归扫描该目录
-      startRecursiveScan(path)
+      // 如果没有缓存数据，自动递归扫描该目录
+      if (!pathStats.has(path)) {
+        startRecursiveScan(path)
+      }
     }
     setSelectedPaths(newSelected)
   }
@@ -563,6 +562,11 @@ export default function ConfigPage() {
     newSelected.delete(path)
     setSelectedPaths(newSelected)
     
+    // 不删除统计信息，保留缓存数据以便重新添加时直接使用
+  }
+
+  // 强制删除路径缓存数据
+  const forceRemovePathCache = (path: string) => {
     const newStats = new Map(pathStats)
     newStats.delete(path)
     setPathStats(newStats)
@@ -1012,6 +1016,7 @@ export default function ConfigPage() {
                     }}
                     onRecursiveScan={startRecursiveScan}
                     onRemove={removeSelectedPath}
+                    onForceRemoveCache={forceRemovePathCache}
                   />
                 )
               })}
@@ -1172,9 +1177,7 @@ export default function ConfigPage() {
                   const newSelected = new Set(selectedPaths)
                   directories.forEach(dir => {
                     newSelected.delete(dir.filename)
-                    const newStats = new Map(pathStats)
-                    newStats.delete(dir.filename)
-                    setPathStats(newStats)
+                    // 不删除统计信息，保留缓存数据以便重新添加时直接使用
                   })
                   setSelectedPaths(newSelected)
                 }}
