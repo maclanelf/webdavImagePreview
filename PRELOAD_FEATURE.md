@@ -31,11 +31,10 @@ const blob = preloadManager.getPreloadedFile(filepath)
 await preloadManager.smartPreload(config, allFiles, currentFile, 10)
 ```
 
-### API接口 (`app/api/webdav/preload/route.ts`)
+### 文件获取接口
 
-- `POST /api/webdav/preload` - 开始预加载
-- `GET /api/webdav/preload?filepath=xxx` - 获取预加载的文件
-- `PUT /api/webdav/preload` - 缓存管理操作
+预加载管理器通过以下API获取文件：
+- `POST /api/webdav/stream` - 获取文件流（用于预加载和正常加载）
 
 ## 🎯 使用方法
 
@@ -107,16 +106,16 @@ console.log('缓存状态:', status)
 
 ## 🧪 测试
 
-运行测试脚本：
+测试预加载功能：
 
-```bash
-node test-preload.js
-```
+1. **功能测试**：
+   - 启动应用并配置WebDAV
+   - 开始预览，观察预加载是否正常工作
+   - 检查浏览器控制台的预加载日志
 
-测试内容包括：
-- 预加载API测试
-- 缓存状态API测试
-- 清理缓存API测试
+2. **缓存测试**：
+   - 查看缓存状态显示是否正确
+   - 测试缓存过期和清理机制
 
 ## 📈 性能提升
 
