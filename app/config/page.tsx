@@ -58,8 +58,8 @@ interface WebDAVConfig {
   password: string
   mediaPaths: string[]
   scanSettings?: {
-    batchSize?: number
-    preloadCount?: number
+    batchSize?: number | string
+    preloadCount?: number | string
   }
 }
 
@@ -753,25 +753,34 @@ export default function ConfigPage() {
             <TextField
               label="批次大小"
               type="number"
-              value={config.scanSettings?.batchSize || 10}
+              value={config.scanSettings?.batchSize ?? 10}
               onChange={(e) => {
                 const value = e.target.value
                 setConfig({
                   ...config,
                   scanSettings: {
                     ...config.scanSettings,
-                    batchSize: value === '' ? undefined : parseInt(value) || undefined
+                    batchSize: value
                   }
                 })
               }}
               onBlur={(e) => {
-                const value = parseInt(e.target.value)
-                if (isNaN(value) || value < 5) {
+                const value = e.target.value
+                const numValue = parseInt(value)
+                if (value === '' || isNaN(numValue) || numValue < 5) {
                   setConfig({
                     ...config,
                     scanSettings: {
                       ...config.scanSettings,
                       batchSize: 10
+                    }
+                  })
+                } else {
+                  setConfig({
+                    ...config,
+                    scanSettings: {
+                      ...config.scanSettings,
+                      batchSize: numValue
                     }
                   })
                 }
@@ -783,25 +792,34 @@ export default function ConfigPage() {
             <TextField
               label="预加载数量"
               type="number"
-              value={config.scanSettings?.preloadCount || 10}
+              value={config.scanSettings?.preloadCount ?? 10}
               onChange={(e) => {
                 const value = e.target.value
                 setConfig({
                   ...config,
                   scanSettings: {
                     ...config.scanSettings,
-                    preloadCount: value === '' ? undefined : parseInt(value) || undefined
+                    preloadCount: value
                   }
                 })
               }}
               onBlur={(e) => {
-                const value = parseInt(e.target.value)
-                if (isNaN(value) || value < 5) {
+                const value = e.target.value
+                const numValue = parseInt(value)
+                if (value === '' || isNaN(numValue) || numValue < 5) {
                   setConfig({
                     ...config,
                     scanSettings: {
                       ...config.scanSettings,
                       preloadCount: 10
+                    }
+                  })
+                } else {
+                  setConfig({
+                    ...config,
+                    scanSettings: {
+                      ...config.scanSettings,
+                      preloadCount: numValue
                     }
                   })
                 }
