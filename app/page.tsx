@@ -119,40 +119,57 @@ interface GroupRating {
 
 export default function HomePage() {
   const router = useRouter()
+  // WebDAV 配置
   const [config, setConfig] = useState<WebDAVConfig | null>(null)
+  // 当前显示的文件
   const [currentFile, setCurrentFile] = useState<MediaFile | null>(null)
+  // 加载状态
   const [loading, setLoading] = useState(false)
+  // 错误信息
   const [error, setError] = useState<string | null>(null)
+  // 媒体文件 URL
   const [mediaUrl, setMediaUrl] = useState<string | null>(null)
+  // 文件统计信息
   const [stats, setStats] = useState({ total: 0, images: 0, videos: 0 })
+  // 媒体类型筛选
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all')
-  const [viewedFilter, setViewedFilter] = useState<ViewedFilter>('unviewed') // 默认只显示未看过的
+  // 已看过筛选，默认只显示未看过的
+  const [viewedFilter, setViewedFilter] = useState<ViewedFilter>('unviewed')
+  // 所有文件列表
   const [allFiles, setAllFiles] = useState<MediaFile[]>([])
+  // 抽屉打开状态
   const [drawerOpen, setDrawerOpen] = useState(false)
+  // 全屏状态
   const [fullscreen, setFullscreen] = useState(false)
+  // 查看模式：随机或图组
   const [viewMode, setViewMode] = useState<ViewMode>('random')
   
   // 用于追踪配置变化，只在关闭抽屉时检查是否需要重新加载
   const configSnapshotRef = useRef<{ mediaFilter: MediaFilter, viewedFilter: ViewedFilter, viewMode: ViewMode } | null>(null)
+  // 当前图组的文件列表
   const [currentGroup, setCurrentGroup] = useState<MediaFile[]>([])
+  // 当前图组中的索引
   const [currentGroupIndex, setCurrentGroupIndex] = useState(0)
+  // 扫描进度
   const [scanProgress, setScanProgress] = useState<{ currentPath: string, fileCount: number } | null>(null)
   
-  // 预加载相关状态
+  // 预加载功能开关
   const [preloadEnabled, setPreloadEnabled] = useState(true)
-  const [preloadProgress, setPreloadProgress] = useState<{ current: number, total: number, message: string } | null>(null)  // 设置预加载数量
+  // 预加载进度（初始加载时使用）
+  const [preloadProgress, setPreloadProgress] = useState<{ current: number, total: number, message: string } | null>(null)
+  // 预加载状态（缓存大小信息）
   const [preloadStatus, setPreloadStatus] = useState<{ cacheSize: number, maxCacheSize: number } | null>(null)
   
   // 缓存预加载进度状态（图组模式和随机模式都使用）
   const [cachePreloadProgress, setCachePreloadProgress] = useState<{ current: number, total: number } | null>(null)
 
   // 图组模式初始预加载状态（必须完成才能预览）
-  const [galleryPreloadReady, setGalleryPreloadReady] = useState(false) // 图组模式预加载是否完成
+  const [galleryPreloadReady, setGalleryPreloadReady] = useState(false)
   
   // 智能预加载随机性（0-1，0表示优先当前目录，1表示完全随机）
   const [preloadRandomness, setPreloadRandomness] = useState(0)
   
-  // 扫描状态相关状态
+  // 扫描状态详细信息
   const [scanStatus, setScanStatus] = useState<{ 
     scannedPaths: string[], 
     pendingPaths: string[], 
@@ -160,30 +177,38 @@ export default function HomePage() {
     totalPending: number 
   } | null>(null)
   
-  // 已看过文件状态
+  // 已看过的文件集合
   const [viewedFiles, setViewedFiles] = useState<Set<string>>(new Set())
   
-  // 评分相关状态
+  // 评分对话框打开状态
   const [ratingDialogOpen, setRatingDialogOpen] = useState(false)
+  // 当前评分数据
   const [currentRating, setCurrentRating] = useState<MediaRating | GroupRating | null>(null)
+  // 评分类型：单个媒体或图组
   const [ratingType, setRatingType] = useState<'media' | 'group'>('media')
   
-  // 自动标记已看过相关状态
+  // 查看开始时间（用于自动标记已看过）
   const [viewStartTime, setViewStartTime] = useState<number | null>(null)
+  // 自动标记计时器
   const [autoMarkTimer, setAutoMarkTimer] = useState<NodeJS.Timeout | null>(null)
-  const hasAutoRatedRef = useRef(false) // 使用 ref 避免闭包陷阱,追踪当前文件是否已自动评分
-  const initialPreloadTriggeredRef = useRef(false) // 追踪初始预加载是否已触发
+  // 追踪当前文件是否已自动评分（使用 ref 避免闭包陷阱）
+  const hasAutoRatedRef = useRef(false)
+  // 追踪初始预加载是否已触发
+  const initialPreloadTriggeredRef = useRef(false)
   
   // 切换状态，防止连续快速点击
   const [isSwitching, setIsSwitching] = useState(false)
   
-  // 提示消息相关状态
+  // 提示消息打开状态
   const [snackbarOpen, setSnackbarOpen] = useState(false)
+  // 提示消息内容
   const [snackbarMessage, setSnackbarMessage] = useState('')
+  // 提示消息严重程度
   const [snackbarSeverity, setSnackbarSeverity] = useState<'success' | 'error' | 'info'>('success')
   
-  // 视频元素引用
+  // 视频元素引用（普通模式）
   const videoRef = useRef<HTMLVideoElement>(null)
+  // 视频元素引用（全屏模式）
   const fullscreenVideoRef = useRef<HTMLVideoElement>(null)
   
   // 视频播放状态保存（用于全屏切换时保持播放状态）

@@ -1,35 +1,62 @@
 // 预加载管理器
 class PreloadManager {
+  // 当前组缓存：存储当前正在浏览的图组文件
   private cache = new Map<string, {
-    blob: Blob
-    url: string
-    timestamp: number
-    filepath: string
+    blob: Blob           // 文件的二进制数据
+    url: string          // 对象URL，用于显示
+    timestamp: number    // 缓存时间戳，用于过期检查
+    filepath: string     // 文件完整路径
   }>()
   
   // 图组模式专用：下一组预加载缓存（独立缓存，不占用当前组缓存）
   private nextGroupCache = new Map<string, {
-    blob: Blob
-    url: string
-    timestamp: number
-    filepath: string
+    blob: Blob           // 文件的二进制数据
+    url: string          // 对象URL，用于显示
+    timestamp: number    // 缓存时间戳，用于过期检查
+    filepath: string     // 文件完整路径
   }>()
   
+  // 预加载队列：正在预加载的文件路径集合，防止重复预加载
   private queue = new Set<string>()
+  
+  // 最大缓存数量：单个缓存组最多保存的文件数
   private maxCacheSize = 10
+  
+  // 最大视频文件大小：超过此大小的视频不会被预加载（字节）
   private maxVideoSize = 100 * 1024 * 1024 // 100MB
+  
+  // 缓存过期时间：超过此时间的缓存将被清理（毫秒）
   private cacheExpireTime = 5 * 60 * 1000 // 5分钟
-  private viewedFiles = new Set<string>() // 已观看的文件路径（缓存）
-  private localViewedFiles = new Set<string>() // 本地已观看的文件路径（用于已看过模式）
+  
+  // 已观看文件缓存：从数据库加载的已看过文件路径集合
+  private viewedFiles = new Set<string>()
+  
+  // 本地已观看文件：当前会话中标记为已看过的文件路径（用于已看过模式）
+  private localViewedFiles = new Set<string>()
   
   // 图组模式相关状态
-  private currentGroupFiles: any[] = [] // 当前图组的所有文件
-  private nextGroupFiles: any[] = [] // 下一组预加载的文件列表
-  private currentGroupPreloadTriggered = false // 当前图组是否已经触发过剩余文件预加载
+  // 当前图组的所有文件列表
+  private currentGroupFiles: any[] = []
+  
+  // 下一组预加载的文件列表
+  private nextGroupFiles: any[] = []
+  
+  // 当前图组是否已经触发过剩余文件预加载（防止重复触发）
+  private currentGroupPreloadTriggered = false
 
   // 设置缓存大小
   setMaxCacheSize(size: number) {
     this.maxCacheSize = size
+  }
+
+  // 统一的文件过滤方法：判断文件是否可以预加载（基于类型和大小）
+  private isFileEligibleForPreload(file: any): boolean {
+    const isImage = /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(file.basename)
+    const isVideo = /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(file.basename)
+    
+    if (isImage) return true
+    if (isVideo && file.size <= this.maxVideoSize) return true
+    return false
   }
 
   // 预加载文件列表
@@ -59,12 +86,8 @@ class PreloadManager {
       }
       // viewedFilter === 'all' 时不进行已看过状态筛选
       
-      const isImage = /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(file.basename)
-      const isVideo = /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(file.basename)
-      
-      if (isImage) return true
-      if (isVideo && file.size <= this.maxVideoSize) return true
-      return false
+      // 使用统一的文件过滤方法
+      return this.isFileEligibleForPreload(file)
     })
 
     if (eligibleFiles.length === 0) {
@@ -402,14 +425,22 @@ class PreloadManager {
 
     console.log(`智能预加载：当前缓存 ${currentCacheSize} 个，需要补齐 ${needCount} 个，筛选条件: ${viewedFilter}，随机性: ${randomness}`)
 
-    // 根据筛选条件过滤文件
+    // 根据筛选条件过滤文件（同时过滤大视频文件）
     const filteredFiles = allFiles.filter(file => {
+      // 先检查已看过状态
       if (viewedFilter === 'viewed') {
-        return this.viewedFiles.has(file.filename)
+        if (!this.viewedFiles.has(file.filename)) {
+          return false
+        }
       } else if (viewedFilter === 'unviewed') {
-        return !this.viewedFiles.has(file.filename)
+        if (!this.viewedFiles.has(file.filename)) {
+          return false
+        }
       }
-      return true // viewedFilter === 'all'
+      // viewedFilter === 'all' 时不进行已看过状态筛选
+      
+      // 使用统一的文件过滤方法（过滤大视频文件）
+      return this.isFileEligibleForPreload(file)
     })
 
     const cachedPaths = this.getCachedFilepaths()
@@ -523,12 +554,8 @@ class PreloadManager {
         }
       }
       
-      const isImage = /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(file.basename)
-      const isVideo = /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(file.basename)
-      
-      if (isImage) return true
-      if (isVideo && file.size <= this.maxVideoSize) return true
-      return false
+      // 使用统一的文件过滤方法
+      return this.isFileEligibleForPreload(file)
     })
 
     if (eligibleFiles.length === 0) {
@@ -645,12 +672,8 @@ class PreloadManager {
         }
       }
       
-      const isImage = /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(file.basename)
-      const isVideo = /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(file.basename)
-      
-      if (isImage) return true
-      if (isVideo && file.size <= this.maxVideoSize) return true
-      return false
+      // 使用统一的文件过滤方法
+      return this.isFileEligibleForPreload(file)
     })
     
     // 排除当前图组
@@ -1046,14 +1069,22 @@ class PreloadManager {
       onProgress(currentCacheSize, targetCount)
     }
 
-    // 根据筛选条件过滤文件
+    // 根据筛选条件过滤文件（同时过滤大视频文件）
     const filteredFiles = allFiles.filter(file => {
+      // 先检查已看过状态
       if (viewedFilter === 'viewed') {
-        return this.viewedFiles.has(file.filename)
+        if (!this.viewedFiles.has(file.filename)) {
+          return false
+        }
       } else if (viewedFilter === 'unviewed') {
-        return !this.viewedFiles.has(file.filename)
+        if (!this.viewedFiles.has(file.filename)) {
+          return false
+        }
       }
-      return true // viewedFilter === 'all'
+      // viewedFilter === 'all' 时不进行已看过状态筛选
+      
+      // 使用统一的文件过滤方法（过滤大视频文件）
+      return this.isFileEligibleForPreload(file)
     })
 
     // 在已看过模式下，使用本地已看过记录来管理缓存
