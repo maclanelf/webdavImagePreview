@@ -2400,6 +2400,11 @@ export default function HomePage() {
                 <FilterListIcon />
               </IconButton>
             </Tooltip>
+            <Tooltip title="即点即播">
+              <IconButton onClick={() => router.push('/instant-play')} color="secondary">
+                <VideoIcon />
+              </IconButton>
+            </Tooltip>
             <Tooltip title="评价与分类管理">
               <IconButton onClick={() => router.push('/manage')}>
                 <ManageAccountsIcon />
