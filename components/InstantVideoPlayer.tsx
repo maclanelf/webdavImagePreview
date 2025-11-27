@@ -346,7 +346,8 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   const handleTimeUpdate = () => {
     if (videoRef.current) {
       setCurrentTime(videoRef.current.currentTime)
-      if (onTimeUpdate) {
+      // 只在 duration 有效时调用回调
+      if (onTimeUpdate && videoRef.current.duration && isFinite(videoRef.current.duration)) {
         onTimeUpdate(videoRef.current.currentTime, videoRef.current.duration)
       }
     }

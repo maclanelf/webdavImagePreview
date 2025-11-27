@@ -61,6 +61,7 @@ import QuickRating from '@/components/QuickRating'
 import DraggableBox from '@/components/DraggableBox'
 // 适用于全屏模式换一个按钮,非全屏模式换一个按钮可拖拽
 import DraggableFab from '@/components/DraggableFab'
+import InstantVideoPlayer from '@/components/InstantVideoPlayer'
 import preloadManager from '@/lib/preloadManager'
 
 // 快速评分配置
@@ -93,8 +94,9 @@ interface MediaFile {
 }
 
 type MediaFilter = 'all' | 'images' | 'videos'
-type ViewMode = 'random' | 'gallery' // random: 随机模式, gallery: 图组模式
+type ViewMode = 'random' | 'gallery' | 'large-video' // random: 随机模式, gallery: 图组模式, large-video: 大视频模式
 type ViewedFilter = 'all' | 'viewed' | 'unviewed' // 已看过筛选
+type MediaType = 'image' | 'small-video' | 'stream-video' // 媒体类型：图片、小视频、流式大视频
 
 interface MediaGroup {
   folderPath: string
@@ -195,6 +197,13 @@ export default function HomePage() {
   const hasAutoRatedRef = useRef(false)
   // 追踪初始预加载是否已触发
   const initialPreloadTriggeredRef = useRef(false)
+  // 追踪当前模式（使用 ref 避免闭包陷阱）
+  const viewModeRef = useRef<ViewMode>(viewMode)
+  
+  // 同步 viewMode 到 ref（避免闭包问题）
+  useEffect(() => {
+    viewModeRef.current = viewMode
+  }, [viewMode])
   
   // 切换状态，防止连续快速点击
   const [isSwitching, setIsSwitching] = useState(false)
@@ -213,6 +222,9 @@ export default function HomePage() {
   
   // 视频播放状态保存（用于全屏切换时保持播放状态）
   const videoStateRef = useRef<{ currentTime: number; paused: boolean } | null>(null)
+  
+  // 媒体类型（用于条件渲染不同的播放器）
+  const [mediaType, setMediaType] = useState<MediaType>('image')
   
 
   useEffect(() => {
@@ -316,7 +328,7 @@ export default function HomePage() {
 
     // 加载保存的浏览模式偏好
     const savedViewMode = localStorage.getItem('view_mode')
-    if (savedViewMode && (savedViewMode === 'random' || savedViewMode === 'gallery')) {
+    if (savedViewMode && (savedViewMode === 'random' || savedViewMode === 'gallery' || savedViewMode === 'large-video')) {
       setViewMode(savedViewMode as ViewMode)
       // 预加载将在第二个useEffect中根据viewMode统一处理
     }
@@ -380,6 +392,13 @@ export default function HomePage() {
             total: preloadCount 
           })
         })
+      } else if (viewMode === 'large-video') {
+        // 大视频模式：不需要预加载
+        console.log('大视频模式：跳过初始预加载')
+        setGalleryPreloadReady(true)
+        setCachePreloadProgress(null)
+        const cacheStatus = preloadManager.getCacheStatus()
+        setPreloadStatus(cacheStatus)
       } else {
         // 随机模式：初始化进度显示
         setGalleryPreloadReady(true) // 随机模式不需要等待预加载完成
@@ -391,11 +410,19 @@ export default function HomePage() {
           preloadCount, 
           viewedFilter,
           (current, total) => {
-            // 实时更新进度显示
-            setCachePreloadProgress({ current, total })
+            // 实时更新进度显示（大视频模式下不更新，使用 ref 避免闭包问题）
+            if (viewModeRef.current !== 'large-video') {
+              setCachePreloadProgress({ current, total })
+            }
           },
           preloadRandomness
         ).then(() => {
+          // 预加载完成后，如果已切换到大视频模式则忽略结果（使用 ref）
+          if (viewModeRef.current === 'large-video') {
+            console.log(`[预加载] 模式已切换到大视频模式，忽略预加载结果`)
+            return
+          }
+          
           const cacheStatus = preloadManager.getCacheStatus()
           setPreloadStatus(cacheStatus)
           // 更新进度显示
@@ -407,18 +434,25 @@ export default function HomePage() {
         }).catch(error => {
           console.warn('随机模式初始预加载失败:', error)
           const cacheStatus = preloadManager.getCacheStatus()
-          // 即使失败也显示当前缓存状态
-          setCachePreloadProgress({ 
-            current: cacheStatus.cacheSize, 
-            total: preloadCount 
-          })
+          // 大视频模式下不更新进度（使用 ref）
+          if (viewModeRef.current !== 'large-video') {
+            setCachePreloadProgress({ 
+              current: cacheStatus.cacheSize, 
+              total: preloadCount 
+            })
+          }
         })
       }
     }
   }, [allFiles.length, viewedFiles.size, preloadEnabled, config, viewMode, viewedFilter])
 
-  // 监听缓存状态变化，自动更新进度显示（图组模式和随机模式都支持）
+  // 监听缓存状态变化，自动更新进度显示（仅图组模式和随机模式，大视频模式不显示）
   useEffect(() => {
+    // 大视频模式不显示预加载进度
+    if (viewMode === 'large-video') {
+      return
+    }
+    
     if (preloadEnabled && config && preloadStatus) {
       const preloadCount = config.scanSettings?.preloadCount || 10
       // 如果进度显示已初始化且缓存大小发生变化，自动更新进度显示
@@ -438,7 +472,7 @@ export default function HomePage() {
         return prev
       })
     }
-  }, [preloadStatus?.cacheSize, preloadEnabled, config])
+  }, [preloadStatus?.cacheSize, preloadEnabled, config, viewMode])
 
   
 
@@ -744,8 +778,14 @@ export default function HomePage() {
     }
   }
 
-  // 智能预加载
+  // 智能预加载（大视频模式下禁用）
   const smartPreload = async (currentFile: MediaFile) => {
+    // 大视频模式下不进行智能预加载
+    if (viewMode === 'large-video') {
+      console.log('[大视频模式] 跳过智能预加载')
+      return
+    }
+    
     if (!preloadEnabled || !config) return
 
     try {
@@ -1154,6 +1194,13 @@ export default function HomePage() {
       
       setMediaUrl(url)
       
+      // 设置媒体类型
+      if (isVideo(file.filename)) {
+        setMediaType('small-video')
+      } else {
+        setMediaType('image')
+      }
+      
       // 加载当前文件的评分（优先执行，确保不被预加载阻塞）
       await loadMediaRating(file.filename)
       
@@ -1263,6 +1310,8 @@ export default function HomePage() {
       return
     }
 
+    console.log(`[loadRandomMedia] 当前模式: ${viewMode}`)
+
     // 图组模式
     if (viewMode === 'gallery') {
       if (currentGroup.length === 0) {
@@ -1273,7 +1322,17 @@ export default function HomePage() {
       return
     }
 
+    // 大视频模式
+    if (viewMode === 'large-video') {
+      console.log('[loadRandomMedia] 进入大视频模式分支')
+      saveAndSwitch(() => {
+        loadLargeVideoFile()
+      })
+      return
+    }
+
     // 随机模式
+    console.log('[loadRandomMedia] 进入随机模式分支')
     saveAndSwitch(() => {
       loadRandomFile()
     })
@@ -1394,6 +1453,13 @@ export default function HomePage() {
       
       setMediaUrl(url)
       
+      // 设置媒体类型
+      if (isVideo(fileToLoad.filename)) {
+        setMediaType('small-video')
+      } else {
+        setMediaType('image')
+      }
+      
       // 加载当前文件的评分
       await loadCurrentRating(fileToLoad)
       
@@ -1402,6 +1468,125 @@ export default function HomePage() {
 
       // 智能预加载下一个可能查看的文件
       setTimeout(() => smartPreload(fileToLoad), 1000)
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // 大视频模式：加载随机大视频文件（使用即点即播）
+  const loadLargeVideoFile = async () => {
+    console.log(`[大视频模式] 开始加载，筛选条件: ${viewedFilter}，随机性: ${preloadRandomness}`)
+    console.log(`[大视频模式] 当前缓存文件数量: ${preloadManager.getCachedFilepaths().length}`)
+    
+    // 强制清空缓存，确保不使用任何预加载的文件
+    if (preloadManager.getCachedFilepaths().length > 0) {
+      console.log('[大视频模式] 检测到缓存文件，强制清空')
+      preloadManager.clearCache()
+    }
+    
+    if (!config) {
+      setError('请先配置WebDAV连接')
+      return
+    }
+    
+    // 获取所有视频文件（只选择大于100MB的）
+    const maxVideoSize = 100 * 1024 * 1024 // 100MB
+    const videoFiles = allFiles.filter(file => isVideo(file.filename) && file.size > maxVideoSize)
+    console.log(`[大视频模式] 全部大视频文件数量（>100MB）: ${videoFiles.length}`)
+    
+    // 应用已看过筛选
+    let filteredVideos = videoFiles.filter(file => {
+      // 检查已看过状态筛选
+      if (viewedFilter === 'viewed' && !viewedFiles.has(file.filename)) return false
+      if (viewedFilter === 'unviewed' && viewedFiles.has(file.filename)) return false
+      
+      // 排除本地已看过的文件
+      if (preloadManager.isLocalViewed(file.filename)) return false
+      
+      return true
+    })
+    
+    if (filteredVideos.length === 0) {
+      const filterMsg = viewedFilter === 'viewed' ? '已看过' : 
+                       viewedFilter === 'unviewed' ? '未看过' : '全部'
+      setError(`没有找到符合条件的视频文件（${filterMsg}）`)
+      return
+    }
+    
+    // 应用随机性：如果有当前文件，根据随机性参数决定是否优先选择同目录的视频
+    let fileToLoad: MediaFile
+    
+    if (currentFile && preloadRandomness < 1) {
+      // 获取当前文件所在目录
+      const currentDir = currentFile.filename.substring(0, currentFile.filename.lastIndexOf('/'))
+      
+      // 获取同目录的视频
+      const sameDirVideos = filteredVideos.filter(file => 
+        file.filename.startsWith(currentDir)
+      )
+      
+      // 根据随机性参数决定选择策略
+      const useSameDir = Math.random() > preloadRandomness
+      
+      if (useSameDir && sameDirVideos.length > 0) {
+        // 从同目录选择
+        const randomIndex = Math.floor(Math.random() * sameDirVideos.length)
+        fileToLoad = sameDirVideos[randomIndex]
+        console.log(`[大视频模式] 从同目录选择: ${fileToLoad.basename}`)
+      } else {
+        // 从所有视频中随机选择
+        const randomIndex = Math.floor(Math.random() * filteredVideos.length)
+        fileToLoad = filteredVideos[randomIndex]
+        console.log(`[大视频模式] 从所有视频中选择: ${fileToLoad.basename}`)
+      }
+    } else {
+      // 完全随机选择
+      const randomIndex = Math.floor(Math.random() * filteredVideos.length)
+      fileToLoad = filteredVideos[randomIndex]
+      console.log(`[大视频模式] 完全随机选择: ${fileToLoad.basename}`)
+    }
+    
+    // 切换文件时立即重置自动评分标志
+    hasAutoRatedRef.current = false
+    
+    // 清除保存的视频状态，确保新视频可以自动播放
+    videoStateRef.current = null
+    
+    setLoading(true)
+    setError(null)
+    
+    try {
+      setCurrentFile(fileToLoad)
+      
+      // 构建即点即播URL（使用 instant-stream API）
+      const params = new URLSearchParams({
+        url: config.url,
+        username: config.username,
+        password: config.password,
+        filepath: fileToLoad.filename,
+      })
+      const streamUrl = `/api/webdav/instant-stream?${params.toString()}`
+      
+      console.log(`[大视频模式] 使用流式播放: ${fileToLoad.basename}, 大小: ${formatFileSize(fileToLoad.size)}`)
+      console.log(`[大视频模式] 流媒体URL: ${streamUrl}`)
+      
+      // 清理旧的URL（如果是 Blob URL）
+      if (mediaUrl && mediaUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(mediaUrl)
+      }
+      
+      setMediaUrl(streamUrl)
+      setMediaType('stream-video') // 标记为流式视频，用于渲染 InstantVideoPlayer
+      
+      // 加载当前文件的评分
+      await loadCurrentRating(fileToLoad)
+      
+      // 启动自动标记已看过的定时器
+      startAutoMarkTimer(fileToLoad)
+      
+      // 大视频模式不需要智能预加载
     } catch (e: any) {
       setError(e.message)
     } finally {
@@ -1545,7 +1730,13 @@ export default function HomePage() {
       )
       
       if (hasConfigChanged) {
-        console.log('配置已变化，准备重新加载')
+        console.log('配置已变化，准备重新加载', { 
+          mediaFilter, 
+          viewedFilter, 
+          viewMode,
+          previousViewMode: configSnapshotRef.current?.viewMode 
+        })
+        
         // 清空当前显示，页面回到初始化状态
         setCurrentFile(null)
         setMediaUrl(null)
@@ -1556,7 +1747,26 @@ export default function HomePage() {
         if (preloadEnabled && config && allFiles.length > 0) {
           const preloadCount = config.scanSettings?.preloadCount || 10
           
-          if (viewMode === 'gallery') {
+          // 大视频模式：完全跳过预加载逻辑
+          if (viewMode === 'large-video') {
+            console.log('[大视频模式] 配置变化：跳过预加载，清空缓存')
+            setGalleryPreloadReady(true)
+            setCachePreloadProgress(null)
+            preloadManager.clearCache()
+            const cacheStatus = preloadManager.getCacheStatus()
+            setPreloadStatus(cacheStatus)
+            
+            // 延迟再次清空，防止正在进行的预加载填充缓存
+            setTimeout(() => {
+              if (viewMode === 'large-video') {
+                console.log('[大视频模式] 延迟清空缓存（防止配置变化时的预加载填充）')
+                preloadManager.clearCache()
+                const updatedStatus = preloadManager.getCacheStatus()
+                setPreloadStatus(updatedStatus)
+              }
+            }, 1000)
+            // 不需要 return，继续执行到 setDrawerOpen(open)
+          } else if (viewMode === 'gallery') {
             // 图组模式：重置预加载状态
             setGalleryPreloadReady(false)
             setCachePreloadProgress({ current: 0, total: preloadCount })
@@ -1606,11 +1816,19 @@ export default function HomePage() {
               preloadCount, 
               viewedFilter,
               (current, total) => {
-                // 实时更新进度显示
-                setCachePreloadProgress({ current, total })
+                // 实时更新进度显示（大视频模式下不更新，使用 ref 避免闭包问题）
+                if (viewModeRef.current !== 'large-video') {
+                  setCachePreloadProgress({ current, total })
+                }
               },
               preloadRandomness
             ).then(() => {
+              // 预加载完成后，如果已切换到大视频模式则忽略结果（使用 ref）
+              if (viewModeRef.current === 'large-video') {
+                console.log(`[预加载] 模式已切换到大视频模式，忽略配置变化后的预加载结果`)
+                return
+              }
+              
               const cacheStatus = preloadManager.getCacheStatus()
               setPreloadStatus(cacheStatus)
               // 更新进度显示
@@ -1622,11 +1840,13 @@ export default function HomePage() {
             }).catch(error => {
               console.warn('配置变化后随机模式预加载失败:', error)
               const cacheStatus = preloadManager.getCacheStatus()
-              // 即使失败也显示当前缓存状态
-              setCachePreloadProgress({ 
-                current: cacheStatus.cacheSize, 
-                total: preloadCount 
-              })
+              // 大视频模式下不更新进度（使用 ref）
+              if (viewModeRef.current !== 'large-video') {
+                setCachePreloadProgress({ 
+                  current: cacheStatus.cacheSize, 
+                  total: preloadCount 
+                })
+              }
             })
           }
         }
@@ -1897,10 +2117,23 @@ export default function HomePage() {
   // 视频播放进度监听（播放超过80%时自动标记）
   const handleVideoTimeUpdate = useCallback((event: React.SyntheticEvent<HTMLVideoElement>) => {
     const video = event.currentTarget
-    if (!video.duration) return
+    // 检查 video 和 duration 是否有效（duration 可能是 undefined、NaN 或 Infinity）
+    if (!video || !video.duration || !isFinite(video.duration)) return
     
     const progress = video.currentTime / video.duration
     // 播放超过80%时自动标记（performAutoRating内部会防止重复评分）
+    if (progress >= 0.8) {
+      performAutoRating()
+    }
+  }, [performAutoRating])
+
+  // InstantVideoPlayer 的时间更新监听（参数格式不同）
+  const handleInstantVideoTimeUpdate = useCallback((currentTime: number, duration: number) => {
+    // 检查 duration 是否有效
+    if (!duration || !isFinite(duration)) return
+    
+    const progress = currentTime / duration
+    // 播放超过80%时自动标记
     if (progress >= 0.8) {
       performAutoRating()
     }
@@ -2469,7 +2702,7 @@ export default function HomePage() {
                 overflow: 'hidden',
               }}
             >
-              {isImage(currentFile.filename) && (
+              {mediaType === 'image' && (
                 <CardMedia
                   component="img"
                   image={mediaUrl}
@@ -2481,7 +2714,7 @@ export default function HomePage() {
                   }}
                 />
               )}
-              {isVideo(currentFile.filename) && (
+              {mediaType === 'small-video' && (
                 <Box
                   component="video"
                   ref={videoRef}
@@ -2493,6 +2726,17 @@ export default function HomePage() {
                   sx={{
                     width: '100%',
                     maxHeight: 'calc(100vh - 150px)',
+                  }}
+                />
+              )}
+              {mediaType === 'stream-video' && (
+                <InstantVideoPlayer
+                  src={mediaUrl}
+                  autoPlay={true}
+                  onTimeUpdate={handleInstantVideoTimeUpdate}
+                  onEnded={handleVideoEnded}
+                  onError={(error) => {
+                    setError(`视频播放失败: ${error}`)
                   }}
                 />
               )}
@@ -2540,10 +2784,18 @@ export default function HomePage() {
               >
                 {currentFile.filename}
               </Typography>
-              <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', mt: 0.5 }}>
+              <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', mt: 0.5, alignItems: 'center' }}>
                 <Typography variant="caption" color="text.secondary">
                   {formatFileSize(currentFile.size)}
                 </Typography>
+                {mediaType === 'stream-video' && (
+                  <Chip 
+                    label="流式播放" 
+                    size="small" 
+                    color="info"
+                    sx={{ height: '18px', fontSize: '0.65rem' }}
+                  />
+                )}
                 <Typography variant="caption" color="text.secondary">
                   {new Date(currentFile.lastmod).toLocaleString('zh-CN')}
                 </Typography>
@@ -2743,6 +2995,27 @@ export default function HomePage() {
                     // 切换到随机模式时，允许预览（不需要等待预加载）
                     setGalleryPreloadReady(true)
                     setCachePreloadProgress(null)
+                  } else if (newMode === 'large-video') {
+                    // 切换到大视频模式时，立即清空缓存并停止预加载
+                    console.log('[大视频模式] 切换模式：立即清空缓存')
+                    setGalleryPreloadReady(true)
+                    setCachePreloadProgress(null)
+                    // 立即清空预加载缓存
+                    if (preloadEnabled) {
+                      preloadManager.clearCache()
+                      const cacheStatus = preloadManager.getCacheStatus()
+                      setPreloadStatus(cacheStatus)
+                      
+                      // 延迟再次清空，防止正在进行的预加载填充缓存
+                      setTimeout(() => {
+                        if (viewMode === 'large-video') {
+                          console.log('[大视频模式] 延迟清空缓存（防止预加载填充）')
+                          preloadManager.clearCache()
+                          const updatedStatus = preloadManager.getCacheStatus()
+                          setPreloadStatus(updatedStatus)
+                        }
+                      }, 500)
+                    }
                   }
                   // 预加载将在关闭抽屉时根据配置变化统一处理
                 }
@@ -2757,6 +3030,10 @@ export default function HomePage() {
               <ToggleButton value="gallery">
                 <CollectionsIcon sx={{ mr: 1 }} />
                 图组模式
+              </ToggleButton>
+              <ToggleButton value="large-video">
+                <VideoIcon sx={{ mr: 1 }} />
+                大视频模式
               </ToggleButton>
             </ToggleButtonGroup>
             
@@ -2782,6 +3059,26 @@ export default function HomePage() {
                   }}
                 >
                   {currentFile?.filename.substring(0, currentFile.filename.lastIndexOf('/'))}
+                </Typography>
+              </Paper>
+            )}
+            
+            {viewMode === 'large-video' && (
+              <Paper variant="outlined" sx={{ mt: 2, p: 1.5, backgroundColor: 'info.light' }}>
+                <Typography variant="caption" color="info.contrastText" display="block" fontWeight="bold">
+                  💡 大视频模式
+                </Typography>
+                <Typography variant="caption" color="info.contrastText" display="block" sx={{ mt: 0.5 }}>
+                  • 即点即播，无需预加载
+                </Typography>
+                <Typography variant="caption" color="info.contrastText" display="block">
+                  • 支持大文件流式播放
+                </Typography>
+                <Typography variant="caption" color="info.contrastText" display="block">
+                  • 受已看过/未看过筛选影响
+                </Typography>
+                <Typography variant="caption" color="info.contrastText" display="block">
+                  • 随机性参数控制同目录优先级
                 </Typography>
               </Paper>
             )}
