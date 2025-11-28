@@ -215,17 +215,42 @@ export default function HomePage() {
   // 提示消息严重程度
   const [snackbarSeverity, setSnackbarSeverity] = useState<'success' | 'error' | 'info'>('success')
   
-  // 视频元素引用（普通模式）
+  // 视频元素引用（普通模式，用于小视频）
   const videoRef = useRef<HTMLVideoElement>(null)
-  // 视频元素引用（全屏模式）
-  const fullscreenVideoRef = useRef<HTMLVideoElement>(null)
+  // InstantVideoPlayer 引用（用于流式播放大视频）
+  const instantVideoRef = useRef<any>(null)
+  // 视频播放器容器引用（用于原生全屏 API）
+  const videoPlayerContainerRef = useRef<HTMLDivElement>(null)
   
-  // 视频播放状态保存（用于全屏切换时保持播放状态）
+  // 视频播放状态保存（用于全屏切换时保持播放状态，仅图片全屏需要）
   const videoStateRef = useRef<{ currentTime: number; paused: boolean } | null>(null)
   
   // 媒体类型（用于条件渲染不同的播放器）
   const [mediaType, setMediaType] = useState<MediaType>('image')
   
+  // 监听原生全屏状态变化（仅用于视频）
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const isCurrentlyFullscreen = !!document.fullscreenElement
+      // 只在视频播放时同步全屏状态
+      if (currentFile && isVideo(currentFile.filename)) {
+        setFullscreen(isCurrentlyFullscreen)
+        console.log('[原生全屏] 状态变化:', isCurrentlyFullscreen)
+      }
+    }
+    
+    document.addEventListener('fullscreenchange', handleFullscreenChange)
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange) // Safari
+    document.addEventListener('mozfullscreenchange', handleFullscreenChange) // Firefox
+    document.addEventListener('MSFullscreenChange', handleFullscreenChange) // IE11
+    
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange)
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange)
+      document.removeEventListener('mozfullscreenchange', handleFullscreenChange)
+      document.removeEventListener('MSFullscreenChange', handleFullscreenChange)
+    }
+  }, [currentFile])
 
   useEffect(() => {
     // 初始化应用服务
@@ -1857,27 +1882,34 @@ export default function HomePage() {
   }
 
 
-  const toggleFullscreen = () => {
+  const toggleFullscreen = async () => {
     const isVideoFile = currentFile && isVideo(currentFile.filename)
     
     if (isVideoFile) {
-      // 保存当前视频播放状态（注意：fullscreen 是切换前的状态）
-      // 如果当前是全屏，保存全屏视频的状态；如果当前不是全屏，保存非全屏视频的状态
-      const activeVideo = fullscreen ? fullscreenVideoRef.current : videoRef.current
-      if (activeVideo) {
-        videoStateRef.current = {
-          currentTime: activeVideo.currentTime,
-          paused: activeVideo.paused
-        }
-        console.log('保存视频状态:', {
-          currentTime: activeVideo.currentTime,
-          paused: activeVideo.paused,
-          fromFullscreen: fullscreen
-        })
+      // 视频使用原生全屏 API（无需保存状态，播放器实例不变）
+      const container = videoPlayerContainerRef.current
+      if (!container) {
+        console.warn('[原生全屏] 容器未找到')
+        return
       }
+      
+      try {
+        if (!document.fullscreenElement) {
+          // 进入全屏
+          await container.requestFullscreen()
+          console.log('[原生全屏] 进入全屏')
+        } else {
+          // 退出全屏
+          await document.exitFullscreen()
+          console.log('[原生全屏] 退出全屏')
+        }
+      } catch (error) {
+        console.error('[原生全屏] 切换失败:', error)
+      }
+    } else {
+      // 图片使用 Dialog 方式（保持原有逻辑）
+      setFullscreen(!fullscreen)
     }
-    
-    setFullscreen(!fullscreen)
   }
 
   // 评分相关函数
@@ -2192,99 +2224,20 @@ export default function HomePage() {
     }
   }, [autoMarkTimer])
 
-  // 全屏切换时恢复视频播放状态
+  // 确保小视频加载完成后自动播放
+  // 注意：流式视频（InstantVideoPlayer）有自己的 autoPlay 属性，不需要此逻辑
   useEffect(() => {
-    if (!currentFile || !isVideo(currentFile.filename)) return
+    // 只处理小视频
+    if (!currentFile || !isVideo(currentFile.filename) || mediaType !== 'small-video') return
     
-    const savedState = videoStateRef.current
-    if (!savedState) return
-    
-    // 等待 React 渲染完成，确保视频元素已经挂载
-    const timeoutId = setTimeout(() => {
-      const targetVideo = fullscreen ? fullscreenVideoRef.current : videoRef.current
-      
-      if (!targetVideo) {
-        console.warn('视频元素未找到，无法恢复状态')
-        return
-      }
-      
-      console.log('准备恢复视频状态:', {
-        currentTime: savedState.currentTime,
-        paused: savedState.paused,
-        toFullscreen: fullscreen,
-        videoReadyState: targetVideo.readyState
-      })
-      
-      // 先暂停视频，避免自动播放干扰
-      targetVideo.pause()
-      
-      // 恢复播放状态的函数
-      const restorePlayback = () => {
-        console.log('视频时间设置完成，准备恢复播放状态')
-        // 恢复播放状态
-        if (!savedState.paused) {
-          targetVideo.play().catch(error => {
-            console.warn('恢复视频播放失败:', error)
-          })
-        }
-        // 恢复完成后清除保存的状态
-        videoStateRef.current = null
-      }
-      
-      // 设置视频时间
-      const restoreTime = () => {
-        const timeDiff = Math.abs(targetVideo.currentTime - savedState.currentTime)
-        // 如果时间差很小（小于0.1秒），认为已经设置成功
-        if (timeDiff < 0.1) {
-          console.log('视频时间已接近目标时间，直接恢复播放状态')
-          restorePlayback()
-          return
-        }
-        
-        targetVideo.currentTime = savedState.currentTime
-        console.log('已设置视频时间:', savedState.currentTime)
-        
-        // 监听时间设置完成事件
-        const handleSeeked = () => {
-          restorePlayback()
-        }
-        targetVideo.addEventListener('seeked', handleSeeked, { once: true })
-      }
-      
-      let handleLoadedMetadata: (() => void) | null = null
-      
-      // 如果视频已经加载了元数据，可以直接设置时间
-      if (targetVideo.readyState >= 1) {
-        restoreTime()
-      } else {
-        // 等待视频加载元数据
-        handleLoadedMetadata = () => {
-          restoreTime()
-        }
-        targetVideo.addEventListener('loadedmetadata', handleLoadedMetadata, { once: true })
-      }
-    }, 0)
-    
-    return () => {
-      clearTimeout(timeoutId)
-    }
-  }, [fullscreen, currentFile])
-
-  // 确保视频加载完成后自动播放（修复从图片切换到视频不自动播放的问题）
-  useEffect(() => {
-    if (!currentFile || !isVideo(currentFile.filename)) return
-    
-    const targetVideo = fullscreen ? fullscreenVideoRef.current : videoRef.current
+    const targetVideo = videoRef.current
     
     if (targetVideo) {
       const handleCanPlay = () => {
-        // 只有在没有保存状态时才自动播放（避免与恢复状态冲突）
-        if (!videoStateRef.current) {
-          targetVideo.play().catch(error => {
-            // 浏览器可能阻止自动播放，这是正常的
-            console.log('视频自动播放被阻止:', error)
-          })
-        }
+        targetVideo.play().catch(error => {
+          // 浏览器可能阻止自动播放，这是正常的
+          console.log('视频自动播放被阻止:', error)
+        })
       }
       
       if (targetVideo.readyState >= 3) {
@@ -2297,7 +2250,7 @@ export default function HomePage() {
         }
       }
     }
-  }, [currentFile, fullscreen, mediaUrl])
+  }, [currentFile, mediaUrl, mediaType])
 
   if (!config) {
     return (
@@ -2325,8 +2278,8 @@ export default function HomePage() {
 
   const filteredStats = getFilteredStats()
 
-  // 全屏模式
-  if (fullscreen && currentFile && mediaUrl) {
+  // 全屏模式（仅用于图片，视频使用原生全屏 API）
+  if (fullscreen && currentFile && mediaUrl && !isVideo(currentFile.filename)) {
     return (
       <Box
         sx={{
@@ -2342,38 +2295,19 @@ export default function HomePage() {
           justifyContent: 'center',
         }}
       >
-        {/* 全屏媒体展示 */}
-        {isImage(currentFile.filename) && (
-          <Box
-            component="img"
-            src={mediaUrl}
-            alt={currentFile.basename}
-            sx={{
-              maxWidth: '100%',
-              maxHeight: '100%',
-              width: 'auto',
-              height: 'auto',
-              objectFit: 'contain',
-            }}
-          />
-        )}
-        {isVideo(currentFile.filename) && (
-          <Box
-            component="video"
-            ref={fullscreenVideoRef}
-            src={mediaUrl}
-            controls
-            autoPlay={!videoStateRef.current}
-            onTimeUpdate={handleVideoTimeUpdate}
-            onEnded={handleVideoEnded}
-            sx={{
-              maxWidth: '100%',
-              maxHeight: '100%',
-              width: 'auto',
-              height: 'auto',
-            }}
-          />
-        )}
+        {/* 全屏图片展示 */}
+        <Box
+          component="img"
+          src={mediaUrl}
+          alt={currentFile.basename}
+          sx={{
+            maxWidth: '100%',
+            maxHeight: '100%',
+            width: 'auto',
+            height: 'auto',
+            objectFit: 'contain',
+          }}
+        />
 
         {/* 左上角：索引信息 */}
         <Box
@@ -2695,11 +2629,19 @@ export default function HomePage() {
             }}
           >
             <Box 
+              ref={currentFile && isVideo(currentFile.filename) ? videoPlayerContainerRef : undefined}
               sx={{ 
                 position: 'relative', 
                 backgroundColor: '#000',
                 borderRadius: 2,
                 overflow: 'hidden',
+                // 原生全屏时的样式（仅用于视频）
+                '&:fullscreen': {
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: 0,
+                },
               }}
             >
               {mediaType === 'image' && (
@@ -2731,6 +2673,7 @@ export default function HomePage() {
               )}
               {mediaType === 'stream-video' && (
                 <InstantVideoPlayer
+                  ref={instantVideoRef}
                   src={mediaUrl}
                   autoPlay={true}
                   onTimeUpdate={handleInstantVideoTimeUpdate}
@@ -2739,6 +2682,138 @@ export default function HomePage() {
                     setError(`视频播放失败: ${error}`)
                   }}
                 />
+              )}
+
+              {/* 视频全屏时的 UI 覆盖层 */}
+              {currentFile && isVideo(currentFile.filename) && fullscreen && (
+                <>
+                  {/* 左上角：文件信息 */}
+                  <Box
+                    sx={{
+                      position: 'fixed',
+                      top: 24,
+                      left: 24,
+                      backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                      color: 'white',
+                      px: 2.5,
+                      py: 1.5,
+                      borderRadius: 2,
+                      zIndex: 2001,
+                      backdropFilter: 'blur(10px)',
+                    }}
+                  >
+                    <Typography variant="body1" fontWeight="medium">
+                      {viewMode === 'gallery' && currentGroup.length > 0
+                        ? `${currentGroupIndex + 1} / ${currentGroup.length}`
+                        : (() => {
+                            const filteredFiles = getFilteredFiles()
+                            const currentIndex = currentFile 
+                              ? filteredFiles.findIndex(f => f.filename === currentFile.filename)
+                              : -1
+                            return currentIndex >= 0 
+                              ? `${currentIndex + 1} / ${filteredFiles.length}`
+                              : '1 / 1'
+                          })()}
+                    </Typography>
+                  </Box>
+
+                  {/* 左侧边：星星等级设置 - 纵向显示，可拖动 */}
+                  <DraggableBox
+                    storageKey="fullscreen_rating"
+                    defaultSx={{
+                      backgroundColor: 'rgba(0, 0, 0, 0.5)',
+                      backdropFilter: 'blur(8px)',
+                      px: 1,
+                      py: 1.5,
+                      borderRadius: 1.5,
+                      zIndex: 2001,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: 0.5,
+                      opacity: 0.5,
+                      '&:hover': {
+                        opacity: 1,
+                      },
+                    }}
+                    sx={({ position }: { position: { x: number; y: number } | null; isDragging: boolean }) => ({
+                      ...(!position && {
+                        left: 8,
+                        top: viewMode === 'gallery' && currentGroup.length > 0 ? '65%' : '75%',
+                        transform: 'translateY(-50%)',
+                      }),
+                    })}
+                  >
+                    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5 }}>
+                      {QUICK_RATING_CONFIG.map((config) => {
+                        const isLit = currentRating?.rating && currentRating.rating >= config.rating
+                        
+                        return (
+                          <Tooltip
+                            key={config.rating}
+                            title={`${config.rating}星 - ${config.evaluation}`}
+                            placement="right"
+                          >
+                            <IconButton
+                              size="small"
+                              onClick={() => handleQuickRate(config.rating, config.evaluation)}
+                              disabled={loading || isSwitching}
+                              sx={{
+                                color: isLit ? 'warning.main' : 'rgba(255, 255, 255, 0.7)',
+                                transition: 'all 0.2s',
+                                padding: '4px',
+                                '&:hover': {
+                                  backgroundColor: 'rgba(255, 255, 255, 0.2)',
+                                  color: 'warning.main',
+                                  transform: 'scale(1.1)',
+                                },
+                              }}
+                            >
+                              {isLit ? (
+                                <StarIcon fontSize="small" />
+                              ) : (
+                                <StarBorderIcon fontSize="small" />
+                              )}
+                            </IconButton>
+                          </Tooltip>
+                        )
+                      })}
+                    </Box>
+                  </DraggableBox>
+
+                  {/* 右下角：换一个按钮（可拖动） */}
+                  <DraggableFab
+                    storageKey="fullscreen_next"
+                    onClick={loadRandomMedia}
+                    disabled={isSwitching}
+                    sx={({ position }: { position: { x: number; y: number } | null }) => ({
+                      ...(!position && {
+                        right: 16,
+                        bottom: 16,
+                      }),
+                    })}
+                  >
+                    <ShuffleIcon />
+                  </DraggableFab>
+
+                  {/* 右上角：退出全屏按钮 */}
+                  <IconButton
+                    onClick={toggleFullscreen}
+                    sx={{
+                      position: 'fixed',
+                      top: 24,
+                      right: 24,
+                      backgroundColor: 'rgba(0, 0, 0, 0.5)',
+                      color: 'white',
+                      zIndex: 2001,
+                      '&:hover': {
+                        backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                      },
+                    }}
+                  >
+                    <FullscreenExitIcon />
+                  </IconButton>
+                </>
               )}
               
             </Box>
