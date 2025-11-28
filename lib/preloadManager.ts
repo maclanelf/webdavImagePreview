@@ -26,7 +26,7 @@ class PreloadManager {
   private maxVideoSize = 100 * 1024 * 1024 // 100MB
   
   // 缓存过期时间：超过此时间的缓存将被清理（毫秒）
-  private cacheExpireTime = 5 * 60 * 1000 // 5分钟
+  private cacheExpireTime = 30 * 60 * 1000 // 30分钟
   
   // 已观看文件缓存：从数据库加载的已看过文件路径集合
   private viewedFiles = new Set<string>()
@@ -433,7 +433,7 @@ class PreloadManager {
           return false
         }
       } else if (viewedFilter === 'unviewed') {
-        if (!this.viewedFiles.has(file.filename)) {
+        if (this.viewedFiles.has(file.filename)) {
           return false
         }
       }
@@ -1077,7 +1077,7 @@ class PreloadManager {
           return false
         }
       } else if (viewedFilter === 'unviewed') {
-        if (!this.viewedFiles.has(file.filename)) {
+        if (this.viewedFiles.has(file.filename)) {
           return false
         }
       }
