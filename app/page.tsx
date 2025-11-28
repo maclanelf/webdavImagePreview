@@ -2730,12 +2730,6 @@ export default function HomePage() {
                     storageKey="fullscreen_next"
                     onClick={loadRandomMedia}
                     disabled={isSwitching}
-                    sx={({ position }: { position: { x: number; y: number } | null }) => ({
-                      ...(!position && {
-                        right: 16,
-                        bottom: 16,
-                      }),
-                    })}
                   >
                     <ShuffleIcon />
                   </DraggableFab>
