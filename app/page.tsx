@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
   Container,
   Box,
@@ -179,8 +179,15 @@ export default function HomePage() {
     totalPending: number 
   } | null>(null)
   
-  // 已看过的文件集合
-  const [viewedFiles, setViewedFiles] = useState<Set<string>>(new Set())
+  // 已看过的文件集合 - 统一从 preloadManager 获取
+  // 使用版本号触发重新渲染
+  const [viewedFilesVersion, setViewedFilesVersion] = useState(0)
+  const viewedFiles = useMemo(() => preloadManager.getViewedFiles(), [viewedFilesVersion])
+  
+  // 触发已看过文件更新的辅助函数
+  const refreshViewedFiles = useCallback(() => {
+    setViewedFilesVersion(v => v + 1)
+  }, [])
   
   // 评分对话框打开状态
   const [ratingDialogOpen, setRatingDialogOpen] = useState(false)
@@ -469,7 +476,7 @@ export default function HomePage() {
         })
       }
     }
-  }, [allFiles.length, viewedFiles.size, preloadEnabled, config, viewMode, viewedFilter])
+  }, [allFiles.length, viewedFilesVersion, preloadEnabled, config, viewMode, viewedFilter])
 
   // 监听缓存状态变化，自动更新进度显示（仅图组模式和随机模式，大视频模式不显示）
   useEffect(() => {
@@ -507,7 +514,12 @@ export default function HomePage() {
       const response = await fetch('/api/ratings/viewed?viewed=true')
       if (response.ok) {
         const data = await response.json()
-        setViewedFiles(new Set(data.filePaths))
+        // 更新 preloadManager 的缓存
+        data.filePaths.forEach((filePath: string) => {
+          preloadManager.addToViewedCache(filePath)
+        })
+        // 触发界面刷新
+        refreshViewedFiles()
         console.log(`加载已看过文件: ${data.count} 个`)
       }
     } catch (error) {
@@ -817,9 +829,12 @@ export default function HomePage() {
       // 从配置中获取预加载数量，默认为10
       const preloadCount = config.scanSettings?.preloadCount || 10
       await preloadManager.smartPreload(config, allFiles, currentFile, preloadCount, viewedFilter, preloadRandomness)
+      // 预加载完成后更新缓存状态显示
       setPreloadStatus(preloadManager.getCacheStatus())
     } catch (error) {
       console.error('智能预加载失败:', error)
+      // 即使失败也更新显示，确保状态准确
+      setPreloadStatus(preloadManager.getCacheStatus())
     }
   }
 
@@ -873,18 +888,14 @@ export default function HomePage() {
     }
   }
 
-  // 标记当前文件为已观看并从缓存中移除，然后补齐缓存（后台异步进行）
-  const markFileAsViewedAndRefill = async (file: MediaFile) => {
+  // 标记当前文件为已观看（不再补齐缓存，补齐由smartPreload统一处理）
+  const markFileAsViewed = async (file: MediaFile) => {
     if (!preloadEnabled || !config) return
 
     try {
       // 在已看过模式下，使用本地管理，不向数据库同步
       if (viewedFilter === 'viewed') {
-        
-        console.log(`已标记为本地观看: ${file.basename}，开始补齐缓存`)
-        
-        // 更新缓存状态（立即更新UI）
-        setPreloadStatus(preloadManager.getCacheStatus())
+        console.log(`已标记为本地观看: ${file.basename}`)
         
         // 检查是否所有已看过的文件都已看过
         const totalViewedFiles = allFiles.filter(f => viewedFiles.has(f.filename)).length
@@ -897,91 +908,14 @@ export default function HomePage() {
           setSnackbarOpen(true)
           return
         }
-        
-        // 后台异步补齐缓存
-        const preloadCount = config.scanSettings?.preloadCount || 10
-        
-        // 更新进度显示（显示当前缓存状态）
-        const cacheStatusBefore = preloadManager.getCacheStatus()
-        setPreloadStatus(cacheStatusBefore)
-        setCachePreloadProgress({ 
-          current: cacheStatusBefore.cacheSize, 
-          total: preloadCount 
-        })
-        
-        await preloadManager.refillCache(
-          config, 
-          allFiles, 
-          preloadCount, 
-          viewedFilter,
-          (current, total) => {
-            // 实时更新进度显示
-            setCachePreloadProgress({ current, total })
-          },
-          preloadRandomness
-        )
-        
-        // 补齐完成后再次更新状态
-        const cacheStatusAfter = preloadManager.getCacheStatus()
-        setPreloadStatus(cacheStatusAfter)
-        // 更新进度显示
-        setCachePreloadProgress({ 
-          current: cacheStatusAfter.cacheSize, 
-          total: preloadCount 
-        })
-        console.log(`缓存补齐完成: ${file.basename}`)
-        
       } else {
-        // 其他模式使用原有逻辑, 此处与调用markFileAsViewedAndRefill的saveAndSwitch有略微的冲突,因为saveAndSwitch方法中有自动评分,自动评分会把记录标记为已看过
+        // 其他模式：标记为已看过并同步到数据库
         await preloadManager.markAsViewed(file.filename)
         
-        // 更新本地状态
-        setViewedFiles(prev => new Set([...prev, file.filename]))
+        // 触发界面刷新
+        refreshViewedFiles()
         
-        console.log(`已标记为观看: ${file.basename}，开始后台补齐缓存`)
-        
-        // 更新缓存状态（立即更新UI）
-        const cacheStatusBefore = preloadManager.getCacheStatus()
-        setPreloadStatus(cacheStatusBefore)
-        
-        // 更新进度显示（图组模式和随机模式都支持）
-        const preloadCount = config.scanSettings?.preloadCount || 10
-        setCachePreloadProgress({ 
-          current: cacheStatusBefore.cacheSize, 
-          total: preloadCount 
-        })
-        
-        // 后台异步补齐缓存,这里不需要考虑图组模式,只有随机模式,图组模式使用另一套剩余文件预加载模式
-        // 随机模式：使用随机预加载，带进度回调
-        await preloadManager.refillCache(
-          config, 
-          allFiles, 
-          preloadCount, 
-          viewedFilter,
-          (current, total) => {
-            // 实时更新进度显示
-            setCachePreloadProgress({ current, total })
-          },
-          preloadRandomness
-        )
-        
-        // 补齐完成后再次更新状态
-        const cacheStatusAfter = preloadManager.getCacheStatus()
-        setPreloadStatus(cacheStatusAfter)
-        
-        // 更新进度显示（图组模式和随机模式都支持）
-        setCachePreloadProgress({ 
-          current: cacheStatusAfter.cacheSize, 
-          total: preloadCount 
-        })
-        console.log(`缓存补齐完成: ${file.basename}`)
-        
-        // 检查缓存是否为空，如果为空则重新预加载
-        const cachedFilepaths = preloadManager.getCachedFilepaths()
-        if (cachedFilepaths.length === 0) {
-          console.log('缓存为空，重新启动预加载')
-          await startPreload(config, allFiles)
-        }
+        console.log(`已标记为观看: ${file.basename}`)
       }
     } catch (error) {
       console.error('标记已观看失败:', error)
@@ -1282,6 +1216,9 @@ export default function HomePage() {
         
         // 所有模式都从缓存中移除已看过的文件
         preloadManager.removeFromCache(currentFile.filename)
+        
+        // 立即更新缓存状态显示，避免前台显示不准确
+        setPreloadStatus(preloadManager.getCacheStatus())
       }
       
       // 立即切换，不等待补齐缓存
@@ -1291,7 +1228,7 @@ export default function HomePage() {
       // 后台异步补齐缓存
       if (currentFile && viewMode === 'random') {
         // 不等待补齐完成，让它在后台进行
-        markFileAsViewedAndRefill(currentFile).catch(error => {
+        markFileAsViewed(currentFile).catch(error => {
           console.error('后台补齐缓存失败:', error)
         })
       }
@@ -1364,6 +1301,7 @@ export default function HomePage() {
   }
 
   const loadRandomFile = async () => {
+    debugger
     console.log(`[DEBUG] loadRandomFile 开始，当前筛选条件: ${viewedFilter}`)
     console.log(`[DEBUG] 已看过文件数量: ${viewedFiles.size}`)
     console.log(`[DEBUG] 缓存文件数量: ${preloadManager.getCachedFilepaths().length}`)
@@ -1491,8 +1429,8 @@ export default function HomePage() {
       // 启动自动标记已看过的定时器（传递文件参数避免状态更新延迟）
       startAutoMarkTimer(fileToLoad)
 
-      // 智能预加载下一个可能查看的文件
-      setTimeout(() => smartPreload(fileToLoad), 1000)
+      // 智能预加载下一个可能查看的文件（立即执行，不延迟）
+      smartPreload(fileToLoad)
     } catch (e: any) {
       setError(e.message)
     } finally {
@@ -2044,8 +1982,11 @@ export default function HomePage() {
 
       await saveRating(ratingData)
       
-      // 更新本地已看过状态
-      setViewedFiles(prev => new Set([...prev, currentFile.filename]))
+      // 同步更新 preloadManager 的已看过缓存（不重复更新数据库）
+      preloadManager.addToViewedCache(currentFile.filename)
+      
+      // 触发界面刷新
+      refreshViewedFiles()
       
       // 评分已保存，状态会在 saveRating 中自动更新
       
@@ -2059,7 +2000,7 @@ export default function HomePage() {
       setSnackbarSeverity('error')
       setSnackbarOpen(true)
     }
-  }, [currentFile, saveRating])
+  }, [currentFile, saveRating, refreshViewedFiles])
   
   // 关闭提示
   const handleCloseSnackbar = () => {
@@ -2099,8 +2040,11 @@ export default function HomePage() {
 
       await saveRating(autoRatingData, targetFile)
       
-      // 更新本地已看过状态
-      setViewedFiles(prev => new Set([...prev, targetFile.filename]))
+      // 同步更新 preloadManager 的已看过缓存（不重复更新数据库）
+      preloadManager.addToViewedCache(targetFile.filename)
+      
+      // 触发界面刷新
+      refreshViewedFiles()
       
       // 确保评分状态已更新
       console.log(`自动评分完成: ${targetFile.basename}`)
@@ -2108,7 +2052,7 @@ export default function HomePage() {
     } catch (error) {
       console.error('自动标记已看过失败:', error)
     }
-  }, [currentFile, saveRating])
+  }, [currentFile, saveRating, refreshViewedFiles])
 
   // 自动标记已看过
   const startAutoMarkTimer = (file?: MediaFile) => {
