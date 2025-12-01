@@ -235,6 +235,9 @@ export default function HomePage() {
   // 媒体类型（用于条件渲染不同的播放器）
   const [mediaType, setMediaType] = useState<MediaType>('image')
   
+  // 全屏过渡遮罩（用于图片全屏切换到视频全屏时的平滑过渡）
+  const [fullscreenTransitionOverlay, setFullscreenTransitionOverlay] = useState(false)
+  
   // 监听原生全屏状态变化（仅用于视频）
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -243,6 +246,12 @@ export default function HomePage() {
       if (currentFile && isVideo(currentFile.filename)) {
         setFullscreen(isCurrentlyFullscreen)
         console.log('[原生全屏] 状态变化:', isCurrentlyFullscreen)
+        
+        // 如果进入了全屏且过渡遮罩还在显示，清除遮罩
+        if (isCurrentlyFullscreen && fullscreenTransitionOverlay) {
+          console.log('[过渡遮罩] 检测到已进入全屏，清除遮罩')
+          setFullscreenTransitionOverlay(false)
+        }
       }
     }
     
@@ -257,7 +266,7 @@ export default function HomePage() {
       document.removeEventListener('mozfullscreenchange', handleFullscreenChange)
       document.removeEventListener('MSFullscreenChange', handleFullscreenChange)
     }
-  }, [currentFile])
+  }, [currentFile, fullscreenTransitionOverlay])
 
   useEffect(() => {
     // 初始化应用服务
@@ -1062,17 +1071,21 @@ export default function HomePage() {
   const loadFileFromGroup = async (group: MediaFile[], index: number) => {
     if (index < 0 || index >= group.length) return
     
+    const file = group[index]
+    
     // 切换文件时立即重置自动评分标志
     hasAutoRatedRef.current = false
     
     // 清除保存的视频状态，确保新视频可以自动播放
     videoStateRef.current = null
     
+    // 检测媒体类型变化并处理全屏切换，返回是否需要自动进入视频全屏
+    const shouldEnterVideoFullscreen = handleMediaTypeChangeInFullscreen(file)
+    
     setLoading(true)
     setError(null)
     
     try {
-      const file = group[index]
       setCurrentFile(file)
       setCurrentGroupIndex(index)
       // 尝试从预加载缓存获取
@@ -1154,10 +1167,18 @@ export default function HomePage() {
       setMediaUrl(url)
       
       // 设置媒体类型
-      if (isVideo(file.filename)) {
+      const isVideoFile = isVideo(file.filename)
+      if (isVideoFile) {
         setMediaType('small-video')
       } else {
         setMediaType('image')
+      }
+      
+      // 如果需要自动进入视频全屏，延迟执行以确保视频元素已渲染
+      if (shouldEnterVideoFullscreen && isVideoFile) {
+        setTimeout(() => {
+          enterVideoFullscreen()
+        }, 100)
       }
       
       // 加载当前文件的评分（优先执行，确保不被预加载阻塞）
@@ -1377,6 +1398,9 @@ export default function HomePage() {
     // 清除保存的视频状态，确保新视频可以自动播放
     videoStateRef.current = null
     
+    // 检测媒体类型变化并处理全屏切换，返回是否需要自动进入视频全屏
+    const shouldEnterVideoFullscreen = handleMediaTypeChangeInFullscreen(fileToLoad)
+    
     setLoading(true)
     setError(null)
 
@@ -1417,10 +1441,18 @@ export default function HomePage() {
       setMediaUrl(url)
       
       // 设置媒体类型
-      if (isVideo(fileToLoad.filename)) {
+      const isVideoFile = isVideo(fileToLoad.filename)
+      if (isVideoFile) {
         setMediaType('small-video')
       } else {
         setMediaType('image')
+      }
+      
+      // 如果需要自动进入视频全屏，延迟执行以确保视频元素已渲染
+      if (shouldEnterVideoFullscreen && isVideoFile) {
+        setTimeout(() => {
+          enterVideoFullscreen()
+        }, 100)
       }
       
       // 加载当前文件的评分
@@ -1517,6 +1549,9 @@ export default function HomePage() {
     // 清除保存的视频状态，确保新视频可以自动播放
     videoStateRef.current = null
     
+    // 检测媒体类型变化并处理全屏切换，返回是否需要自动进入视频全屏
+    const shouldEnterVideoFullscreen = handleMediaTypeChangeInFullscreen(fileToLoad)
+    
     setLoading(true)
     setError(null)
     
@@ -1542,6 +1577,13 @@ export default function HomePage() {
       
       setMediaUrl(streamUrl)
       setMediaType('stream-video') // 标记为流式视频，用于渲染 InstantVideoPlayer
+      
+      // 如果需要自动进入视频全屏，延迟执行以确保视频元素已渲染
+      if (shouldEnterVideoFullscreen) {
+        setTimeout(() => {
+          enterVideoFullscreen()
+        }, 100)
+      }
       
       // 加载当前文件的评分
       await loadCurrentRating(fileToLoad)
@@ -1819,6 +1861,85 @@ export default function HomePage() {
     setDrawerOpen(open)
   }
 
+
+  /**
+   * 检测媒体类型变化并处理全屏状态切换
+   * - 图片Dialog全屏 → 视频：显示过渡遮罩，退出Dialog全屏，视频加载后自动进入原生全屏
+   * - 视频原生全屏 → 图片：保持fullscreen=true，让图片直接渲染为Dialog全屏
+   * @returns 返回是否需要在视频加载后自动进入全屏
+   */
+  const handleMediaTypeChangeInFullscreen = (nextFile: MediaFile): boolean => {
+    if (!fullscreen || !currentFile) return false
+    
+    const currentIsImage = !isVideo(currentFile.filename)
+    const nextIsImage = !isVideo(nextFile.filename)
+    
+    // 媒体类型没有变化，不需要处理
+    if (currentIsImage === nextIsImage) return false
+    
+    // 从图片Dialog全屏 → 视频
+    if (currentIsImage && !nextIsImage) {
+      console.log('[全屏状态] 图片全屏切换到视频，显示过渡遮罩')
+      // 先显示过渡遮罩，避免看到非全屏页面
+      setFullscreenTransitionOverlay(true)
+      setFullscreen(false)
+      return true // 需要在视频加载后进入原生全屏
+    }
+    
+    // 从视频原生全屏 → 图片
+    if (!currentIsImage && nextIsImage) {
+      console.log('[全屏状态] 视频全屏切换到图片，保持fullscreen=true用于Dialog全屏')
+      // 保持 fullscreen=true，图片会直接渲染为Dialog全屏
+      return false
+    }
+    
+    return false
+  }
+
+  /**
+   * 视频加载后自动进入原生全屏
+   */
+  const enterVideoFullscreen = async () => {
+    const container = videoPlayerContainerRef.current
+    if (!container) {
+      console.warn('[自动全屏] 视频容器未找到，延迟重试')
+      // 延迟重试，等待容器渲染
+      setTimeout(async () => {
+        const retryContainer = videoPlayerContainerRef.current
+        if (retryContainer) {
+          try {
+            await retryContainer.requestFullscreen()
+            console.log('[自动全屏] 延迟重试成功，视频已进入原生全屏')
+            // 成功进入全屏后，移除过渡遮罩
+            setTimeout(() => {
+              setFullscreenTransitionOverlay(false)
+            }, 200) // 稍微延迟以确保全屏动画完成
+          } catch (error) {
+            console.error('[自动全屏] 延迟重试失败:', error)
+            // 失败也要移除遮罩
+            setFullscreenTransitionOverlay(false)
+          }
+        } else {
+          // 容器仍未找到，移除遮罩
+          setFullscreenTransitionOverlay(false)
+        }
+      }, 300)
+      return
+    }
+    
+    try {
+      await container.requestFullscreen()
+      console.log('[自动全屏] 视频已自动进入原生全屏')
+      // 成功进入全屏后，移除过渡遮罩
+      setTimeout(() => {
+        setFullscreenTransitionOverlay(false)
+      }, 200) // 稍微延迟以确保全屏动画完成
+    } catch (error) {
+      console.error('[自动全屏] 进入原生全屏失败:', error)
+      // 失败也要移除遮罩
+      setFullscreenTransitionOverlay(false)
+    }
+  }
 
   const toggleFullscreen = async () => {
     const isVideoFile = currentFile && isVideo(currentFile.filename)
@@ -2167,6 +2288,18 @@ export default function HomePage() {
       }
     }
   }, [autoMarkTimer])
+
+  // 全屏过渡遮罩安全超时清理（防止意外情况下遮罩一直显示）
+  useEffect(() => {
+    if (fullscreenTransitionOverlay) {
+      const timeout = setTimeout(() => {
+        console.warn('[过渡遮罩] 超时自动清理')
+        setFullscreenTransitionOverlay(false)
+      }, 3000) // 3秒后自动清理
+      
+      return () => clearTimeout(timeout)
+    }
+  }, [fullscreenTransitionOverlay])
 
   // 确保小视频加载完成后自动播放
   // 注意：流式视频（InstantVideoPlayer）有自己的 autoPlay 属性，不需要此逻辑
@@ -3545,6 +3678,35 @@ export default function HomePage() {
           {snackbarMessage}
         </Alert>
       </Snackbar>
+
+      {/* 全屏过渡遮罩 - 用于图片全屏切换到视频全屏时的平滑过渡 */}
+      {fullscreenTransitionOverlay && (
+        <Box
+          sx={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: '#000',
+            zIndex: 10000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            animation: 'fadeIn 0.2s ease-in-out',
+            '@keyframes fadeIn': {
+              '0%': {
+                opacity: 0,
+              },
+              '100%': {
+                opacity: 1,
+              },
+            },
+          }}
+        >
+          <CircularProgress size={60} sx={{ color: 'white' }} />
+        </Box>
+      )}
     </Box>
   )
 }
