@@ -74,7 +74,7 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   const [loading, setLoading] = useState(true) // 加载状态
   const [error, setError] = useState<string | null>(null) // 错误信息
   const [isPlaying, setIsPlaying] = useState(false) // 播放状态
-  const [showControls, setShowControls] = useState(true) // 控制栏显示状态
+  const [showControls, setShowControls] = useState(false) // 控制栏显示状态
   const [currentTime, setCurrentTime] = useState(0) // 当前播放时间
   const [duration, setDuration] = useState(0) // 视频总时长
   const [videoAspectRatio, setVideoAspectRatio] = useState<number | null>(null) // 视频宽高比
@@ -440,7 +440,12 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   }
 
   // 手动播放/暂停控制
-  const togglePlayPause = async () => {
+  const togglePlayPause = async (e?: React.MouseEvent) => {
+    // 阻止事件冒泡，避免触发视频容器的点击事件
+    if (e) {
+      e.stopPropagation()
+    }
+    
     if (!videoRef.current) return
     
     try {
@@ -477,6 +482,11 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
       console.error('播放控制失败:', error)
       setPlayPromise(null)
     }
+  }
+
+  // 切换控制栏显示状态
+  const toggleControls = () => {
+    setShowControls(prev => !prev)
   }
 
   // 全屏切换
@@ -639,8 +649,7 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     <Box 
       ref={containerRef}
       className={className}
-      onMouseEnter={() => setShowControls(true)}
-      onMouseLeave={() => setShowControls(false)}
+      onClick={toggleControls}
       sx={{
         position: 'relative',
         width: '100%',
@@ -650,6 +659,7 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
         justifyContent: 'center',
         backgroundColor: '#000',
         overflow: 'hidden',
+        cursor: 'pointer',
         ...style,
       }}
     >
@@ -668,6 +678,7 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
           height: '100%',
           objectFit: 'contain',
           display: 'block',
+          pointerEvents: 'none', // 防止视频元素拦截点击事件
         }}
         onLoadStart={handleLoadStart}
         onLoadedMetadata={handleLoadedMetadata}
@@ -681,7 +692,6 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
         onProgress={handleProgress}
         onWaiting={handleWaiting}
         onStalled={handleStalled}
-        onClick={togglePlayPause}
       />
       
       {/* 加载指示器 */}
@@ -720,7 +730,7 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
           }}
         >
           <IconButton
-            onClick={togglePlayPause}
+            onClick={(e) => togglePlayPause(e)}
             sx={{
               backgroundColor: 'rgba(0, 0, 0, 0.7)',
               color: '#fff',
@@ -751,14 +761,14 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <IconButton
               size="small"
-              onClick={togglePlayPause}
+              onClick={(e) => togglePlayPause(e)}
               sx={{ color: '#fff' }}
             >
               {isPlaying ? <PauseIcon /> : <PlayArrowIcon />}
             </IconButton>
             
             {/* 进度条 */}
-            <Box sx={{ flex: 1, mx: 1 }}>
+            <Box sx={{ flex: 1, mx: 1 }} onClick={(e) => e.stopPropagation()}>
               <input
                 type="range"
                 min="0"
@@ -789,7 +799,8 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
             <IconButton
               size="small"
               sx={{ color: '#fff' }}
-              onClick={() => {
+              onClick={(e) => {
+                e.stopPropagation()
                 if (videoRef.current) {
                   videoRef.current.muted = !videoRef.current.muted
                 }
@@ -807,7 +818,10 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
                   transform: orientation === 'portrait' ? 'rotate(90deg)' : 'rotate(0deg)',
                   transition: 'transform 0.3s ease',
                 }}
-                onClick={toggleOrientation}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  toggleOrientation()
+                }}
                 title={orientation === 'landscape' ? '切换到竖屏' : '切换到横屏'}
               >
                 <ScreenRotationIcon />
@@ -818,7 +832,10 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
             <IconButton
               size="small"
               sx={{ color: '#fff' }}
-              onClick={toggleFullscreen}
+              onClick={(e) => {
+                e.stopPropagation()
+                toggleFullscreen()
+              }}
             >
               {isFullscreen ? <FullscreenExitIcon /> : <FullscreenIcon />}
             </IconButton>
