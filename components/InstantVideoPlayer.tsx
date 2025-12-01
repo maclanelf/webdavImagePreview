@@ -89,28 +89,56 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   // 标记是否已经尝试过自动播放，防止重复尝试
   const [hasAttemptedAutoPlay, setHasAttemptedAutoPlay] = useState(false)
 
-  // 当src变化时重置状态
+  // 当src变化时重置状态并清理旧的video元素
   useEffect(() => {
+    console.log('🔄 [即点即播] src变化，重置播放器状态:', src)
+    
+    // 重置所有播放状态
     setHasAttemptedAutoPlay(false)
     setLoading(true)
     setError(null)
     setCurrentTime(0)
     setDuration(0)
     setVideoAspectRatio(null)
+    setIsPlaying(false)
+    
+    // 清理正在进行的播放Promise
+    if (playPromise) {
+      playPromise.catch(() => {
+        // 忽略错误
+      })
+      setPlayPromise(null)
+    }
+    
+    // 如果video元素存在，先暂停并重置
+    if (videoRef.current) {
+      videoRef.current.pause()
+      videoRef.current.currentTime = 0
+      console.log('⏹️ [即点即播] 已重置video元素')
+    }
   }, [src])
 
   // 清理函数
   useEffect(() => {
     return () => {
-      // 组件卸载时清理播放Promise
+      console.log('🧹 [即点即播] 组件卸载，清理资源')
+      
+      // 清理播放Promise
       if (playPromise) {
         playPromise.catch(() => {
           // 忽略清理时的错误
         })
-        setPlayPromise(null)
+      }
+      
+      // 停止video元素的所有活动
+      if (videoRef.current) {
+        videoRef.current.pause()
+        videoRef.current.src = '' // 清空src，停止所有网络请求
+        videoRef.current.load() // 重新加载以应用空src
+        console.log('🛑 [即点即播] 已停止video元素的所有请求')
       }
     }
-  }, [playPromise])
+  }, [])
 
   // 暴露给父组件的方法
   useImperativeHandle(ref, () => ({
@@ -630,7 +658,7 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
         ref={videoRef}
         src={src}
         controls={false} // 使用自定义控件
-        preload="auto" // 积极加载，实现即点即播
+        preload="metadata" // 只加载元数据，避免过度预加载大文件
         playsInline // 移动设备内联播放
         muted={false} // 不静音
         style={{

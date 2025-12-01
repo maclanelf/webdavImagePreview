@@ -2735,6 +2735,7 @@ export default function HomePage() {
               )}
               {mediaType === 'small-video' && (
                 <Box
+                  key={mediaUrl} // 使用 mediaUrl 作为 key，确保 URL 变化时重新创建元素
                   component="video"
                   ref={videoRef}
                   src={mediaUrl}
@@ -2750,6 +2751,7 @@ export default function HomePage() {
               )}
               {mediaType === 'stream-video' && (
                 <InstantVideoPlayer
+                  key={mediaUrl} // 使用 mediaUrl 作为 key，确保 URL 变化时重新创建实例
                   ref={instantVideoRef}
                   src={mediaUrl}
                   autoPlay={true}
