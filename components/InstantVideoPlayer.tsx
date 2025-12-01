@@ -82,6 +82,12 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('landscape') // 屏幕方向
   const [supportsOrientationLock, setSupportsOrientationLock] = useState(false) // 是否支持屏幕方向锁定
   const containerRef = useRef<HTMLDivElement>(null) // 容器元素引用
+  
+  // 下载速度和缓冲进度相关状态
+  const [downloadSpeed, setDownloadSpeed] = useState<number>(0) // 下载速度 (MB/s)
+  const [bufferedPercent, setBufferedPercent] = useState<number>(0) // 缓冲百分比
+  const lastBufferedEndRef = useRef<number>(0) // 上次缓冲结束位置 (秒)
+  const lastUpdateTimeRef = useRef<number>(Date.now()) // 上次更新时间 (毫秒)
 
   // 播放状态管理
   // 播放Promise管理，用于追踪正在进行的播放请求，避免多次调用play()导致的竞态条件
@@ -101,6 +107,10 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     setDuration(0)
     setVideoAspectRatio(null)
     setIsPlaying(false)
+    setDownloadSpeed(0)
+    setBufferedPercent(0)
+    lastBufferedEndRef.current = 0
+    lastUpdateTimeRef.current = Date.now()
     
     // 清理正在进行的播放Promise
     if (playPromise) {
@@ -390,7 +400,7 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   /**
    * 处理视频缓冲进度事件
    * 
-   * 当浏览器下载媒体数据时周期性触发，用于监控视频的缓冲状态。
+   * 当浏览器下载媒体数据时周期性触发，用于监控视频的缓冲状态和下载速度。
    * 通过检查 buffered 属性，我们可以知道哪些时间范围的视频数据已经被缓冲。
    * 
    * 触发时机：
@@ -400,11 +410,13 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
    * 主要功能：
    * 1. 获取视频的缓冲时间范围（TimeRanges 对象）
    * 2. 计算已缓冲数据占总时长的百分比
-   * 3. 输出详细的缓冲进度日志，便于调试和监控播放性能
+   * 3. 计算实时下载速度 (基于时间和数据量的变化)
+   * 4. 输出详细的缓冲进度日志，便于调试和监控播放性能
    * 
    * 注意事项：
    * - buffered 是一个 TimeRanges 对象，可能包含多个不连续的时间段
    * - 这里只关注最后一个缓冲范围的结束时间，作为整体缓冲进度的指标
+   * - 速度计算基于缓冲时长的增量和时间差，近似估算下载速率
    */
   const handleProgress = () => {
     // 监控缓冲进度
@@ -422,9 +434,29 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
         // 确保视频时长有效（已加载元数据）
         if (duration > 0) {
           // 计算缓冲百分比：已缓冲时长 / 总时长 * 100
-          const bufferedPercent = (bufferedEnd / duration * 100).toFixed(1)
+          const percent = (bufferedEnd / duration * 100)
+          setBufferedPercent(percent)
+          
+          // 计算下载速度
+          const now = Date.now()
+          const timeDiff = (now - lastUpdateTimeRef.current) / 1000 // 转换为秒
+          const bufferedDiff = bufferedEnd - lastBufferedEndRef.current // 缓冲时长差(秒)
+          
+          // 只有当时间差大于0.5秒且有新数据缓冲时才更新速度
+          if (timeDiff > 0.5 && bufferedDiff > 0) {
+            // 估算比特率：假设视频平均码率
+            // 对于流式传输，我们用缓冲时长的变化来估算速度
+            // 这里假设视频平均码率为 5 Mbps (可根据实际情况调整)
+            const estimatedBitrate = 5 // Mbps
+            const speed = (bufferedDiff * estimatedBitrate) / (timeDiff * 8) // MB/s
+            
+            setDownloadSpeed(speed)
+            lastBufferedEndRef.current = bufferedEnd
+            lastUpdateTimeRef.current = now
+          }
+          
           // 输出缓冲进度日志：百分比和具体时间
-          console.log(`📊 [即点即播] 缓冲进度: ${bufferedPercent}% (${bufferedEnd.toFixed(1)}s / ${duration.toFixed(1)}s)`)
+          console.log(`📊 [即点即播] 缓冲进度: ${percent.toFixed(1)}% (${bufferedEnd.toFixed(1)}s / ${duration.toFixed(1)}s), 速度: ${downloadSpeed.toFixed(2)} MB/s`)
         }
       }
     }
@@ -709,10 +741,75 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
             gap: 1,
           }}
         >
-          <CircularProgress sx={{ color: '#fff' }} />
-          <Typography variant="body2" sx={{ color: '#fff' }}>
+          {/* 使用确定性进度条显示缓冲百分比 */}
+          <Box sx={{ position: 'relative', display: 'inline-flex' }}>
+            {bufferedPercent > 0 ? (
+              <>
+                <CircularProgress 
+                  variant="determinate" 
+                  value={bufferedPercent} 
+                  size={60}
+                  thickness={4}
+                  sx={{ color: '#4caf50' }} 
+                />
+                <Box
+                  sx={{
+                    top: 0,
+                    left: 0,
+                    bottom: 0,
+                    right: 0,
+                    position: 'absolute',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Typography
+                    variant="caption"
+                    component="div"
+                    sx={{ color: '#fff', fontWeight: 'bold' }}
+                  >
+                    {`${Math.round(bufferedPercent)}%`}
+                  </Typography>
+                </Box>
+              </>
+            ) : (
+              <CircularProgress size={60} sx={{ color: '#fff' }} />
+            )}
+          </Box>
+          
+          <Typography variant="body2" sx={{ color: '#fff', fontWeight: 'medium' }}>
             正在加载...
           </Typography>
+          
+          {/* 显示缓冲进度和下载速度 */}
+          {bufferedPercent > 0 && (
+            <Box sx={{ textAlign: 'center', mt: 0.5 }}>
+              <Typography 
+                variant="caption" 
+                sx={{ 
+                  color: '#4caf50',
+                  fontSize: '0.85rem',
+                  display: 'block'
+                }}
+              >
+                缓冲: {bufferedPercent.toFixed(1)}%
+              </Typography>
+              {downloadSpeed > 0 && (
+                <Typography 
+                  variant="caption" 
+                  sx={{ 
+                    color: downloadSpeed > 1 ? '#4caf50' : '#ffa726',
+                    fontSize: '0.85rem',
+                    display: 'block',
+                    mt: 0.3
+                  }}
+                >
+                  ⬇ {downloadSpeed.toFixed(2)} MB/s
+                </Typography>
+              )}
+            </Box>
+          )}
         </Box>
       )}
       
@@ -795,6 +892,40 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
             <Typography variant="caption" sx={{ color: '#fff', minWidth: '80px' }}>
               {formatTime(currentTime)} / {formatTime(duration)}
             </Typography>
+            
+            {/* 缓冲进度和下载速度显示 */}
+            <Box 
+              sx={{ 
+                display: 'flex', 
+                flexDirection: 'column',
+                alignItems: 'flex-end',
+                minWidth: '120px',
+                mr: 1
+              }}
+            >
+              <Typography 
+                variant="caption" 
+                sx={{ 
+                  color: bufferedPercent >= 99 ? '#4caf50' : '#fff',
+                  fontSize: '0.7rem',
+                  lineHeight: 1.2
+                }}
+              >
+                缓冲: {bufferedPercent.toFixed(1)}%
+              </Typography>
+              {downloadSpeed > 0 && (
+                <Typography 
+                  variant="caption" 
+                  sx={{ 
+                    color: downloadSpeed > 1 ? '#4caf50' : '#ffa726',
+                    fontSize: '0.7rem',
+                    lineHeight: 1.2
+                  }}
+                >
+                  ⬇ {downloadSpeed.toFixed(2)} MB/s
+                </Typography>
+              )}
+            </Box>
             
             <IconButton
               size="small"
