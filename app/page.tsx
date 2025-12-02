@@ -232,6 +232,12 @@ export default function HomePage() {
   // 视频播放状态保存（用于全屏切换时保持播放状态，仅图片全屏需要）
   const videoStateRef = useRef<{ currentTime: number; paused: boolean } | null>(null)
   
+  // 播放意图标记（用于移动端自动播放）
+  const playIntentRef = useRef(false)
+  
+  // 预热视频元素（用于保持播放权限）
+  const warmupVideoRef = useRef<HTMLVideoElement | null>(null)
+  
   // 媒体类型（用于条件渲染不同的播放器）
   const [mediaType, setMediaType] = useState<MediaType>('image')
   
@@ -251,6 +257,25 @@ export default function HomePage() {
         if (isCurrentlyFullscreen && fullscreenTransitionOverlay) {
           console.log('[过渡遮罩] 检测到已进入全屏，清除遮罩')
           setFullscreenTransitionOverlay(false)
+        }
+        
+        // 在进入全屏后尝试播放视频
+        if (isCurrentlyFullscreen && playIntentRef.current) {
+          const video = videoRef.current
+          if (video && video.paused) {
+            console.log('[原生全屏] 进入全屏后尝试播放视频')
+            video.play().catch(error => {
+              console.log('[原生全屏] 播放失败，尝试静音播放:', error)
+              video.muted = true
+              video.play().then(() => {
+                setTimeout(() => {
+                  video.muted = false
+                }, 300)
+              }).catch(err => {
+                console.error('[原生全屏] 静音播放也失败:', err)
+              })
+            })
+          }
         }
       }
     }
@@ -1268,6 +1293,8 @@ export default function HomePage() {
 
   // 图组模式：下一张
   const nextInGroup = () => {
+    // 标记播放意图（图组切换也需要）
+    playIntentRef.current = true
     saveAndSwitch(() => {
       if (currentGroupIndex < currentGroup.length - 1) {
         loadFileFromGroup(currentGroup, currentGroupIndex + 1)
@@ -1280,11 +1307,45 @@ export default function HomePage() {
 
   // 图组模式：上一张
   const previousInGroup = () => {
+    // 标记播放意图（图组切换也需要）
+    playIntentRef.current = true
     saveAndSwitch(() => {
       if (currentGroupIndex > 0) {
         loadFileFromGroup(currentGroup, currentGroupIndex - 1)
       }
     })
+  }
+
+  // 创建或播放预热视频元素，用于保持播放权限
+  const createOrPlayWarmupVideo = () => {
+    if (!warmupVideoRef.current) {
+      console.log('[播放权限] 创建预热视频元素')
+      const warmupVideo = document.createElement('video')
+      warmupVideo.style.position = 'fixed'
+      warmupVideo.style.top = '-9999px'
+      warmupVideo.style.left = '-9999px'
+      warmupVideo.style.width = '1px'
+      warmupVideo.style.height = '1px'
+      warmupVideo.muted = true
+      warmupVideo.playsInline = true
+      warmupVideo.autoplay = true
+      
+      // 使用一个非常小的空视频数据
+      warmupVideo.src = 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAAAs1tZGF0AAACrgYF//+q3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE1NSByMjkwMSA3ZDBmZjIyIC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAxOCAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTEgcmVmPTMgZGVibG9jaz0xOjA6MCBhbmFseXNlPTB4MzoweDExMyBtZT1oZXggc3VibWU9NyBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0xIG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MSA4eDhkY3Q9MSBjcW09MCBkZWFkem9uZT0yMSwxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0tMiB0aHJlYWRzPTEgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0zIGJfcHlyYW1pZD0yIGJfYWRhcHQ9MSBiX2JpYXM9MCBkaXJlY3Q9MSB3ZWlnaHRiPTEgb3Blbl9nb3A9MCB3ZWlnaHRwPTIga2V5aW50PTI1MCBrZXlpbnRfbWluPTEgc2NlbmVjdXQ9NDAgaW50cmFfcmVmcmVzaD0wIHJjX2xvb2thaGVhZD00MCByYz1jcmYgbWJ0cmVlPTEgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MToxLjAwAIAAAAFZZYiEACD/2lu4PtiAGCZiIJmO35BneLS4/AKawbwF3gS81VgCN/Hryek5EZJp1IoIopMo/OyDntxcd3g3q1StPr4cJjhPLNze2wP/5e3LpSfJ31kpPSItVLgiJZaAlAAdmhlEH+LPCgpxYAGBH8iSu8JvZ7+Sb7E+jq9e1h1gAAADAAADAAADAAADA'
+      
+      document.body.appendChild(warmupVideo)
+      warmupVideoRef.current = warmupVideo
+      
+      // 立即尝试播放
+      warmupVideo.play().then(() => {
+        console.log('[播放权限] 预热视频播放成功，已获取播放权限')
+      }).catch(e => {
+        console.log('[播放权限] 预热视频播放失败:', e)
+      })
+    } else {
+      // 如果已存在，再次播放以保持权限
+      warmupVideoRef.current.play().catch(() => {})
+    }
   }
 
   const loadRandomMedia = async () => {
@@ -1294,6 +1355,12 @@ export default function HomePage() {
     }
 
     console.log(`[loadRandomMedia] 当前模式: ${viewMode}`)
+    
+    // 标记用户有播放意图（用于移动端视频自动播放）
+    playIntentRef.current = true
+    
+    // 创建预热视频元素并立即播放，保持播放权限
+    createOrPlayWarmupVideo()
 
     // 图组模式
     if (viewMode === 'gallery') {
@@ -1914,6 +1981,9 @@ export default function HomePage() {
             setTimeout(() => {
               setFullscreenTransitionOverlay(false)
             }, 200) // 稍微延迟以确保全屏动画完成
+            
+            // 进入全屏后尝试播放
+            tryPlayVideoAfterFullscreen()
           } catch (error) {
             console.error('[自动全屏] 延迟重试失败:', error)
             // 失败也要移除遮罩
@@ -1934,10 +2004,35 @@ export default function HomePage() {
       setTimeout(() => {
         setFullscreenTransitionOverlay(false)
       }, 200) // 稍微延迟以确保全屏动画完成
+      
+      // 进入全屏后尝试播放
+      tryPlayVideoAfterFullscreen()
     } catch (error) {
       console.error('[自动全屏] 进入原生全屏失败:', error)
       // 失败也要移除遮罩
       setFullscreenTransitionOverlay(false)
+    }
+  }
+  
+  // 进入全屏后尝试播放视频
+  const tryPlayVideoAfterFullscreen = () => {
+    if (!playIntentRef.current) return
+    
+    const video = videoRef.current
+    if (video && video.paused) {
+      console.log('[全屏后播放] 进入全屏后尝试播放视频')
+      video.play().catch(error => {
+        console.log('[全屏后播放] 播放失败，尝试静音播放:', error)
+        video.muted = true
+        video.play().then(() => {
+          console.log('[全屏后播放] 静音播放成功')
+          setTimeout(() => {
+            video.muted = false
+          }, 300)
+        }).catch(err => {
+          console.error('[全屏后播放] 静音播放也失败:', err)
+        })
+      })
     }
   }
 
@@ -2309,22 +2404,52 @@ export default function HomePage() {
     
     const targetVideo = videoRef.current
     
-    if (targetVideo) {
-      const handleCanPlay = () => {
-        targetVideo.play().catch(error => {
-          // 浏览器可能阻止自动播放，这是正常的
-          console.log('视频自动播放被阻止:', error)
+    if (targetVideo && playIntentRef.current && !videoStateRef.current) {
+      // 确保视频是静音的
+      targetVideo.muted = true
+      
+      // 使用 load() 方法重新加载视频
+      targetVideo.load()
+      
+      console.log('[视频播放] 调用 load() 后立即尝试播放')
+      
+      // 立即尝试播放
+      const attemptPlayImmediately = () => {
+        targetVideo.play().then(() => {
+          console.log('[视频播放] 播放成功')
+          // 播放成功后延迟取消静音
+          setTimeout(() => {
+            if (targetVideo.muted) {
+              targetVideo.muted = false
+              console.log('[视频播放] 已取消静音')
+            }
+          }, 500)
+        }).catch(error => {
+          console.log('[视频播放] 立即播放失败，等待事件:', error)
         })
       }
       
-      if (targetVideo.readyState >= 3) {
-        // 视频已经可以播放
-        handleCanPlay()
-      } else {
-        targetVideo.addEventListener('canplay', handleCanPlay, { once: true })
-        return () => {
-          targetVideo.removeEventListener('canplay', handleCanPlay)
+      // 立即尝试
+      attemptPlayImmediately()
+      
+      // 同时设置多个事件监听作为备用
+      const handleAutoPlay = () => {
+        if (targetVideo.paused && playIntentRef.current) {
+          console.log('[视频播放] 事件触发，再次尝试播放')
+          targetVideo.muted = true
+          targetVideo.play().catch(err => {
+            console.error('[视频播放] 事件播放失败:', err)
+          })
         }
+      }
+      
+      // 添加多个事件监听
+      targetVideo.addEventListener('loadeddata', handleAutoPlay, { once: true })
+      targetVideo.addEventListener('canplay', handleAutoPlay, { once: true })
+      
+      return () => {
+        targetVideo.removeEventListener('loadeddata', handleAutoPlay)
+        targetVideo.removeEventListener('canplay', handleAutoPlay)
       }
     }
   }, [currentFile, mediaUrl, mediaType])
@@ -2560,7 +2685,10 @@ export default function HomePage() {
             <Tooltip title="换下一组" placement="left">
               <Fab
                 color="secondary"
-                onClick={loadRandomGroup}
+                onClick={() => {
+                  playIntentRef.current = true
+                  loadRandomGroup()
+                }}
                 disabled={loading || isSwitching}
                 sx={{
                   position: 'fixed',
@@ -2735,14 +2863,86 @@ export default function HomePage() {
               )}
               {mediaType === 'small-video' && (
                 <Box
-                  key={mediaUrl} // 使用 mediaUrl 作为 key，确保 URL 变化时重新创建元素
+                  // 不使用 key，保持视频元素不重新创建
                   component="video"
                   ref={videoRef}
                   src={mediaUrl}
                   controls
-                  autoPlay={!videoStateRef.current}
+                  autoPlay={playIntentRef.current && !videoStateRef.current} // 有播放意图时才自动播放
+                  muted={true} // 始终初始静音，确保移动端兼容
+                  playsInline // 重要：iOS需要这个属性
+                  preload="metadata" // 预加载元数据
+                  webkit-playsinline="true" // iOS Safari 需要
                   onTimeUpdate={handleVideoTimeUpdate}
                   onEnded={handleVideoEnded}
+                  onLoadedMetadata={(e) => {
+                    const video = e.currentTarget as HTMLVideoElement
+                    console.log('[视频] onLoadedMetadata 触发, playIntent:', playIntentRef.current)
+                    // 如果有播放意图，尝试播放
+                    if (playIntentRef.current && !videoStateRef.current) {
+                      video.play().catch(error => {
+                        console.log('[视频] onLoadedMetadata 播放失败，尝试静音播放:', error)
+                        // 如果播放失败，尝试静音播放
+                        video.muted = true
+                        video.play().then(() => {
+                          console.log('[视频] 静音播放成功')
+                          // 播放成功后延迟取消静音
+                          setTimeout(() => {
+                            video.muted = false
+                          }, 300)
+                        }).catch(err => {
+                          console.error('[视频] 静音播放也失败:', err)
+                        })
+                      })
+                    }
+                  }}
+                  onLoadedData={(e) => {
+                    const video = e.currentTarget as HTMLVideoElement
+                    console.log('[视频] onLoadedData 触发, playIntent:', playIntentRef.current)
+                    // 如果有播放意图且视频还没播放，再次尝试
+                    if (playIntentRef.current && !videoStateRef.current && video.paused) {
+                      video.play().catch(error => {
+                        console.log('[视频] onLoadedData 播放失败，尝试静音播放:', error)
+                        video.muted = true
+                        video.play().catch(err => {
+                          console.error('[视频] onLoadedData 静音播放也失败:', err)
+                        })
+                      })
+                    }
+                  }}
+                  onCanPlay={(e) => {
+                    const video = e.currentTarget as HTMLVideoElement
+                    console.log('[视频] onCanPlay 触发, playIntent:', playIntentRef.current, 'paused:', video.paused)
+                    // 如果有播放意图且视频还没播放，再次尝试
+                    if (playIntentRef.current && !videoStateRef.current && video.paused) {
+                      video.play().catch(error => {
+                        console.log('[视频] onCanPlay 播放失败，尝试静音播放:', error)
+                        video.muted = true
+                        video.play().catch(err => {
+                          console.error('[视频] onCanPlay 静音播放也失败:', err)
+                        })
+                      })
+                    }
+                  }}
+                  onPlay={() => {
+                    console.log('[视频] 播放开始')
+                    // 延迟重置播放意图，确保所有播放尝试都完成
+                    setTimeout(() => {
+                      if (playIntentRef.current) {
+                        playIntentRef.current = false
+                        console.log('[视频] 重置播放意图')
+                      }
+                    }, 1000)
+                    
+                    // 如果是静音状态，延迟取消静音
+                    const video = videoRef.current
+                    if (video?.muted) {
+                      setTimeout(() => {
+                        video.muted = false
+                        console.log('[视频] 已取消静音')
+                      }, 300)
+                    }
+                  }}
                   sx={{
                     width: '100%',
                     maxHeight: 'calc(100vh - 150px)',
@@ -2987,7 +3187,10 @@ export default function HomePage() {
             <Button
               variant="outlined"
               startIcon={<SkipNextIcon />}
-              onClick={loadRandomGroup}
+              onClick={() => {
+                playIntentRef.current = true
+                loadRandomGroup()
+              }}
               disabled={loading || isSwitching}
             >
               换下一组
