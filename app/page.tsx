@@ -2920,6 +2920,7 @@ export default function HomePage() {
                   playIntent={playIntentRef.current} // 传递播放意图，用于安卓浏览器自动播放
                   onTimeUpdate={handleInstantVideoTimeUpdate}
                   onEnded={handleVideoEnded}
+                  onNext={loadRandomMedia} // 换一个按钮
                   onError={(error) => {
                     setError(`视频播放失败: ${error}`)
                   }}
