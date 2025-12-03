@@ -110,9 +110,39 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     }
   }, [playIntent])
 
+  // 保存上一个 src 的引用，用于检测 src 变化
+  const prevSrcRef = useRef<string | null>(null)
+  
   // 当src变化时重置状态并清理旧的video元素
   useEffect(() => {
-    console.log('🔄 [即点即播] src变化，重置播放器状态:', src)
+    const prevSrc = prevSrcRef.current
+    prevSrcRef.current = src
+    
+    // 如果是同一个 src，不需要清理
+    if (prevSrc === src) {
+      return
+    }
+    
+    console.log('🔄 [即点即播] src变化，重置播放器状态')
+    console.log(`  旧 src: ${prevSrc?.substring(0, 50)}...`)
+    console.log(`  新 src: ${src?.substring(0, 50)}...`)
+    
+    // ⭐ 关键修复：在设置新 src 之前，先彻底清理旧的视频连接
+    if (videoRef.current && prevSrc) {
+      const video = videoRef.current
+      
+      // 1. 立即暂停
+      video.pause()
+      
+      // 2. 清空 src 以中断网络请求
+      // 这会触发浏览器取消当前的网络请求
+      video.src = ''
+      
+      // 3. 调用 load() 强制浏览器释放资源
+      video.load()
+      
+      console.log('🗑️ [即点即播] 已清理旧视频连接')
+    }
     
     // 重置所有播放状态
     setHasAttemptedAutoPlay(false)
@@ -134,13 +164,6 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
         // 忽略错误
       })
       setPlayPromise(null)
-    }
-    
-    // 如果video元素存在，先暂停并重置
-    if (videoRef.current) {
-      videoRef.current.pause()
-      videoRef.current.currentTime = 0
-      console.log('⏹️ [即点即播] 已重置video元素')
     }
   }, [src])
 

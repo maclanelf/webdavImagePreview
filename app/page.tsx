@@ -1499,10 +1499,36 @@ export default function HomePage() {
     }
   }
 
+  // 清理当前正在播放的流式视频，释放网络连接
+  const cleanupCurrentStreamVideo = () => {
+    if (instantVideoRef.current) {
+      const videoElement = instantVideoRef.current.getVideoElement?.()
+      if (videoElement) {
+        console.log('🧹 [清理] 停止当前流式视频播放')
+        
+        // 1. 立即暂停
+        videoElement.pause()
+        
+        // 2. 清空 src 以中断网络请求
+        // 这会触发浏览器取消当前的网络请求，服务端会收到 abort 信号
+        videoElement.src = ''
+        
+        // 3. 调用 load() 强制浏览器释放资源
+        videoElement.load()
+        
+        console.log('✅ [清理] 已释放流式视频连接')
+      }
+    }
+  }
+  
   // 大视频模式：加载随机大视频文件（使用即点即播）
   const loadLargeVideoFile = async () => {
     console.log(`[大视频模式] 开始加载，筛选条件: ${viewedFilter}，随机性: ${preloadRandomness}`)
     console.log(`[大视频模式] 当前缓存文件数量: ${preloadManager.getCachedFilepaths().length}`)
+    
+    // ⭐ 关键修复：在加载新视频前，先清理当前正在播放的视频
+    // 这会触发浏览器取消网络请求，服务端会收到 abort 信号并释放 WebDAV 流
+    cleanupCurrentStreamVideo()
     
     // 强制清空缓存，确保不使用任何预加载的文件
     if (preloadManager.getCachedFilepaths().length > 0) {

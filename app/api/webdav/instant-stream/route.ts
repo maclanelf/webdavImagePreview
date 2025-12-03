@@ -15,6 +15,30 @@ export async function OPTIONS(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
+  // 用于追踪当前请求的流，以便在客户端断开时清理
+  let activeStream: any = null
+  let isAborted = false
+  
+  // 监听客户端断开连接
+  request.signal.addEventListener('abort', () => {
+    console.log('🛑 [即点即播] 客户端断开连接，清理流资源')
+    isAborted = true
+    if (activeStream) {
+      try {
+        // 销毁 Node.js 流
+        if (typeof activeStream.destroy === 'function') {
+          activeStream.destroy()
+        } else if (typeof activeStream.close === 'function') {
+          activeStream.close()
+        }
+        console.log('✅ [即点即播] 流资源已清理')
+      } catch (error) {
+        console.error('❌ [即点即播] 清理流资源失败:', error)
+      }
+      activeStream = null
+    }
+  })
+  
   try {
     const { searchParams } = new URL(request.url)
     const url = searchParams.get('url')
@@ -27,6 +51,11 @@ export async function GET(request: NextRequest) {
         { error: '请提供完整的配置信息和文件路径' },
         { status: 400 }
       )
+    }
+    
+    // 如果请求已被取消，直接返回
+    if (isAborted) {
+      return new NextResponse(null, { status: 499 }) // Client Closed Request
     }
 
     console.log(`🎬 [即点即播] 请求视频: ${filepath}`)
@@ -115,11 +144,34 @@ export async function GET(request: NextRequest) {
         
         console.log(`🎯 [即点即播] Range: ${start}-${end}/${fileSize} (${formatFileSize(contentLength)})`)
         
+        // 如果请求已被取消，直接返回
+        if (isAborted) {
+          return new NextResponse(null, { status: 499 })
+        }
+        
         // 创建范围流 - 直接让WebDAV客户端处理Range请求
         // 这样避免了下载整个文件再截取的问题
         const stream = client.createReadStream(filepath, {
           range: { start, end }
         })
+        
+        // 保存流引用，以便在客户端断开时清理
+        activeStream = stream
+        
+        // 监听流的各种结束事件，确保资源被正确释放
+        stream.on('end', () => {
+          console.log(`📦 [即点即播] Range流传输完成: ${start}-${end}`)
+          activeStream = null
+        })
+        stream.on('error', (error: any) => {
+          console.error(`❌ [即点即播] Range流错误:`, error.message)
+          activeStream = null
+        })
+        stream.on('close', () => {
+          console.log(`🔒 [即点即播] Range流已关闭`)
+          activeStream = null
+        })
+        
         const webStream = Readable.toWeb(stream as any) as ReadableStream
         
         return new NextResponse(webStream, {
@@ -149,8 +201,31 @@ export async function GET(request: NextRequest) {
     // 浏览器会根据需要主动使用Range请求或中断连接
     console.log(`🚀 [即点即播] 非Range请求，返回完整文件流 (${formatFileSize(fileSize)})`)
     
+    // 如果请求已被取消，直接返回
+    if (isAborted) {
+      return new NextResponse(null, { status: 499 })
+    }
+    
     try {
       const stream = client.createReadStream(filepath)
+      
+      // 保存流引用，以便在客户端断开时清理
+      activeStream = stream
+      
+      // 监听流的各种结束事件，确保资源被正确释放
+      stream.on('end', () => {
+        console.log(`📦 [即点即播] 完整流传输完成`)
+        activeStream = null
+      })
+      stream.on('error', (error: any) => {
+        console.error(`❌ [即点即播] 完整流错误:`, error.message)
+        activeStream = null
+      })
+      stream.on('close', () => {
+        console.log(`🔒 [即点即播] 完整流已关闭`)
+        activeStream = null
+      })
+      
       const webStream = Readable.toWeb(stream as any) as ReadableStream
       
       return new NextResponse(webStream, {
