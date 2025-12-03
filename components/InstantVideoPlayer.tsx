@@ -21,6 +21,7 @@ interface InstantVideoPlayerProps {
   style?: React.CSSProperties
   className?: string
   autoPlay?: boolean
+  playIntent?: boolean // 标记用户是否有播放意图（用于安卓浏览器自动播放）
 }
 
 export interface InstantVideoPlayerRef {
@@ -68,7 +69,8 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   onEnded,
   style,
   className,
-  autoPlay = false
+  autoPlay = false,
+  playIntent = false
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement>(null) // 视频元素引用
   const [loading, setLoading] = useState(true) // 加载状态
@@ -83,6 +85,11 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   const [supportsOrientationLock, setSupportsOrientationLock] = useState(false) // 是否支持屏幕方向锁定
   const containerRef = useRef<HTMLDivElement>(null) // 容器元素引用
   
+  // 播放意图引用 - 用于安卓浏览器自动播放
+  const playIntentRef = useRef(playIntent)
+  // 是否需要静音播放（安卓浏览器自动播放策略）- 初始为 false，只有播放失败时才设置为 true
+  const [isMutedForAutoplay, setIsMutedForAutoplay] = useState(false)
+  
   // 下载速度和缓冲进度相关状态
   const [downloadSpeed, setDownloadSpeed] = useState<number>(0) // 下载速度 (MB/s)
   const [bufferedPercent, setBufferedPercent] = useState<number>(0) // 缓冲百分比
@@ -94,6 +101,14 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   const [playPromise, setPlayPromise] = useState<Promise<void> | null>(null)
   // 标记是否已经尝试过自动播放，防止重复尝试
   const [hasAttemptedAutoPlay, setHasAttemptedAutoPlay] = useState(false)
+
+  // 同步 playIntent prop 到 ref
+  useEffect(() => {
+    playIntentRef.current = playIntent
+    if (playIntent) {
+      console.log('📱 [即点即播] 检测到播放意图')
+    }
+  }, [playIntent])
 
   // 当src变化时重置状态并清理旧的video元素
   useEffect(() => {
@@ -109,6 +124,7 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     setIsPlaying(false)
     setDownloadSpeed(0)
     setBufferedPercent(0)
+    setIsMutedForAutoplay(false) // 重置静音状态
     lastBufferedEndRef.current = 0
     lastUpdateTimeRef.current = Date.now()
     
@@ -127,6 +143,74 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
       console.log('⏹️ [即点即播] 已重置video元素')
     }
   }, [src])
+
+  // 模仿主页面的自动播放逻辑：先静音播放，成功后取消静音
+  useEffect(() => {
+    if (!src || !videoRef.current || !(autoPlay || playIntentRef.current)) return
+    
+    const video = videoRef.current
+    
+    console.log('🎬 [即点即播] 尝试自动播放，playIntent:', playIntentRef.current)
+    
+    // 确保视频是静音的
+    video.muted = true
+    setIsMutedForAutoplay(true)
+    
+    // 使用 load() 方法重新加载视频
+    video.load()
+    
+    console.log('🎬 [即点即播] 调用 load() 后立即尝试播放')
+    
+    // 立即尝试播放
+    const attemptPlayImmediately = () => {
+      video.play().then(() => {
+        console.log('✅ [即点即播] 播放成功')
+        // 播放成功后延迟取消静音
+        setTimeout(() => {
+          if (video.muted && !video.paused) {
+            video.muted = false
+            setIsMutedForAutoplay(false)
+            console.log('🔊 [即点即播] 已取消静音')
+          }
+        }, 500)
+      }).catch(error => {
+        console.log('⚠️ [即点即播] 立即播放失败，等待事件:', error)
+      })
+    }
+    
+    // 立即尝试
+    attemptPlayImmediately()
+    
+    // 同时设置多个事件监听作为备用
+    const handleAutoPlay = () => {
+      if (video.paused && (autoPlay || playIntentRef.current)) {
+        console.log('🎬 [即点即播] 事件触发，再次尝试播放')
+        video.muted = true
+        setIsMutedForAutoplay(true)
+        video.play().then(() => {
+          // 播放成功后延迟取消静音
+          setTimeout(() => {
+            if (video.muted && !video.paused) {
+              video.muted = false
+              setIsMutedForAutoplay(false)
+              console.log('🔊 [即点即播] 事件播放后已取消静音')
+            }
+          }, 500)
+        }).catch(err => {
+          console.error('❌ [即点即播] 事件播放失败:', err)
+        })
+      }
+    }
+    
+    // 添加多个事件监听
+    video.addEventListener('loadeddata', handleAutoPlay, { once: true })
+    video.addEventListener('canplay', handleAutoPlay, { once: true })
+    
+    return () => {
+      video.removeEventListener('loadeddata', handleAutoPlay)
+      video.removeEventListener('canplay', handleAutoPlay)
+    }
+  }, [src, autoPlay])
 
   // 清理函数
   useEffect(() => {
@@ -256,22 +340,40 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     setLoading(false)
     
     // 元数据加载完成后，立即尝试播放（最快路径）
-    // 这是实现"即点即播"的核心：在最早可能的时机启动播放
-    if (autoPlay && videoRef.current && !hasAttemptedAutoPlay) {
+    // 这是实现“即点即播”的核心：在最早可能的时机启动播放
+    if ((autoPlay || playIntentRef.current) && videoRef.current && !hasAttemptedAutoPlay) {
       setHasAttemptedAutoPlay(true) // 标记已尝试自动播放，防止重复尝试
+      const video = videoRef.current
+      
       const tryPlay = async () => {
         try {
           // 调用 play() 并保存 Promise，用于追踪播放状态
-          const promise = videoRef.current!.play()
+          const promise = video.play()
           setPlayPromise(promise)
           await promise
           setPlayPromise(null)
           console.log('✅ [即点即播] 元数据加载后立即播放')
         } catch (error) {
-          // 播放失败可能是因为浏览器策略限制或缓冲不足
-          console.log('⚠️ [即点即播] 元数据加载后播放失败，等待canPlay事件:', error)
+          // 播放失败，尝试静音播放（安卓浏览器策略）
+          console.log('⚠️ [即点即播] 元数据加载后播放失败，尝试静音播放:', error)
           setPlayPromise(null)
-          setHasAttemptedAutoPlay(false) // 重置标记，让canPlay事件可以再次尝试播放
+          
+          // 尝试静音播放
+          try {
+            video.muted = true
+            setIsMutedForAutoplay(true)
+            const mutedPromise = video.play()
+            setPlayPromise(mutedPromise)
+            await mutedPromise
+            setPlayPromise(null)
+            console.log('✅ [即点即播] 静音播放成功')
+            // 注意：安卓浏览器不能自动取消静音，否则会暂停播放
+            // 静音状态会在用户点击播放器时通过 togglePlayPause 取消
+          } catch (mutedError) {
+            console.error('❌ [即点即播] 静音播放也失败:', mutedError)
+            setPlayPromise(null)
+            setHasAttemptedAutoPlay(false) // 重置标记，让canPlay事件可以再次尝试播放
+          }
         }
       }
       tryPlay()
@@ -301,8 +403,10 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     onCanPlay?.()
     
     // 如果loadedmetadata没有成功播放，在这里再试一次
-    if (videoRef.current && autoPlay && !hasAttemptedAutoPlay) {
+    if (videoRef.current && (autoPlay || playIntentRef.current) && !hasAttemptedAutoPlay) {
       setHasAttemptedAutoPlay(true)
+      const video = videoRef.current
+      
       const attemptPlay = async () => {
         try {
           if (playPromise) {
@@ -313,14 +417,29 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
             }
           }
           
-          const promise = videoRef.current!.play()
+          const promise = video.play()
           setPlayPromise(promise)
           await promise
           setPlayPromise(null)
           console.log('✅ [即点即播] canPlay事件播放成功')
         } catch (error) {
-          console.log('⚠️ [即点即播] canPlay自动播放被阻止:', error)
+          console.log('⚠️ [即点即播] canPlay自动播放被阻止，尝试静音播放:', error)
           setPlayPromise(null)
+          
+          // 尝试静音播放
+          try {
+            video.muted = true
+            setIsMutedForAutoplay(true)
+            const mutedPromise = video.play()
+            setPlayPromise(mutedPromise)
+            await mutedPromise
+            setPlayPromise(null)
+            console.log('✅ [即点即播] canPlay静音播放成功')
+            // 注意：安卓浏览器不能自动取消静音，否则会暂停播放
+          } catch (mutedError) {
+            console.error('❌ [即点即播] canPlay静音播放也失败:', mutedError)
+            setPlayPromise(null)
+          }
         }
       }
       
@@ -349,6 +468,15 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     if (videoRef.current) {
       console.log('📊 [即点即播] 当前播放时间:', videoRef.current.currentTime)
       console.log('📊 [即点即播] 缓冲范围:', getBufferedRanges())
+      
+      // 重置播放意图
+      playIntentRef.current = false
+      
+      // 注意：安卓浏览器不能自动取消静音，否则会暂停播放
+      // 静音状态会在用户点击播放器时通过 togglePlayPause 取消
+      if (videoRef.current.muted && isMutedForAutoplay) {
+        console.log('� [即点即播] 视频以静音模式播放，用户点击后取消静音')
+      }
     }
     setIsPlaying(true)
     setLoading(false) // 开始播放时取消加载状态
@@ -480,6 +608,13 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     
     if (!videoRef.current) return
     
+    // 用户交互时取消静音（安卓浏览器需要用户交互才能取消静音）
+    if (videoRef.current.muted && isMutedForAutoplay) {
+      videoRef.current.muted = false
+      setIsMutedForAutoplay(false)
+      console.log('🔊 [即点即播] 用户交互，已取消静音')
+    }
+    
     try {
       if (videoRef.current.paused) {
         // 如果有正在进行的播放请求，先等待它完成
@@ -519,6 +654,13 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   // 切换控制栏显示状态
   const toggleControls = () => {
     setShowControls(prev => !prev)
+    
+    // 用户交互时取消静音（安卓浏览器需要用户交互才能取消静音）
+    if (videoRef.current?.muted && isMutedForAutoplay) {
+      videoRef.current.muted = false
+      setIsMutedForAutoplay(false)
+      console.log('🔊 [即点即播] 用户点击视频区域，已取消静音')
+    }
   }
 
   // 全屏切换
@@ -700,9 +842,9 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
         ref={videoRef}
         src={src}
         controls={false} // 使用自定义控件
-        preload="metadata" // 只加载元数据，避免过度预加载大文件
+        preload="auto" // 积极加载，实现即点即播
         playsInline // 移动设备内联播放
-        muted={false} // 不静音
+        muted={isMutedForAutoplay} // 只有在静音降级后才设置静音
         style={{
           maxWidth: '100%',
           maxHeight: '100%',

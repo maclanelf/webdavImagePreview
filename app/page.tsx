@@ -235,9 +235,6 @@ export default function HomePage() {
   // 播放意图标记（用于移动端自动播放）
   const playIntentRef = useRef(false)
   
-  // 预热视频元素（用于保持播放权限）
-  const warmupVideoRef = useRef<HTMLVideoElement | null>(null)
-  
   // 媒体类型（用于条件渲染不同的播放器）
   const [mediaType, setMediaType] = useState<MediaType>('image')
   
@@ -1316,38 +1313,6 @@ export default function HomePage() {
     })
   }
 
-  // 创建或播放预热视频元素，用于保持播放权限
-  const createOrPlayWarmupVideo = () => {
-    if (!warmupVideoRef.current) {
-      console.log('[播放权限] 创建预热视频元素')
-      const warmupVideo = document.createElement('video')
-      warmupVideo.style.position = 'fixed'
-      warmupVideo.style.top = '-9999px'
-      warmupVideo.style.left = '-9999px'
-      warmupVideo.style.width = '1px'
-      warmupVideo.style.height = '1px'
-      warmupVideo.muted = true
-      warmupVideo.playsInline = true
-      warmupVideo.autoplay = true
-      
-      // 使用一个非常小的空视频数据
-      warmupVideo.src = 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAAAs1tZGF0AAACrgYF//+q3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE1NSByMjkwMSA3ZDBmZjIyIC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAxOCAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTEgcmVmPTMgZGVibG9jaz0xOjA6MCBhbmFseXNlPTB4MzoweDExMyBtZT1oZXggc3VibWU9NyBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0xIG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MSA4eDhkY3Q9MSBjcW09MCBkZWFkem9uZT0yMSwxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0tMiB0aHJlYWRzPTEgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0zIGJfcHlyYW1pZD0yIGJfYWRhcHQ9MSBiX2JpYXM9MCBkaXJlY3Q9MSB3ZWlnaHRiPTEgb3Blbl9nb3A9MCB3ZWlnaHRwPTIga2V5aW50PTI1MCBrZXlpbnRfbWluPTEgc2NlbmVjdXQ9NDAgaW50cmFfcmVmcmVzaD0wIHJjX2xvb2thaGVhZD00MCByYz1jcmYgbWJ0cmVlPTEgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MToxLjAwAIAAAAFZZYiEACD/2lu4PtiAGCZiIJmO35BneLS4/AKawbwF3gS81VgCN/Hryek5EZJp1IoIopMo/OyDntxcd3g3q1StPr4cJjhPLNze2wP/5e3LpSfJ31kpPSItVLgiJZaAlAAdmhlEH+LPCgpxYAGBH8iSu8JvZ7+Sb7E+jq9e1h1gAAADAAADAAADAAADA'
-      
-      document.body.appendChild(warmupVideo)
-      warmupVideoRef.current = warmupVideo
-      
-      // 立即尝试播放
-      warmupVideo.play().then(() => {
-        console.log('[播放权限] 预热视频播放成功，已获取播放权限')
-      }).catch(e => {
-        console.log('[播放权限] 预热视频播放失败:', e)
-      })
-    } else {
-      // 如果已存在，再次播放以保持权限
-      warmupVideoRef.current.play().catch(() => {})
-    }
-  }
-
   const loadRandomMedia = async () => {
     if (!config) {
       setError('请先配置WebDAV连接')
@@ -1358,9 +1323,6 @@ export default function HomePage() {
     
     // 标记用户有播放意图（用于移动端视频自动播放）
     playIntentRef.current = true
-    
-    // 创建预热视频元素并立即播放，保持播放权限
-    createOrPlayWarmupVideo()
 
     // 图组模式
     if (viewMode === 'gallery') {
@@ -2955,6 +2917,7 @@ export default function HomePage() {
                   ref={instantVideoRef}
                   src={mediaUrl}
                   autoPlay={true}
+                  playIntent={playIntentRef.current} // 传递播放意图，用于安卓浏览器自动播放
                   onTimeUpdate={handleInstantVideoTimeUpdate}
                   onEnded={handleVideoEnded}
                   onError={(error) => {

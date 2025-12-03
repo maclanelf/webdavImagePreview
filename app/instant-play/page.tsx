@@ -60,6 +60,8 @@ export default function InstantPlayPage() {
   const [snackbarMessage, setSnackbarMessage] = useState('')
   const [selectedVideoUrl, setSelectedVideoUrl] = useState<string | null>(null)
   const videoRef = useRef<InstantVideoPlayerRef>(null)
+  // 播放意图标记 - 用于安卓浏览器自动播放
+  const [playIntent, setPlayIntent] = useState(false)
 
   // 加载配置
   useEffect(() => {
@@ -146,6 +148,8 @@ export default function InstantPlayPage() {
   const playVideo = (file: MediaFile) => {
     if (!config) return
     
+    // 设置播放意图（在用户交互的同步调用栈中）
+    setPlayIntent(true)
     setSelectedFile(file)
     setError(null)
     
@@ -281,6 +285,7 @@ export default function InstantPlayPage() {
                 ref={videoRef}
                 src={selectedVideoUrl}
                 autoPlay={true}
+                playIntent={playIntent}
                 onError={(error) => {
                   setError(`视频播放失败: ${error}`)
                 }}
@@ -289,6 +294,8 @@ export default function InstantPlayPage() {
                 }}
                 onCanPlay={() => {
                   console.log('视频可以播放')
+                  // 重置播放意图
+                  setPlayIntent(false)
                 }}
               />
             </Box>
