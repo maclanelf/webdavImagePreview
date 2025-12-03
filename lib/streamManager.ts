@@ -5,6 +5,7 @@
 
 export interface ActiveStreamInfo {
   stream: any
+  abortController: AbortController | null  // 用于取消底层 fetch 请求
   filepath: string
   startTime: number
   requestId: string
@@ -24,6 +25,13 @@ export function cleanupStream(requestId: string, reason: string): boolean {
   if (streamInfo) {
     console.log(`🧹 [流管理] 清理流 ${requestId}: ${reason}`)
     try {
+      // ⭐ 关键：通过 AbortController 取消底层的 fetch 请求
+      // 这是唯一能真正停止 webdav 库数据传输的方法
+      if (streamInfo.abortController) {
+        streamInfo.abortController.abort()
+        console.log(`🛑 [流管理] 已发送 abort 信号取消 fetch 请求`)
+      }
+      
       const stream = streamInfo.stream
       if (stream) {
         // 尝试多种方式关闭流
@@ -50,9 +58,15 @@ export function cleanupStream(requestId: string, reason: string): boolean {
 /**
  * 注册一个新的活动流
  */
-export function registerStream(requestId: string, stream: any, filepath: string): void {
+export function registerStream(
+  requestId: string, 
+  stream: any, 
+  filepath: string,
+  abortController: AbortController | null = null
+): void {
   activeStreams.set(requestId, {
     stream,
+    abortController,
     filepath,
     startTime: Date.now(),
     requestId

@@ -26,6 +26,10 @@ export async function GET(request: NextRequest) {
   const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
   let isAborted = false
   
+  // ⭐ 关键：为每个请求创建 AbortController
+  // 这是唯一能真正取消 webdav 库底层 fetch 请求的方法
+  const abortController = new AbortController()
+  
   // 监听客户端断开连接
   request.signal.addEventListener('abort', () => {
     console.log(`🛑 [即点即播] 客户端断开连接 (${requestId})`)
@@ -149,15 +153,17 @@ export async function GET(request: NextRequest) {
         }
         
         // 创建范围流 - 直接让WebDAV客户端处理Range请求
+        // ⭐ 关键：传入 signal 以便能够取消底层的 fetch 请求
         const sourceStream = client.createReadStream(filepath, {
-          range: { start, end }
+          range: { start, end },
+          signal: abortController.signal
         })
         
         // 使用 PassThrough 包装流，以便更好地控制生命周期
         const passThrough = new PassThrough()
         
-        // 注册到全局流管理器
-        registerStream(requestId, sourceStream, filepath)
+        // 注册到全局流管理器，包含 AbortController
+        registerStream(requestId, sourceStream, filepath, abortController)
         
         // 监听源流事件
         sourceStream.on('end', () => {
@@ -218,13 +224,16 @@ export async function GET(request: NextRequest) {
     }
     
     try {
-      const sourceStream = client.createReadStream(filepath)
+      // ⭐ 关键：传入 signal 以便能够取消底层的 fetch 请求
+      const sourceStream = client.createReadStream(filepath, {
+        signal: abortController.signal
+      })
       
       // 使用 PassThrough 包装流
       const passThrough = new PassThrough()
       
-      // 注册到全局流管理器
-      registerStream(requestId, sourceStream, filepath)
+      // 注册到全局流管理器，包含 AbortController
+      registerStream(requestId, sourceStream, filepath, abortController)
       
       // 监听源流事件
       sourceStream.on('end', () => {
