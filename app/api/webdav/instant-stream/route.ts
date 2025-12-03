@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getWebDAVClient } from '@/lib/webdav'
-import { Readable, Transform } from 'stream'
+import { Readable, PassThrough } from 'stream'
+import {
+  cleanupStream,
+  registerStream,
+  unregisterStream,
+  cleanupOtherStreams,
+  getActiveStreamCount
+} from '@/lib/streamManager'
 
 export async function OPTIONS(request: NextRequest) {
   return new NextResponse(null, {
@@ -15,28 +22,15 @@ export async function OPTIONS(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
-  // 用于追踪当前请求的流，以便在客户端断开时清理
-  let activeStream: any = null
+  // 生成唯一的请求 ID
+  const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
   let isAborted = false
   
   // 监听客户端断开连接
   request.signal.addEventListener('abort', () => {
-    console.log('🛑 [即点即播] 客户端断开连接，清理流资源')
+    console.log(`🛑 [即点即播] 客户端断开连接 (${requestId})`)
     isAborted = true
-    if (activeStream) {
-      try {
-        // 销毁 Node.js 流
-        if (typeof activeStream.destroy === 'function') {
-          activeStream.destroy()
-        } else if (typeof activeStream.close === 'function') {
-          activeStream.close()
-        }
-        console.log('✅ [即点即播] 流资源已清理')
-      } catch (error) {
-        console.error('❌ [即点即播] 清理流资源失败:', error)
-      }
-      activeStream = null
-    }
+    cleanupStream(requestId, '客户端断开')
   })
   
   try {
@@ -58,7 +52,12 @@ export async function GET(request: NextRequest) {
       return new NextResponse(null, { status: 499 }) // Client Closed Request
     }
 
-    console.log(`🎬 [即点即播] 请求视频: ${filepath}`)
+    console.log(`🎬 [即点即播] 请求视频: ${filepath} (${requestId})`)
+    console.log(`📊 [流管理] 当前活动流数量: ${getActiveStreamCount()}`)
+    
+    // ⭐ 关键修复：清理所有旧流（不仅仅是同一文件的）
+    // 这确保切换到不同视频时，上一个视频的流也会被清理
+    cleanupOtherStreams(requestId)
 
     const client = getWebDAVClient({ url, username, password })
     
@@ -150,29 +149,41 @@ export async function GET(request: NextRequest) {
         }
         
         // 创建范围流 - 直接让WebDAV客户端处理Range请求
-        // 这样避免了下载整个文件再截取的问题
-        const stream = client.createReadStream(filepath, {
+        const sourceStream = client.createReadStream(filepath, {
           range: { start, end }
         })
         
-        // 保存流引用，以便在客户端断开时清理
-        activeStream = stream
+        // 使用 PassThrough 包装流，以便更好地控制生命周期
+        const passThrough = new PassThrough()
         
-        // 监听流的各种结束事件，确保资源被正确释放
-        stream.on('end', () => {
-          console.log(`📦 [即点即播] Range流传输完成: ${start}-${end}`)
-          activeStream = null
+        // 注册到全局流管理器
+        registerStream(requestId, sourceStream, filepath)
+        
+        // 监听源流事件
+        sourceStream.on('end', () => {
+          console.log(`📦 [即点即播] Range流传输完成: ${start}-${end} (${requestId})`)
+          unregisterStream(requestId)
         })
-        stream.on('error', (error: any) => {
-          console.error(`❌ [即点即播] Range流错误:`, error.message)
-          activeStream = null
+        sourceStream.on('error', (error: any) => {
+          console.error(`❌ [即点即播] Range流错误 (${requestId}):`, error.message)
+          unregisterStream(requestId)
+          passThrough.destroy(error)
         })
-        stream.on('close', () => {
-          console.log(`🔒 [即点即播] Range流已关闭`)
-          activeStream = null
+        sourceStream.on('close', () => {
+          console.log(`🔒 [即点即播] Range流已关闭 (${requestId})`)
+          unregisterStream(requestId)
         })
         
-        const webStream = Readable.toWeb(stream as any) as ReadableStream
+        // 管道连接
+        sourceStream.pipe(passThrough)
+        
+        // 监听 passThrough 的关闭事件，确保源流也被关闭
+        passThrough.on('close', () => {
+          console.log(`🔒 [即点即播] PassThrough 关闭，清理源流 (${requestId})`)
+          cleanupStream(requestId, 'PassThrough 关闭')
+        })
+        
+        const webStream = Readable.toWeb(passThrough as any) as ReadableStream
         
         return new NextResponse(webStream, {
           status: 206, // Partial Content
@@ -207,26 +218,39 @@ export async function GET(request: NextRequest) {
     }
     
     try {
-      const stream = client.createReadStream(filepath)
+      const sourceStream = client.createReadStream(filepath)
       
-      // 保存流引用，以便在客户端断开时清理
-      activeStream = stream
+      // 使用 PassThrough 包装流
+      const passThrough = new PassThrough()
       
-      // 监听流的各种结束事件，确保资源被正确释放
-      stream.on('end', () => {
-        console.log(`📦 [即点即播] 完整流传输完成`)
-        activeStream = null
+      // 注册到全局流管理器
+      registerStream(requestId, sourceStream, filepath)
+      
+      // 监听源流事件
+      sourceStream.on('end', () => {
+        console.log(`📦 [即点即播] 完整流传输完成 (${requestId})`)
+        unregisterStream(requestId)
       })
-      stream.on('error', (error: any) => {
-        console.error(`❌ [即点即播] 完整流错误:`, error.message)
-        activeStream = null
+      sourceStream.on('error', (error: any) => {
+        console.error(`❌ [即点即播] 完整流错误 (${requestId}):`, error.message)
+        unregisterStream(requestId)
+        passThrough.destroy(error)
       })
-      stream.on('close', () => {
-        console.log(`🔒 [即点即播] 完整流已关闭`)
-        activeStream = null
+      sourceStream.on('close', () => {
+        console.log(`🔒 [即点即播] 完整流已关闭 (${requestId})`)
+        unregisterStream(requestId)
       })
       
-      const webStream = Readable.toWeb(stream as any) as ReadableStream
+      // 管道连接
+      sourceStream.pipe(passThrough)
+      
+      // 监听 passThrough 的关闭事件
+      passThrough.on('close', () => {
+        console.log(`🔒 [即点即播] PassThrough 关闭，清理源流 (${requestId})`)
+        cleanupStream(requestId, 'PassThrough 关闭')
+      })
+      
+      const webStream = Readable.toWeb(passThrough as any) as ReadableStream
       
       return new NextResponse(webStream, {
         status: 200, // 完整内容

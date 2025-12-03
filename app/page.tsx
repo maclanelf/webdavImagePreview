@@ -290,6 +290,45 @@ export default function HomePage() {
     }
   }, [currentFile, fullscreenTransitionOverlay])
 
+  // 页面卸载时清理所有活动的视频流
+  useEffect(() => {
+    const cleanupStreams = () => {
+      console.log('🧹 [页面] 页面卸载，清理视频流')
+      
+      // 先清理本地的视频元素
+      if (instantVideoRef.current) {
+        const videoElement = instantVideoRef.current.getVideoElement?.()
+        if (videoElement) {
+          videoElement.pause()
+          videoElement.src = ''
+          videoElement.load()
+        }
+      }
+      
+      // 然后通知服务端清理所有活动流
+      // 使用 sendBeacon 确保在页面卸载时也能发送请求
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon('/api/webdav/cleanup-streams', '')
+      } else {
+        // 降级方案：使用 fetch
+        fetch('/api/webdav/cleanup-streams', { 
+          method: 'POST',
+          keepalive: true 
+        }).catch(() => {})
+      }
+    }
+    
+    // 监听页面卸载事件
+    window.addEventListener('beforeunload', cleanupStreams)
+    // 监听页面隐藏事件（移动端切换应用时触发）
+    window.addEventListener('pagehide', cleanupStreams)
+    
+    return () => {
+      window.removeEventListener('beforeunload', cleanupStreams)
+      window.removeEventListener('pagehide', cleanupStreams)
+    }
+  }, [])
+
   useEffect(() => {
     // 初始化应用服务
     const initApp = async () => {
