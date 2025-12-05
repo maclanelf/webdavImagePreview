@@ -9,6 +9,7 @@ import {
   Fullscreen as FullscreenIcon,
   FullscreenExit as FullscreenExitIcon,
   Shuffle as ShuffleIcon,
+  Replay as ReplayIcon,
 } from '@mui/icons-material'
 
 interface InstantVideoPlayerProps {
@@ -722,33 +723,28 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     }
   }, [])
 
-  if (error) {
-    return (
-      <Box
-        display="flex"
-        flexDirection="column"
-        alignItems="center"
-        justifyContent="center"
-        minHeight="200px"
-        style={style}
-        className={className}
-        sx={{ backgroundColor: '#000', color: '#fff', p: 2 }}
-      >
-        <Typography color="error" variant="h6" gutterBottom>
-          ❌ 播放失败
-        </Typography>
-        <Typography color="error" variant="body2">
-          {error}
-        </Typography>
-      </Box>
-    )
+  // 重试播放函数
+  const retryPlayback = () => {
+    console.log('🔄 [即点即播] 用户点击重试')
+    setError(null)
+    setLoading(true)
+    setHasAttemptedAutoPlay(false)
+    setBufferedPercent(0)
+    setDownloadSpeed(0)
+    lastBufferedEndRef.current = 0
+    lastUpdateTimeRef.current = Date.now()
+    
+    if (videoRef.current) {
+      // 重新加载视频
+      videoRef.current.load()
+    }
   }
 
   return (
     <Box 
       ref={containerRef}
       className={className}
-      onClick={toggleControls}
+      onClick={error ? undefined : toggleControls}
       sx={{
         position: 'relative',
         width: '100%',
@@ -758,7 +754,7 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
         justifyContent: 'center',
         backgroundColor: '#000',
         overflow: 'hidden',
-        cursor: 'pointer',
+        cursor: error ? 'default' : 'pointer',
         // 禁用点击高亮效果
         WebkitTapHighlightColor: 'transparent',
         WebkitTouchCallout: 'none',
@@ -767,6 +763,51 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
         ...style,
       }}
     >
+      {/* 错误覆盖层 - 点击图标重试 */}
+      {error && (
+        <Box
+          sx={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            zIndex: 10,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+          }}
+        >
+          <IconButton
+            onClick={retryPlayback}
+            sx={{
+              backgroundColor: 'rgba(0, 0, 0, 0.6)',
+              color: 'rgba(255, 100, 100, 0.9)',
+              width: 80,
+              height: 80,
+              '&:hover': {
+                backgroundColor: 'rgba(0, 0, 0, 0.8)',
+              },
+              '&:active': {
+                transform: 'scale(0.95)',
+              },
+            }}
+          >
+            <ReplayIcon sx={{ fontSize: '3rem' }} />
+          </IconButton>
+          <Typography
+            sx={{
+              mt: 1,
+              color: 'rgba(255, 255, 255, 0.7)',
+              fontSize: '0.75rem',
+              textAlign: 'center',
+              maxWidth: 200,
+              textShadow: '0 1px 2px rgba(0,0,0,0.8)',
+            }}
+          >
+            {error}
+          </Typography>
+        </Box>
+      )}
       {/* 视频元素 */}
       <video
         ref={videoRef}
