@@ -8,14 +8,15 @@ export interface ActiveStreamInfo {
   abortController: AbortController | null  // 用于取消底层 fetch 请求
   filepath: string
   startTime: number
+  lastActivityTime: number  // 最后活动时间，用于判断流是否还在使用
   requestId: string
 }
 
 // 使用 Map 存储所有活动流，以请求ID为键
 const activeStreams = new Map<string, ActiveStreamInfo>()
 
-// 流超时时间（5分钟）
-const STREAM_TIMEOUT = 5 * 60 * 1000
+// 流超时时间（60分钟）
+const STREAM_TIMEOUT = 60 * 60 * 1000
 
 /**
  * 清理指定的流
@@ -64,14 +65,26 @@ export function registerStream(
   filepath: string,
   abortController: AbortController | null = null
 ): void {
+  const now = Date.now()
   activeStreams.set(requestId, {
     stream,
     abortController,
     filepath,
-    startTime: Date.now(),
+    startTime: now,
+    lastActivityTime: now,
     requestId
   })
   console.log(`📝 [流管理] 注册流 ${requestId}，当前活动流数量: ${activeStreams.size}`)
+}
+
+/**
+ * 更新流的最后活动时间（在数据传输时调用）
+ */
+export function updateStreamActivity(requestId: string): void {
+  const streamInfo = activeStreams.get(requestId)
+  if (streamInfo) {
+    streamInfo.lastActivityTime = Date.now()
+  }
 }
 
 /**
@@ -134,14 +147,16 @@ export function cleanupAllStreams(reason: string = '手动清理'): number {
 
 /**
  * 清理超时的流
+ * 只清理最后活动时间超过 STREAM_TIMEOUT 的流，正在使用的流不会被清理
  */
 export function cleanupTimeoutStreams(): number {
   const now = Date.now()
   let cleanedCount = 0
   
   for (const [requestId, info] of activeStreams.entries()) {
-    if (now - info.startTime > STREAM_TIMEOUT) {
-      cleanupStream(requestId, `超时 (${Math.round((now - info.startTime) / 1000)}秒)`)
+    const idleTime = now - info.lastActivityTime
+    if (idleTime > STREAM_TIMEOUT) {
+      cleanupStream(requestId, `空闲超时 (空闲${Math.round(idleTime / 1000)}秒，总时长${Math.round((now - info.startTime) / 1000)}秒)`)
       cleanedCount++
     }
   }
@@ -163,12 +178,14 @@ export function getActiveStreamsInfo(): Array<{
   requestId: string
   filepath: string
   duration: number
+  idleTime: number
 }> {
   const now = Date.now()
   return Array.from(activeStreams.entries()).map(([requestId, info]) => ({
     requestId,
     filepath: info.filepath,
-    duration: Math.round((now - info.startTime) / 1000)
+    duration: Math.round((now - info.startTime) / 1000),
+    idleTime: Math.round((now - info.lastActivityTime) / 1000)
   }))
 }
 

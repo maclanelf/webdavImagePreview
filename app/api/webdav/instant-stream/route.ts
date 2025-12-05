@@ -6,7 +6,8 @@ import {
   registerStream,
   unregisterStream,
   cleanupOtherStreams,
-  getActiveStreamCount
+  getActiveStreamCount,
+  updateStreamActivity
 } from '@/lib/streamManager'
 
 export async function OPTIONS(request: NextRequest) {
@@ -166,6 +167,10 @@ export async function GET(request: NextRequest) {
         registerStream(requestId, sourceStream, filepath, abortController)
         
         // 监听源流事件
+        sourceStream.on('data', () => {
+          // 每次有数据传输时更新活动时间，防止正在播放的视频被超时清理
+          updateStreamActivity(requestId)
+        })
         sourceStream.on('end', () => {
           console.log(`📦 [即点即播] Range流传输完成: ${start}-${end} (${requestId})`)
           unregisterStream(requestId)
@@ -236,6 +241,10 @@ export async function GET(request: NextRequest) {
       registerStream(requestId, sourceStream, filepath, abortController)
       
       // 监听源流事件
+      sourceStream.on('data', () => {
+        // 每次有数据传输时更新活动时间，防止正在播放的视频被超时清理
+        updateStreamActivity(requestId)
+      })
       sourceStream.on('end', () => {
         console.log(`📦 [即点即播] 完整流传输完成 (${requestId})`)
         unregisterStream(requestId)
