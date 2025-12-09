@@ -2217,10 +2217,14 @@ export default function HomePage() {
     if (!currentFile) return
 
     try {
+      // 保留已有的分类和推荐理由，只更新评分、评价和已看过状态
       const ratingData = {
         rating,
         customEvaluation: [evaluation],  // 快捷键使用单个评价，转为数组格式
-        isViewed: true
+        isViewed: true,
+        // 保留已有的分类和推荐理由
+        category: currentRating?.category,
+        recommendationReason: currentRating?.recommendationReason
       }
 
       await saveRating(ratingData)
@@ -2243,7 +2247,7 @@ export default function HomePage() {
       setSnackbarSeverity('error')
       setSnackbarOpen(true)
     }
-  }, [currentFile, saveRating, refreshViewedFiles])
+  }, [currentFile, currentRating, saveRating, refreshViewedFiles])
   
   // 关闭提示
   const handleCloseSnackbar = () => {
