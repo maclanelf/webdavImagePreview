@@ -240,6 +240,7 @@ export default function RatingDialog({
           <Autocomplete
             multiple
             freeSolo
+            disableCloseOnSelect
             options={availableEvaluations}
             value={customEvaluation}
             onChange={(_, newValue) => {
@@ -286,6 +287,7 @@ export default function RatingDialog({
           <Autocomplete
             multiple
             freeSolo
+            disableCloseOnSelect
             options={availableCategories}
             value={category}
             onChange={(_, newValue) => {
