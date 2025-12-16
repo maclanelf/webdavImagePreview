@@ -554,6 +554,9 @@ class PreloadManager {
   }> {
     console.log(`[DEBUG] 图组模式预加载：目标数量 ${count}，筛选条件 ${viewedFilter}`)
     
+    // 更新最大缓存大小，确保与预加载数量一致
+    this.setMaxCacheSize(count)
+    
     // 清除现有缓存（不清理下一组缓存）
     this.clearCache()
     
@@ -1068,6 +1071,9 @@ class PreloadManager {
     onProgress?: (current: number, total: number) => void,
     randomness?: number
   ): Promise<void> {
+    // 更新最大缓存大小，确保与目标数量一致
+    this.setMaxCacheSize(targetCount)
+    
     // 从数据库获取已看过的文件列表
     await this.loadViewedFilesFromDatabase()
     
