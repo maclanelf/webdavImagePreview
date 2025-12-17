@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import VConsole from 'vconsole'
 import {
   Container,
   Box,
@@ -326,6 +327,14 @@ export default function HomePage() {
     return () => {
       window.removeEventListener('beforeunload', cleanupStreams)
       window.removeEventListener('pagehide', cleanupStreams)
+    }
+  }, [])
+
+  // 初始化 vConsole 调试工具
+  useEffect(() => {
+    const vConsole = new VConsole()
+    return () => {
+      vConsole.destroy()
     }
   }, [])
 
