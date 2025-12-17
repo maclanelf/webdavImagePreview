@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import VConsole from 'vconsole'
 import {
   Container,
   Box,
@@ -330,11 +329,16 @@ export default function HomePage() {
     }
   }, [])
 
-  // 初始化 vConsole 调试工具
+  // 初始化 vConsole 调试工具（动态导入，避免 SSG 时报错）
   useEffect(() => {
-    const vConsole = new VConsole()
+    let vConsole: any = null
+    import('vconsole').then((VConsole) => {
+      vConsole = new VConsole.default()
+    })
     return () => {
-      vConsole.destroy()
+      if (vConsole) {
+        vConsole.destroy()
+      }
     }
   }, [])
 
