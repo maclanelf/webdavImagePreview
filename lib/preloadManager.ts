@@ -433,6 +433,9 @@ class PreloadManager {
   async smartPreload(config: any, allFiles: any[], currentFile: any, maxCount: number = 10, viewedFilter: string = 'unviewed', randomness: number = 0): Promise<void> {
     if (!currentFile) return
 
+    // 更新最大缓存大小，确保与目标数量一致
+    this.setMaxCacheSize(maxCount)
+
     // 不需要从数据库加载：内存中的 viewedFiles 已经是最新的
     // 因为：1. 初始化时已加载  2. 每次标记都会实时更新内存缓存
     // await this.loadViewedFilesFromDatabase()
