@@ -228,6 +228,8 @@ export default function HomePage() {
   const instantVideoRef = useRef<any>(null)
   // 视频播放器容器引用（用于原生全屏 API）
   const videoPlayerContainerRef = useRef<HTMLDivElement>(null)
+  // 全屏容器引用（用于在全屏模式下渲染对话框）
+  const fullscreenContainerRef = useRef<HTMLDivElement>(null)
   
   // 视频播放状态保存（用于全屏切换时保持播放状态，仅图片全屏需要）
   const videoStateRef = useRef<{ currentTime: number; paused: boolean } | null>(null)
@@ -2530,6 +2532,7 @@ export default function HomePage() {
   if (fullscreen && currentFile && mediaUrl && !isVideo(currentFile.filename)) {
     return (
       <Box
+        ref={fullscreenContainerRef}
         sx={{
           position: 'fixed',
           top: 0,
@@ -2625,6 +2628,20 @@ export default function HomePage() {
             }),
           })}
         >
+          {/* 预加载数量显示 */}
+          {preloadEnabled && cachePreloadProgress && viewMode !== 'large-video' && (
+            <Typography
+              variant="caption"
+              sx={{
+                color: 'rgba(255, 255, 255, 0.8)',
+                fontSize: '10px',
+                mb: 0.5,
+              }}
+            >
+              {cachePreloadProgress.current}
+            </Typography>
+          )}
+          
           <Box
             sx={{
               display: 'flex',
@@ -2668,6 +2685,27 @@ export default function HomePage() {
               )
             })}
           </Box>
+          
+          {/* 详情评分按钮 */}
+          <Tooltip title="详细评分 (R)" placement="right">
+            <IconButton
+              size="small"
+              onClick={() => openRatingDialog('media')}
+              disabled={loading || isSwitching || !currentFile}
+              sx={{
+                color: 'rgba(255, 255, 255, 0.7)',
+                mt: 0.5,
+                '&:hover': {
+                  backgroundColor: 'rgba(255, 255, 255, 0.2)',
+                  color: 'primary.main',
+                },
+                transition: 'all 0.2s ease-in-out',
+                p: 0.5,
+              }}
+            >
+              <RateReviewIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
         </DraggableBox>
 
         {/* 退出全屏按钮 */}
@@ -2782,6 +2820,24 @@ export default function HomePage() {
             {snackbarMessage}
           </Alert>
         </Snackbar>
+
+        {/* 评分对话框 - 全屏模式 */}
+        <RatingDialog
+          open={ratingDialogOpen}
+          onClose={closeRatingDialog}
+          onSave={saveRating}
+          title={ratingType === 'media' ? '评分媒体文件' : '评分图组'}
+          subtitle={
+            ratingType === 'media' 
+              ? currentFile?.basename 
+              : currentGroup.length > 0 
+                ? `${getGroupName(getGroupPath(currentGroup[0].filename))} (${currentGroup.length} 个文件)`
+                : undefined
+          }
+          initialData={currentRating || undefined}
+          type={ratingType}
+          container={fullscreenContainerRef.current}
+        />
       </Box>
     )
   }
@@ -3071,6 +3127,20 @@ export default function HomePage() {
                       }),
                     })}
                   >
+                    {/* 预加载数量显示 */}
+                    {preloadEnabled && cachePreloadProgress && viewMode !== 'large-video' && (
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          color: 'rgba(255, 255, 255, 0.8)',
+                          fontSize: '10px',
+                          mb: 0.5,
+                        }}
+                      >
+                        {cachePreloadProgress.current}
+                      </Typography>
+                    )}
+                    
                     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5 }}>
                       {QUICK_RATING_CONFIG.map((config) => {
                         const isLit = currentRating?.rating && currentRating.rating >= config.rating
@@ -3106,6 +3176,27 @@ export default function HomePage() {
                         )
                       })}
                     </Box>
+                    
+                    {/* 详情评分按钮 */}
+                    <Tooltip title="详细评分 (R)" placement="right">
+                      <IconButton
+                        size="small"
+                        onClick={() => openRatingDialog('media')}
+                        disabled={loading || isSwitching || !currentFile}
+                        sx={{
+                          color: 'rgba(255, 255, 255, 0.7)',
+                          mt: 0.5,
+                          '&:hover': {
+                            backgroundColor: 'rgba(255, 255, 255, 0.2)',
+                            color: 'primary.main',
+                          },
+                          transition: 'all 0.2s ease-in-out',
+                          p: 0.5,
+                        }}
+                      >
+                        <RateReviewIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
                   </DraggableBox>
 
                   {/* 右下角：换一个按钮（可拖动） */}
@@ -3134,6 +3225,26 @@ export default function HomePage() {
                   >
                     <FullscreenExitIcon />
                   </IconButton>
+
+                  {/* 评分对话框 - 视频全屏模式 */}
+                  <RatingDialog
+                    open={ratingDialogOpen}
+                    onClose={closeRatingDialog}
+                    onSave={saveRating}
+                    title={ratingType === 'media' ? '评分媒体文件' : '评分图组'}
+                    subtitle={
+                      ratingType === 'media' 
+                        ? currentFile?.basename 
+                        : currentGroup.length > 0 
+                          ? `${getGroupName(getGroupPath(currentGroup[0].filename))} (${currentGroup.length} 个文件)`
+                          : undefined
+                    }
+                    initialData={currentRating || undefined}
+                    type={ratingType}
+                    container={mediaType === 'stream-video' 
+                      ? instantVideoRef.current?.getContainerElement() 
+                      : videoPlayerContainerRef.current}
+                  />
                 </>
               )}
               

@@ -41,6 +41,7 @@ interface RatingDialogProps {
   subtitle?: string
   initialData?: RatingData
   type: 'media' | 'group'
+  container?: Element | null  // 用于在全屏模式下渲染到全屏容器内
 }
 
 export default function RatingDialog({
@@ -50,7 +51,8 @@ export default function RatingDialog({
   title,
   subtitle,
   initialData,
-  type
+  type,
+  container
 }: RatingDialogProps) {
   const [rating, setRating] = useState<number>(0)
   const [recommendationReason, setRecommendationReason] = useState('')
@@ -185,7 +187,27 @@ export default function RatingDialog({
   }
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
+    <Dialog 
+      open={open} 
+      onClose={onClose} 
+      maxWidth="md" 
+      fullWidth
+      container={container || undefined}
+      slotProps={{
+        backdrop: {
+          sx: { zIndex: 2099 }
+        }
+      }}
+      PaperProps={{
+        sx: { zIndex: 2100 }
+      }}
+      sx={{ 
+        zIndex: 2100,
+        '& .MuiDialog-container': {
+          zIndex: 2100
+        }
+      }}
+    >
       <DialogTitle>
         <Box>
           <Typography variant="h6">{title}</Typography>
@@ -252,6 +274,12 @@ export default function RatingDialog({
                 }
               })
             }}
+            slotProps={{
+              popper: {
+                container: container || undefined,
+                sx: { zIndex: 2200 }
+              }
+            }}
             renderInput={(params) => (
               <TextField
                 {...params}
@@ -298,6 +326,12 @@ export default function RatingDialog({
                   handleAddCategory(val)
                 }
               })
+            }}
+            slotProps={{
+              popper: {
+                container: container || undefined,
+                sx: { zIndex: 2200 }
+              }
             }}
             renderInput={(params) => (
               <TextField

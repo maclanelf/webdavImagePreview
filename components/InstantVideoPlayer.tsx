@@ -34,6 +34,7 @@ export interface InstantVideoPlayerRef {
   setCurrentTime: (time: number) => void
   getVideoElement: () => HTMLVideoElement | null
   isPaused: () => boolean
+  getContainerElement: () => HTMLDivElement | null  // 获取容器元素，用于在全屏模式下渲染对话框
 }
 
 /**
@@ -317,7 +318,8 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
       }
     },
     getVideoElement: () => videoRef.current,
-    isPaused: () => videoRef.current?.paused || true
+    isPaused: () => videoRef.current?.paused || true,
+    getContainerElement: () => containerRef.current
   }))
 
   // 视频事件处理
