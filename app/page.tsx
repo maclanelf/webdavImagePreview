@@ -530,7 +530,8 @@ export default function HomePage() {
               setCachePreloadProgress({ current, total })
             }
           },
-          preloadRandomness
+          preloadRandomness,
+          true // isInitialLoad: 初始加载，不限制并发
         ).then(() => {
           // 预加载完成后，如果已切换到大视频模式则忽略结果（使用 ref）
           if (viewModeRef.current === 'large-video') {
@@ -1933,7 +1934,8 @@ export default function HomePage() {
                   setCachePreloadProgress({ current, total })
                 }
               },
-              preloadRandomness
+              preloadRandomness,
+              true // isInitialLoad: 配置变化后重新加载，不限制并发
             ).then(() => {
               // 预加载完成后，如果已切换到大视频模式则忽略结果（使用 ref）
               if (viewModeRef.current === 'large-video') {

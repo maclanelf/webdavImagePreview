@@ -44,9 +44,85 @@ class PreloadManager {
   // 当前图组是否已经触发过剩余文件预加载（防止重复触发）
   private currentGroupPreloadTriggered = false
 
+  // ========== 并发控制相关属性 ==========
+  // 当前正在进行的预加载请求数量
+  private activePreloadCount = 0
+  // 最大并发预加载数（浏览器通常6个连接，预留2个给评分API等其他请求）
+  private maxConcurrentPreloads = 4
+  // 等待获取预加载许可的队列
+  private pendingPreloadQueue: Array<() => void> = []
+  // 是否启用并发限制（初始预加载时可以关闭，浏览时开启）
+  private concurrencyLimitEnabled = true
+
   // 设置缓存大小
   setMaxCacheSize(size: number) {
     this.maxCacheSize = size
+  }
+
+  // 设置最大并发预加载数
+  setMaxConcurrentPreloads(count: number) {
+    this.maxConcurrentPreloads = count
+  }
+
+  // 启用/禁用并发限制
+  setConcurrencyLimitEnabled(enabled: boolean) {
+    this.concurrencyLimitEnabled = enabled
+    console.log(`[并发控制] 并发限制${enabled ? '已启用' : '已禁用'}`)
+  }
+
+  // 获取预加载许可（如果超过并发限制则等待）
+  private async acquirePreloadSlot(): Promise<void> {
+    // 如果禁用了并发限制，直接返回（仅计数用于调试）
+    if (!this.concurrencyLimitEnabled) {
+      this.activePreloadCount++
+      console.log(`[并发控制] 无限制模式，当前活跃: ${this.activePreloadCount}`)
+      return
+    }
+    
+    if (this.activePreloadCount < this.maxConcurrentPreloads) {
+      this.activePreloadCount++
+      console.log(`[并发控制] 获取许可，当前活跃: ${this.activePreloadCount}/${this.maxConcurrentPreloads}`)
+      return
+    }
+    
+    // 超过限制，加入等待队列
+    console.log(`[并发控制] 达到并发上限，等待中... 队列长度: ${this.pendingPreloadQueue.length + 1}`)
+    return new Promise(resolve => {
+      this.pendingPreloadQueue.push(() => {
+        this.activePreloadCount++
+        console.log(`[并发控制] 从队列获取许可，当前活跃: ${this.activePreloadCount}/${this.maxConcurrentPreloads}`)
+        resolve()
+      })
+    })
+  }
+
+  // 释放预加载许可
+  private releasePreloadSlot(): void {
+    this.activePreloadCount--
+    
+    // 如果禁用了并发限制，仅计数
+    if (!this.concurrencyLimitEnabled) {
+      console.log(`[并发控制] 无限制模式释放，当前活跃: ${this.activePreloadCount}`)
+      return
+    }
+    
+    console.log(`[并发控制] 释放许可，当前活跃: ${this.activePreloadCount}/${this.maxConcurrentPreloads}`)
+    
+    // 如果有等待的任务，执行下一个
+    if (this.pendingPreloadQueue.length > 0) {
+      const next = this.pendingPreloadQueue.shift()
+      next?.()
+    }
+  }
+
+  // 获取当前并发状态（用于调试）
+  getConcurrencyStatus() {
+    return {
+      activeCount: this.activePreloadCount,
+      maxConcurrent: this.maxConcurrentPreloads,
+      pendingCount: this.pendingPreloadQueue.length,
+      limitEnabled: this.concurrencyLimitEnabled
+    }
   }
 
   // 统一的文件过滤方法：判断文件是否可以预加载（基于类型和大小）
@@ -119,7 +195,7 @@ class PreloadManager {
     }
   }
 
-  // 预加载单个文件
+  // 预加载单个文件（带并发控制）
   private async preloadFile(config: any, file: any): Promise<void> {
     const filepath = file.filename
     
@@ -133,7 +209,15 @@ class PreloadManager {
       return
     }
 
+    // 获取预加载许可（可能需要等待）
+    await this.acquirePreloadSlot()
+    
     try {
+      // 再次检查（等待期间可能已被其他请求加载）
+      if (this.cache.has(filepath)) {
+        return
+      }
+      
       this.queue.add(filepath)
 
       // 获取文件流
@@ -173,6 +257,8 @@ class PreloadManager {
       throw error
     } finally {
       this.queue.delete(filepath)
+      // 释放预加载许可
+      this.releasePreloadSlot()
     }
   }
 
@@ -557,6 +643,9 @@ class PreloadManager {
   }> {
     console.log(`[DEBUG] 图组模式预加载：目标数量 ${count}，筛选条件 ${viewedFilter}`)
     
+    // 初始加载时禁用并发限制，加速预加载
+    this.setConcurrencyLimitEnabled(false)
+    
     // 更新最大缓存大小，确保与预加载数量一致
     this.setMaxCacheSize(count)
     
@@ -584,6 +673,8 @@ class PreloadManager {
     })
 
     if (eligibleFiles.length === 0) {
+      // 恢复并发限制
+      this.setConcurrencyLimitEnabled(true)
       return {
         successCount: 0,
         failedCount: 0,
@@ -595,6 +686,8 @@ class PreloadManager {
     const groups = this.groupFilesByFolder(eligibleFiles)
     
     if (groups.length === 0) {
+      // 恢复并发限制
+      this.setConcurrencyLimitEnabled(true)
       return {
         successCount: 0,
         failedCount: 0,
@@ -662,6 +755,9 @@ class PreloadManager {
     
     // 等待所有文件预加载完成
     const results = await Promise.allSettled(preloadPromises)
+    
+    // 初始加载完成后，恢复并发限制
+    this.setConcurrencyLimitEnabled(true)
     
     // 当前组加载完成后，再异步预加载下一组（不阻塞后续流程）
     this.preloadNextGroup(config, allFiles, count, viewedFilter).catch(error => {
@@ -742,7 +838,7 @@ class PreloadManager {
     console.log(`[DEBUG] 下一组预加载完成`)
   }
   
-  // 预加载文件到下一组缓存（独立方法）
+  // 预加载文件到下一组缓存（独立方法，带并发控制）
   private async preloadFileToNextGroup(config: any, file: any): Promise<void> {
     const filepath = file.filename
     
@@ -756,7 +852,15 @@ class PreloadManager {
       return
     }
     
+    // 获取预加载许可（可能需要等待）
+    await this.acquirePreloadSlot()
+    
     try {
+      // 再次检查（等待期间可能已被其他请求加载）
+      if (this.nextGroupCache.has(filepath)) {
+        return
+      }
+      
       this.queue.add(filepath)
       
       // 获取文件流
@@ -795,6 +899,8 @@ class PreloadManager {
       throw error
     } finally {
       this.queue.delete(filepath)
+      // 释放预加载许可
+      this.releasePreloadSlot()
     }
   }
   
@@ -924,7 +1030,7 @@ class PreloadManager {
     console.log('[DEBUG] 当前图组剩余文件预加载完成')
   }
   
-  // 预加载文件但不限制缓存大小（用于预加载当前组的所有文件）
+  // 预加载文件但不限制缓存大小（用于预加载当前组的所有文件，带并发控制）
   private async preloadFileWithoutLimit(config: any, file: any): Promise<void> {
     const filepath = file.filename
     
@@ -938,7 +1044,15 @@ class PreloadManager {
       return
     }
     
+    // 获取预加载许可（可能需要等待）
+    await this.acquirePreloadSlot()
+    
     try {
+      // 再次检查（等待期间可能已被其他请求加载）
+      if (this.cache.has(filepath)) {
+        return
+      }
+      
       this.queue.add(filepath)
       
       // 获取文件流
@@ -991,6 +1105,8 @@ class PreloadManager {
       throw error
     } finally {
       this.queue.delete(filepath)
+      // 释放预加载许可
+      this.releasePreloadSlot()
     }
   }
   
@@ -1066,16 +1182,23 @@ class PreloadManager {
   }
 
   // 自动补齐缓存到目标数量
+  // isInitialLoad: 是否为初始加载（初始加载时不限制并发，加速预加载）
   async refillCache(
     config: any, 
     allFiles: any[], 
     targetCount: number = 10, 
     viewedFilter: string = 'unviewed',
     onProgress?: (current: number, total: number) => void,
-    randomness?: number
+    randomness?: number,
+    isInitialLoad: boolean = false
   ): Promise<void> {
     // 更新最大缓存大小，确保与目标数量一致
     this.setMaxCacheSize(targetCount)
+    
+    // 初始加载时禁用并发限制，加速预加载
+    if (isInitialLoad) {
+      this.setConcurrencyLimitEnabled(false)
+    }
     
     // 从数据库获取已看过的文件列表
     await this.loadViewedFilesFromDatabase()
@@ -1087,11 +1210,15 @@ class PreloadManager {
       if (onProgress) {
         onProgress(currentCacheSize, targetCount)
       }
+      // 恢复并发限制
+      if (isInitialLoad) {
+        this.setConcurrencyLimitEnabled(true)
+      }
       return // 缓存已满，无需补齐
     }
 
     const needCount = targetCount - currentCacheSize
-    console.log(`缓存不足，需要补齐 ${needCount} 个文件，筛选条件: ${viewedFilter}`)
+    console.log(`缓存不足，需要补齐 ${needCount} 个文件，筛选条件: ${viewedFilter}，初始加载: ${isInitialLoad}`)
 
     // 触发初始进度
     if (onProgress) {
@@ -1128,6 +1255,10 @@ class PreloadManager {
 
       if (availableFiles.length === 0) {
         console.log('已看过模式下：所有文件都已缓存或已看过，无法补齐')
+        // 恢复并发限制
+        if (isInitialLoad) {
+          this.setConcurrencyLimitEnabled(true)
+        }
         return
       }
 
@@ -1161,6 +1292,10 @@ class PreloadManager {
 
       if (availableFiles.length === 0) {
         console.log('没有可用的文件进行补齐')
+        // 恢复并发限制
+        if (isInitialLoad) {
+          this.setConcurrencyLimitEnabled(true)
+        }
         return
       }
 
@@ -1185,6 +1320,11 @@ class PreloadManager {
         })
       )
       await Promise.allSettled(preloadPromises)
+    }
+    
+    // 初始加载完成后，恢复并发限制
+    if (isInitialLoad) {
+      this.setConcurrencyLimitEnabled(true)
     }
   }
 
