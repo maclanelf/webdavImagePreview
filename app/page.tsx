@@ -169,7 +169,7 @@ export default function HomePage() {
   const [galleryPreloadReady, setGalleryPreloadReady] = useState(false)
   
   // 智能预加载随机性（0-1，0表示优先当前目录，1表示完全随机）
-  const [preloadRandomness, setPreloadRandomness] = useState(0)
+  const [preloadRandomness, setPreloadRandomness] = useState(1)
   
   // 扫描状态详细信息
   const [scanStatus, setScanStatus] = useState<{ 
