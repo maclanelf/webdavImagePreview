@@ -16,6 +16,7 @@
 # 其他
 .DS_Store
 *.pem
+/.vscode
 
 # 调试
 npm-debug.log*
