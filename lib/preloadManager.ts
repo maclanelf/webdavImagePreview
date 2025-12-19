@@ -26,7 +26,7 @@ class PreloadManager {
   private maxVideoSize = 100 * 1024 * 1024 // 100MB
   
   // 缓存过期时间：超过此时间的缓存将被清理（毫秒）
-  private cacheExpireTime = 60 * 60 * 1000 // 60分钟
+  private cacheExpireTime = 300 * 60 * 1000 // 300分钟
   
   // 已观看文件缓存：从数据库加载的已看过文件路径集合
   private viewedFiles = new Set<string>()
