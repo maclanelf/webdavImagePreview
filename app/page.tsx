@@ -1259,7 +1259,13 @@ export default function HomePage() {
       }
       
       // 加载当前文件的评分（优先执行，确保不被预加载阻塞）
-      await loadMediaRating(file.filename)
+      // 未看过模式下跳过，因为未看过的文件肯定没有评分
+      if (viewedFilter !== 'unviewed') {
+        await loadMediaRating(file.filename)
+      } else {
+        // 未看过模式下清空评分状态
+        setCurrentRating(null)
+      }
       
       // 启动自动标记已看过的定时器（传递文件参数避免状态更新延迟）
       startAutoMarkTimer(file)
@@ -1539,8 +1545,13 @@ export default function HomePage() {
         }, 100)
       }
       
-      // 加载当前文件的评分
-      await loadCurrentRating(fileToLoad)
+      // 加载当前文件的评分（未看过模式下跳过，因为未看过的文件肯定没有评分）
+      if (viewedFilter !== 'unviewed') {
+        await loadCurrentRating(fileToLoad)
+      } else {
+        // 未看过模式下清空评分状态
+        setCurrentRating(null)
+      }
       
       // 启动自动标记已看过的定时器（传递文件参数避免状态更新延迟）
       startAutoMarkTimer(fileToLoad)
@@ -1695,8 +1706,13 @@ export default function HomePage() {
         }, 100)
       }
       
-      // 加载当前文件的评分
-      await loadCurrentRating(fileToLoad)
+      // 加载当前文件的评分（未看过模式下跳过，因为未看过的文件肯定没有评分）
+      if (viewedFilter !== 'unviewed') {
+        await loadCurrentRating(fileToLoad)
+      } else {
+        // 未看过模式下清空评分状态
+        setCurrentRating(null)
+      }
       
       // 启动自动标记已看过的定时器
       startAutoMarkTimer(fileToLoad)
@@ -2336,7 +2352,7 @@ export default function HomePage() {
 
     // 根据文件类型设置不同的时间
     const isImageFile = isImage(targetFile.filename)
-    const timeoutDuration = isImageFile ? 500 : 180000 // 图片0.5秒，视频3分钟
+    const timeoutDuration = isImageFile ? 100 : 180000 // 图片100ms，视频3分钟
 
     const timer = setTimeout(async () => {
       await performAutoRating(targetFile)
