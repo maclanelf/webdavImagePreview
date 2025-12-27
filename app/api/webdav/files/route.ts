@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getWebDAVClient, recursiveScanDirectory } from '@/lib/webdav'
-import { scanCache } from '@/lib/database'
+import { scanCache, scanFiles } from '@/lib/database'
 import { writeScanLog } from '@/lib/scanLogger'
 import { scanTaskManager } from '@/lib/scanTaskManager'
 
@@ -152,6 +152,16 @@ export async function POST(request: NextRequest) {
             videoCount: result.videoCount,
             scanSettings: JSON.stringify({ batchSize })
           })
+
+          // 获取刚保存的 cache_id，写入 scan_files 表
+          const savedCache = scanCache.get(url, username, path) as any
+          if (savedCache && savedCache.id) {
+            // 先删除旧数据
+            scanFiles.deleteByCache(savedCache.id)
+            // 批量插入新数据
+            scanFiles.batchInsert(savedCache.id, filesData)
+            console.log(`已同步写入 scan_files 表: ${filesData.length} 个文件`)
+          }
 
           // 记录扫描完成日志
           writeScanLog({

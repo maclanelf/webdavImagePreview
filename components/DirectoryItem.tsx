@@ -34,7 +34,8 @@ import {
   Refresh as RefreshIcon,
   CheckCircle as CheckCircleIcon,
   Error as ErrorIcon,
-  AccessTime as AccessTimeIcon
+  AccessTime as AccessTimeIcon,
+  Storage as StorageIcon
 } from '@mui/icons-material'
 
 // 添加CSS动画
@@ -83,6 +84,16 @@ interface DirectoryItemProps {
   onForceRemoveCache?: (path: string) => void
 }
 
+interface MigrationStatus {
+  hasMigratedData: boolean
+  migratedStats?: {
+    total: number
+    images: number
+    videos: number
+    viewed: number
+  }
+}
+
 export default function DirectoryItem({
   path,
   stats,
@@ -98,9 +109,75 @@ export default function DirectoryItem({
   const [logDialogOpen, setLogDialogOpen] = useState(false)
   const [logs, setLogs] = useState<any[]>([])
   const [loadingLogs, setLoadingLogs] = useState(false)
+  const [migrationStatus, setMigrationStatus] = useState<MigrationStatus | null>(null)
+  const [migrating, setMigrating] = useState(false)
+  const [migrationMessage, setMigrationMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null)
 
   const handleToggleExpanded = () => {
     setExpanded(!expanded)
+    // 展开时检查迁移状态
+    if (!expanded && !migrationStatus) {
+      checkMigrationStatus()
+    }
+  }
+
+  const checkMigrationStatus = async () => {
+    try {
+      const response = await fetch(`/api/scan-files/migrate?webdavUrl=${encodeURIComponent(webdavConfig.url)}&webdavUsername=${encodeURIComponent(webdavConfig.username)}`)
+      if (response.ok) {
+        const data = await response.json()
+        const cacheInfo = data.caches?.find((c: any) => c.path === path)
+        if (cacheInfo) {
+          setMigrationStatus({
+            hasMigratedData: cacheInfo.hasMigratedData,
+            migratedStats: cacheInfo.migratedStats
+          })
+        }
+      }
+    } catch (error) {
+      console.error('检查迁移状态失败:', error)
+    }
+  }
+
+  const handleMigrate = async () => {
+    setMigrating(true)
+    setMigrationMessage(null)
+    
+    try {
+      // 先获取 cacheId
+      const statusResponse = await fetch(`/api/scan-files/migrate?webdavUrl=${encodeURIComponent(webdavConfig.url)}&webdavUsername=${encodeURIComponent(webdavConfig.username)}`)
+      if (!statusResponse.ok) {
+        throw new Error('获取缓存信息失败')
+      }
+      
+      const statusData = await statusResponse.json()
+      const cacheInfo = statusData.caches?.find((c: any) => c.path === path)
+      
+      if (!cacheInfo) {
+        throw new Error('未找到该目录的缓存数据')
+      }
+      
+      // 执行迁移
+      const response = await fetch('/api/scan-files/migrate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cacheId: cacheInfo.cacheId })
+      })
+      
+      const result = await response.json()
+      
+      if (result.success) {
+        setMigrationMessage({ type: 'success', text: result.message })
+        // 刷新迁移状态
+        await checkMigrationStatus()
+      } else {
+        setMigrationMessage({ type: 'error', text: result.message || '迁移失败' })
+      }
+    } catch (error: any) {
+      setMigrationMessage({ type: 'error', text: error.message })
+    } finally {
+      setMigrating(false)
+    }
   }
 
   const handleOpenDetail = () => {
@@ -357,6 +434,57 @@ export default function DirectoryItem({
                 >
                   移除目录
                 </Button>
+              </Box>
+
+              {/* 数据迁移区域 */}
+              <Box sx={{ mt: 2 }}>
+                <Typography variant="subtitle2" gutterBottom>
+                  数据迁移（JSON → 行式存储）
+                </Typography>
+                
+                {migrationMessage && (
+                  <Alert severity={migrationMessage.type} sx={{ mb: 1 }} onClose={() => setMigrationMessage(null)}>
+                    {migrationMessage.text}
+                  </Alert>
+                )}
+                
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                  {migrationStatus ? (
+                    <>
+                      <Chip
+                        icon={migrationStatus.hasMigratedData ? <CheckCircleIcon /> : <StorageIcon />}
+                        label={migrationStatus.hasMigratedData ? '已迁移' : '未迁移'}
+                        color={migrationStatus.hasMigratedData ? 'success' : 'warning'}
+                        size="small"
+                      />
+                      {migrationStatus.hasMigratedData && migrationStatus.migratedStats && (
+                        <Typography variant="caption" color="text.secondary">
+                          行式存储: {migrationStatus.migratedStats.total} 文件, 
+                          已看 {migrationStatus.migratedStats.viewed}
+                        </Typography>
+                      )}
+                    </>
+                  ) : (
+                    <Typography variant="caption" color="text.secondary">
+                      加载中...
+                    </Typography>
+                  )}
+                  
+                  <Button
+                    size="small"
+                    variant="contained"
+                    color="primary"
+                    startIcon={migrating ? <CircularProgress size={16} color="inherit" /> : <StorageIcon />}
+                    onClick={handleMigrate}
+                    disabled={migrating || !stats}
+                  >
+                    {migrating ? '迁移中...' : (migrationStatus?.hasMigratedData ? '重新迁移' : '迁移数据')}
+                  </Button>
+                </Box>
+                
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                  将 JSON 缓存数据迁移到行式存储，提升大数据量下的查询性能
+                </Typography>
               </Box>
             </Stack>
           </Collapse>

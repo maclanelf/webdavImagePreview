@@ -202,6 +202,31 @@ export function initDatabase() {
       )
     `)
 
+    // 创建扫描文件表（核心表，支持亿级数据）
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS scan_files (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cache_id INTEGER NOT NULL,
+        filename TEXT NOT NULL,
+        basename TEXT NOT NULL,
+        parent_path TEXT NOT NULL,
+        file_size INTEGER DEFAULT 0,
+        file_type TEXT NOT NULL,
+        lastmod TEXT,
+        is_viewed BOOLEAN DEFAULT FALSE,
+        created_at DATETIME DEFAULT (datetime('now', 'localtime')),
+        FOREIGN KEY (cache_id) REFERENCES scan_cache(id) ON DELETE CASCADE
+      )
+    `)
+
+    // 创建 scan_files 索引（亿级数据必备）
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_files_cache ON scan_files(cache_id)`)
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_files_type ON scan_files(file_type)`)
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_files_viewed ON scan_files(is_viewed)`)
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_files_parent ON scan_files(parent_path)`)
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_files_unique ON scan_files(cache_id, filename)`)
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_files_query ON scan_files(cache_id, file_type, is_viewed)`)
+
     console.log('数据库表创建完成')
   } catch (error) {
     console.error('数据库表创建失败:', error)
@@ -966,6 +991,345 @@ export const webdavConfigs = {
     } catch (error) {
       console.error('设置默认配置失败:', error)
       throw error
+    }
+  }
+}
+
+// 辅助函数：获取父目录路径
+function getParentPath(filename: string): string {
+  const lastSlash = filename.lastIndexOf('/')
+  return lastSlash > 0 ? filename.substring(0, lastSlash) : '/'
+}
+
+// 辅助函数：判断文件类型
+function getFileType(basename: string): 'image' | 'video' {
+  if (/\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(basename)) {
+    return 'image'
+  }
+  return 'video'
+}
+
+// 扫描文件表相关操作（支持亿级数据）
+export const scanFiles = {
+  // 批量插入文件（使用事务，每批1000条）
+  batchInsert: (cacheId: number, files: Array<{
+    filename: string
+    basename: string
+    size?: number
+    type?: string
+    lastmod?: string
+  }>) => {
+    try {
+      ensureInitialized()
+      
+      const insert = db.prepare(`
+        INSERT OR REPLACE INTO scan_files 
+        (cache_id, filename, basename, parent_path, file_size, file_type, lastmod)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `)
+      
+      const insertMany = db.transaction((batch: typeof files) => {
+        for (const file of batch) {
+          insert.run(
+            cacheId,
+            file.filename,
+            file.basename,
+            getParentPath(file.filename),
+            file.size || 0,
+            getFileType(file.basename),
+            file.lastmod || null
+          )
+        }
+      })
+      
+      // 分批处理，每批1000条
+      const batchSize = 1000
+      let inserted = 0
+      for (let i = 0; i < files.length; i += batchSize) {
+        const batch = files.slice(i, i + batchSize)
+        insertMany(batch)
+        inserted += batch.length
+      }
+      
+      return { inserted }
+    } catch (error) {
+      console.error('批量插入扫描文件失败:', error)
+      throw error
+    }
+  },
+
+  // 根据 cache_id 获取文件（分页，游标方式）
+  getByCache: (cacheId: number, options?: {
+    lastId?: number
+    limit?: number
+    fileType?: 'image' | 'video'
+    isViewed?: boolean
+  }) => {
+    try {
+      ensureInitialized()
+      
+      const { lastId = 0, limit = 100, fileType, isViewed } = options || {}
+      
+      let sql = `SELECT * FROM scan_files WHERE cache_id = ? AND id > ?`
+      const params: any[] = [cacheId, lastId]
+      
+      if (fileType) {
+        sql += ` AND file_type = ?`
+        params.push(fileType)
+      }
+      if (isViewed !== undefined) {
+        sql += ` AND is_viewed = ?`
+        params.push(isViewed ? 1 : 0)
+      }
+      
+      sql += ` ORDER BY id LIMIT ?`
+      params.push(limit)
+      
+      return db.prepare(sql).all(...params)
+    } catch (error) {
+      console.error('获取扫描文件失败:', error)
+      return []
+    }
+  },
+
+  // 获取所有文件（用于兼容现有逻辑，但建议使用分页）
+  getAllByCache: (cacheId: number, options?: {
+    fileType?: 'image' | 'video'
+    isViewed?: boolean
+  }) => {
+    try {
+      ensureInitialized()
+      
+      const { fileType, isViewed } = options || {}
+      
+      let sql = `SELECT * FROM scan_files WHERE cache_id = ?`
+      const params: any[] = [cacheId]
+      
+      if (fileType) {
+        sql += ` AND file_type = ?`
+        params.push(fileType)
+      }
+      if (isViewed !== undefined) {
+        sql += ` AND is_viewed = ?`
+        params.push(isViewed ? 1 : 0)
+      }
+      
+      sql += ` ORDER BY id`
+      
+      return db.prepare(sql).all(...params)
+    } catch (error) {
+      console.error('获取所有扫描文件失败:', error)
+      return []
+    }
+  },
+
+  // 随机获取一个文件（亿级数据高效随机）
+  getRandom: (cacheId: number, options?: {
+    fileType?: 'image' | 'video'
+    isViewed?: boolean
+  }) => {
+    try {
+      ensureInitialized()
+      
+      const { fileType, isViewed } = options || {}
+      
+      // 先获取符合条件的总数
+      let countSql = `SELECT COUNT(*) as count FROM scan_files WHERE cache_id = ?`
+      const params: any[] = [cacheId]
+      
+      if (fileType) {
+        countSql += ` AND file_type = ?`
+        params.push(fileType)
+      }
+      if (isViewed !== undefined) {
+        countSql += ` AND is_viewed = ?`
+        params.push(isViewed ? 1 : 0)
+      }
+      
+      const { count } = db.prepare(countSql).get(...params) as { count: number }
+      if (count === 0) return null
+      
+      // 随机偏移
+      const offset = Math.floor(Math.random() * count)
+      
+      let sql = `SELECT * FROM scan_files WHERE cache_id = ?`
+      if (fileType) sql += ` AND file_type = ?`
+      if (isViewed !== undefined) sql += ` AND is_viewed = ?`
+      sql += ` LIMIT 1 OFFSET ?`
+      
+      return db.prepare(sql).get(...params, offset)
+    } catch (error) {
+      console.error('随机获取扫描文件失败:', error)
+      return null
+    }
+  },
+
+  // 获取某目录下的所有文件（图组模式）
+  getByParentPath: (cacheId: number, parentPath: string) => {
+    try {
+      ensureInitialized()
+      
+      const stmt = db.prepare(`
+        SELECT * FROM scan_files 
+        WHERE cache_id = ? AND parent_path = ?
+        ORDER BY basename
+      `)
+      return stmt.all(cacheId, parentPath)
+    } catch (error) {
+      console.error('获取目录文件失败:', error)
+      return []
+    }
+  },
+
+  // 获取统计信息
+  getStats: (cacheId: number) => {
+    try {
+      ensureInitialized()
+      
+      const stmt = db.prepare(`
+        SELECT 
+          COUNT(*) as total,
+          SUM(CASE WHEN file_type = 'image' THEN 1 ELSE 0 END) as images,
+          SUM(CASE WHEN file_type = 'video' THEN 1 ELSE 0 END) as videos,
+          SUM(CASE WHEN is_viewed = 1 THEN 1 ELSE 0 END) as viewed
+        FROM scan_files 
+        WHERE cache_id = ?
+      `)
+      return stmt.get(cacheId) as { total: number, images: number, videos: number, viewed: number }
+    } catch (error) {
+      console.error('获取扫描文件统计失败:', error)
+      return { total: 0, images: 0, videos: 0, viewed: 0 }
+    }
+  },
+
+  // 标记文件已看
+  markViewed: (cacheId: number, filename: string) => {
+    try {
+      ensureInitialized()
+      
+      const stmt = db.prepare(`
+        UPDATE scan_files SET is_viewed = TRUE 
+        WHERE cache_id = ? AND filename = ?
+      `)
+      return stmt.run(cacheId, filename)
+    } catch (error) {
+      console.error('标记文件已看失败:', error)
+      throw error
+    }
+  },
+
+  // 批量标记已看
+  batchMarkViewed: (cacheId: number, filenames: string[]) => {
+    try {
+      ensureInitialized()
+      
+      const update = db.prepare(`
+        UPDATE scan_files SET is_viewed = TRUE 
+        WHERE cache_id = ? AND filename = ?
+      `)
+      
+      const updateMany = db.transaction((names: string[]) => {
+        for (const filename of names) {
+          update.run(cacheId, filename)
+        }
+      })
+      
+      updateMany(filenames)
+      return { updated: filenames.length }
+    } catch (error) {
+      console.error('批量标记已看失败:', error)
+      throw error
+    }
+  },
+
+  // 删除某个缓存的所有文件
+  deleteByCache: (cacheId: number) => {
+    try {
+      ensureInitialized()
+      
+      const stmt = db.prepare('DELETE FROM scan_files WHERE cache_id = ?')
+      return stmt.run(cacheId)
+    } catch (error) {
+      console.error('删除扫描文件失败:', error)
+      throw error
+    }
+  },
+
+  // 检查是否存在数据
+  hasData: (cacheId: number) => {
+    try {
+      ensureInitialized()
+      
+      const stmt = db.prepare('SELECT COUNT(*) as count FROM scan_files WHERE cache_id = ? LIMIT 1')
+      const result = stmt.get(cacheId) as { count: number }
+      return result.count > 0
+    } catch (error) {
+      console.error('检查扫描文件数据失败:', error)
+      return false
+    }
+  },
+
+  // 从 scan_cache 的 files_data 迁移数据
+  migrateFromCache: (cacheId: number) => {
+    try {
+      ensureInitialized()
+      
+      // 获取 scan_cache 数据
+      const cache = db.prepare('SELECT * FROM scan_cache WHERE id = ?').get(cacheId) as any
+      if (!cache || !cache.files_data) {
+        return { success: false, message: '缓存数据不存在或为空' }
+      }
+      
+      // 解析 JSON
+      const files = JSON.parse(cache.files_data)
+      if (!Array.isArray(files) || files.length === 0) {
+        return { success: false, message: '文件数据为空' }
+      }
+      
+      // 先删除旧数据
+      scanFiles.deleteByCache(cacheId)
+      
+      // 批量插入
+      const result = scanFiles.batchInsert(cacheId, files)
+      
+      return { 
+        success: true, 
+        message: `成功迁移 ${result.inserted} 个文件`,
+        count: result.inserted
+      }
+    } catch (error: any) {
+      console.error('迁移扫描文件失败:', error)
+      return { success: false, message: error.message }
+    }
+  },
+
+  // 从所有 scan_cache 迁移数据
+  migrateAllFromCache: () => {
+    try {
+      ensureInitialized()
+      
+      const caches = db.prepare('SELECT id, path FROM scan_cache').all() as any[]
+      const results: Array<{ cacheId: number, path: string, success: boolean, message: string, count?: number }> = []
+      
+      for (const cache of caches) {
+        const result = scanFiles.migrateFromCache(cache.id)
+        results.push({
+          cacheId: cache.id,
+          path: cache.path,
+          ...result
+        })
+      }
+      
+      const totalMigrated = results.filter(r => r.success).reduce((sum, r) => sum + (r.count || 0), 0)
+      
+      return {
+        success: true,
+        message: `迁移完成，共处理 ${caches.length} 个缓存，迁移 ${totalMigrated} 个文件`,
+        details: results
+      }
+    } catch (error: any) {
+      console.error('迁移所有扫描文件失败:', error)
+      return { success: false, message: error.message, details: [] }
     }
   }
 }
