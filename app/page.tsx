@@ -1610,13 +1610,16 @@ export default function HomePage() {
       setCurrentFile(fileToLoad)
       
       // 构建即点即播URL（使用 instant-stream API）
+      // 注意：URLSearchParams 会将空格编码为 +，但 WebDAV 服务器需要 %20
+      // 所以我们需要手动替换
       const streamParams = new URLSearchParams({
         url: config.url,
         username: config.username,
         password: config.password,
         filepath: fileToLoad.filename,
       })
-      const streamUrl = `/api/webdav/instant-stream?${streamParams.toString()}`
+      // 将 + 替换为 %20，确保 WebDAV 服务器能正确解析路径中的空格
+      const streamUrl = `/api/webdav/instant-stream?${streamParams.toString().replace(/\+/g, '%20')}`
       
       console.log(`[大视频模式] 使用流式播放: ${fileToLoad.basename}, 大小: ${formatFileSize(fileToLoad.size)}`)
       console.log(`[大视频模式] 流媒体URL: ${streamUrl}`)

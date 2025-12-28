@@ -154,6 +154,7 @@ export default function InstantPlayPage() {
     setError(null)
     
     // 构建流式播放URL
+    // 注意：URLSearchParams 会将空格编码为 +，但 WebDAV 服务器需要 %20
     const params = new URLSearchParams({
       url: config.url,
       username: config.username,
@@ -161,7 +162,8 @@ export default function InstantPlayPage() {
       filepath: file.filename,
     })
     
-    const streamUrl = `/api/webdav/instant-stream?${params.toString()}`
+    // 将 + 替换为 %20，确保 WebDAV 服务器能正确解析路径中的空格
+    const streamUrl = `/api/webdav/instant-stream?${params.toString().replace(/\+/g, '%20')}`
     
     console.log(`🎬 [即点即播] 开始播放视频: ${file.basename}`)
     console.log(`🔗 [即点即播] 流媒体URL: ${streamUrl}`)

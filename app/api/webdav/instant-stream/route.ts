@@ -93,16 +93,38 @@ export async function GET(request: NextRequest) {
     // 获取文件大小
     let fileSize: number
     try {
+      console.log(`📂 [即点即播] 尝试获取文件信息...`)
+      console.log(`📂 [即点即播] WebDAV URL: ${url}`)
+      console.log(`📂 [即点即播] 文件路径: ${filepath}`)
+      console.log(`📂 [即点即播] 文件路径长度: ${filepath.length}`)
+      console.log(`📂 [即点即播] 文件路径编码检查:`, {
+        hasPlus: filepath.includes('+'),
+        hasSpace: filepath.includes(' '),
+        hasSpecialChars: /[～／＋]/.test(filepath),
+      })
+      
       const stat = await client.stat(filepath)
       fileSize = getFileSizeFromStat(stat)
       if (!fileSize) {
         throw new Error('无法获取文件大小')
       }
-    } catch (error) {
-      console.error('获取文件信息失败:', error)
+    } catch (error: any) {
+      console.error('❌ [即点即播] 获取文件信息失败:', error)
+      console.error('❌ [即点即播] 错误详情:', {
+        message: error.message,
+        status: error.status,
+        filepath: filepath,
+      })
+      
+      // 返回更详细的错误信息
+      const statusCode = error.status || 500
+      const errorMessage = statusCode === 404 
+        ? `文件不存在: ${filepath}` 
+        : `获取文件信息失败: ${error.message}`
+      
       return NextResponse.json(
-        { error: '获取文件信息失败' },
-        { status: 500 }
+        { error: errorMessage, filepath, status: statusCode },
+        { status: statusCode }
       )
     }
 

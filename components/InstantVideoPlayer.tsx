@@ -528,8 +528,67 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   }
 
   const handleError = (e: React.SyntheticEvent<HTMLVideoElement, Event>) => {
-    const errorMessage = '视频加载失败，请检查网络连接'
-    console.error('❌ [即点即播] 视频错误:', e)
+    const video = e.currentTarget
+    const mediaError = video.error
+    
+    let errorMessage = '视频加载失败'
+    let errorDetails = ''
+    
+    if (mediaError) {
+      // 获取详细的错误码和信息
+      switch (mediaError.code) {
+        case MediaError.MEDIA_ERR_ABORTED:
+          errorMessage = '视频加载被中止'
+          errorDetails = 'MEDIA_ERR_ABORTED (1)'
+          break
+        case MediaError.MEDIA_ERR_NETWORK:
+          errorMessage = '网络错误，无法加载视频'
+          errorDetails = 'MEDIA_ERR_NETWORK (2)'
+          break
+        case MediaError.MEDIA_ERR_DECODE:
+          errorMessage = '视频解码失败，格式可能不支持'
+          errorDetails = 'MEDIA_ERR_DECODE (3)'
+          break
+        case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
+          errorMessage = '视频格式不支持或源不可用'
+          errorDetails = 'MEDIA_ERR_SRC_NOT_SUPPORTED (4)'
+          break
+        default:
+          errorDetails = `未知错误码: ${mediaError.code}`
+      }
+      
+      console.error('❌ [即点即播] 视频错误详情:', {
+        errorCode: mediaError.code,
+        errorMessage: mediaError.message || '无详细信息',
+        errorDetails,
+        videoSrc: video.src,
+        networkState: video.networkState,
+        readyState: video.readyState,
+        currentSrc: video.currentSrc,
+      })
+      
+      // 网络状态说明
+      const networkStateMap: Record<number, string> = {
+        0: 'NETWORK_EMPTY - 未初始化',
+        1: 'NETWORK_IDLE - 空闲',
+        2: 'NETWORK_LOADING - 正在加载',
+        3: 'NETWORK_NO_SOURCE - 无有效源',
+      }
+      console.error('❌ [即点即播] 网络状态:', networkStateMap[video.networkState] || video.networkState)
+      
+      // 就绪状态说明
+      const readyStateMap: Record<number, string> = {
+        0: 'HAVE_NOTHING - 无信息',
+        1: 'HAVE_METADATA - 有元数据',
+        2: 'HAVE_CURRENT_DATA - 有当前帧数据',
+        3: 'HAVE_FUTURE_DATA - 有未来帧数据',
+        4: 'HAVE_ENOUGH_DATA - 有足够数据',
+      }
+      console.error('❌ [即点即播] 就绪状态:', readyStateMap[video.readyState] || video.readyState)
+    } else {
+      console.error('❌ [即点即播] 视频错误 (无 MediaError):', e)
+    }
+    
     setError(errorMessage)
     setLoading(false)
     onError?.(errorMessage)
