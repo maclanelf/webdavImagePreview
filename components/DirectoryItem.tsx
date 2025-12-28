@@ -347,25 +347,41 @@ export default function DirectoryItem({
               </Box>
             </Box>
 
-            {/* 操作按钮 */}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <Tooltip title="查看详细信息">
-                <IconButton size="small" onClick={handleOpenDetail}>
-                  <InfoIcon />
-                </IconButton>
-              </Tooltip>
-              
-              <Tooltip title="强制递归扫描">
-                <IconButton 
-                  size="small" 
-                  onClick={() => onRecursiveScan?.(path, true)}
-                  disabled={isScanning}
-                >
-                  <RefreshIcon />
-                </IconButton>
-              </Tooltip>
+            {/* 操作按钮 - 移动端优化 */}
+            <Box sx={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: { xs: 0.5, sm: 1 },
+              flexShrink: 0
+            }}>
+              {/* 桌面端显示详情和刷新按钮 */}
+              <Box sx={{ display: { xs: 'none', sm: 'flex' }, gap: 1 }}>
+                <Tooltip title="查看详细信息">
+                  <IconButton size="small" onClick={handleOpenDetail}>
+                    <InfoIcon />
+                  </IconButton>
+                </Tooltip>
+                
+                <Tooltip title="强制递归扫描">
+                  <IconButton 
+                    size="small" 
+                    onClick={() => onRecursiveScan?.(path, true)}
+                    disabled={isScanning}
+                  >
+                    <RefreshIcon />
+                  </IconButton>
+                </Tooltip>
+              </Box>
 
-              <IconButton size="small" onClick={handleToggleExpanded}>
+              {/* 展开按钮 - 移动端加大点击区域 */}
+              <IconButton 
+                onClick={handleToggleExpanded}
+                sx={{ 
+                  p: { xs: 1.5, sm: 1 },
+                  minWidth: { xs: 44, sm: 'auto' },
+                  minHeight: { xs: 44, sm: 'auto' }
+                }}
+              >
                 {expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
               </IconButton>
             </Box>
@@ -390,6 +406,16 @@ export default function DirectoryItem({
 
               {/* 操作按钮 */}
               <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                {/* 移动端显示详情按钮 */}
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<InfoIcon />}
+                  onClick={handleOpenDetail}
+                  sx={{ display: { xs: 'inline-flex', sm: 'none' } }}
+                >
+                  详情
+                </Button>
                 <Button
                   size="small"
                   variant="outlined"
