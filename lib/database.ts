@@ -1023,9 +1023,19 @@ function getParentPath(filename: string): string {
   return lastSlash > 0 ? filename.substring(0, lastSlash) : '/'
 }
 
+// 支持的图片格式
+const IMAGE_EXTENSIONS = new Set([
+  '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp',
+  '.tiff', '.tif', '.svg', '.ico',
+  '.heic', '.heif', '.avif', '.jxl',
+  '.raw', '.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2', '.pef', '.srw',
+  '.psd', '.ai', '.eps', '.pcx', '.tga', '.exr', '.hdr'
+])
+
 // 辅助函数：判断文件类型
 function getFileType(basename: string): 'image' | 'video' {
-  if (/\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(basename)) {
+  const ext = basename.substring(basename.lastIndexOf('.')).toLowerCase()
+  if (IMAGE_EXTENSIONS.has(ext)) {
     return 'image'
   }
   return 'video'

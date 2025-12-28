@@ -145,70 +145,60 @@ export async function getMediaFiles(
   return mediaFiles
 }
 
+// 支持的图片格式
+const IMAGE_EXTENSIONS = new Set([
+  // 常见格式
+  '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp',
+  // TIFF
+  '.tiff', '.tif',
+  // 矢量/图标
+  '.svg', '.ico',
+  // Apple HEIF/HEIC
+  '.heic', '.heif',
+  // 现代格式
+  '.avif', '.jxl',
+  // RAW 格式
+  '.raw', '.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2', '.pef', '.srw',
+  // 其他
+  '.psd', '.ai', '.eps', '.pcx', '.tga', '.exr', '.hdr'
+])
+
+// 支持的视频格式
+const VIDEO_EXTENSIONS = new Set([
+  // 常见格式
+  '.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v',
+  // 移动端
+  '.3gp', '.3g2',
+  // 开源格式
+  '.ogv', '.ogg',
+  // 广播/专业格式
+  '.ts', '.mts', '.m2ts', '.vob', '.mpg', '.mpeg', '.m2v',
+  // RealMedia
+  '.rmvb', '.rm',
+  // 其他
+  '.asf', '.divx', '.xvid', '.f4v', '.swf',
+  // 高清/专业
+  '.mxf', '.dv', '.gxf',
+  // Apple
+  '.m4p',
+  // 流媒体
+  '.m3u8'
+])
+
 // 辅助函数：检查是否是媒体文件
 function isMediaFile(filename: string): boolean {
-  return (
-    // 图片格式
-    filename.endsWith('.jpg') ||
-    filename.endsWith('.jpeg') ||
-    filename.endsWith('.png') ||
-    filename.endsWith('.gif') ||
-    filename.endsWith('.webp') ||
-    filename.endsWith('.bmp') ||
-    filename.endsWith('.tiff') ||
-    filename.endsWith('.tif') ||
-    filename.endsWith('.svg') ||
-    filename.endsWith('.ico') ||
-    // 视频格式
-    filename.endsWith('.mp4') ||
-    filename.endsWith('.webm') ||
-    filename.endsWith('.mov') ||
-    filename.endsWith('.avi') ||
-    filename.endsWith('.mkv') ||
-    filename.endsWith('.flv') ||
-    filename.endsWith('.wmv') ||
-    filename.endsWith('.m4v') ||
-    filename.endsWith('.3gp') ||
-    filename.endsWith('.ogv') ||
-    filename.endsWith('.ts') ||
-    filename.endsWith('.mts') ||
-    filename.endsWith('.m2ts')
-  )
+  const ext = filename.substring(filename.lastIndexOf('.')).toLowerCase()
+  return IMAGE_EXTENSIONS.has(ext) || VIDEO_EXTENSIONS.has(ext)
 }
 
 export function isImageFile(filename: string): boolean {
-  const lower = filename.toLowerCase()
-  return (
-    lower.endsWith('.jpg') ||
-    lower.endsWith('.jpeg') ||
-    lower.endsWith('.png') ||
-    lower.endsWith('.gif') ||
-    lower.endsWith('.webp') ||
-    lower.endsWith('.bmp') ||
-    lower.endsWith('.tiff') ||
-    lower.endsWith('.tif') ||
-    lower.endsWith('.svg') ||
-    lower.endsWith('.ico')
-  )
+  const ext = filename.substring(filename.lastIndexOf('.')).toLowerCase()
+  return IMAGE_EXTENSIONS.has(ext)
 }
 
 export function isVideoFile(filename: string): boolean {
-  const lower = filename.toLowerCase()
-  return (
-    lower.endsWith('.mp4') ||
-    lower.endsWith('.webm') ||
-    lower.endsWith('.mov') ||
-    lower.endsWith('.avi') ||
-    lower.endsWith('.mkv') ||
-    lower.endsWith('.flv') ||
-    lower.endsWith('.wmv') ||
-    lower.endsWith('.m4v') ||
-    lower.endsWith('.3gp') ||
-    lower.endsWith('.ogv') ||
-    lower.endsWith('.ts') ||
-    lower.endsWith('.mts') ||
-    lower.endsWith('.m2ts')
-  )
+  const ext = filename.substring(filename.lastIndexOf('.')).toLowerCase()
+  return VIDEO_EXTENSIONS.has(ext)
 }
 
 // 递归扫描接口定义
