@@ -276,6 +276,7 @@ export const mediaRatings = {
           : data.category)
       : null
     
+    let result
     if (existing) {
       // 更新
       const stmt = db.prepare(`
@@ -284,7 +285,7 @@ export const mediaRatings = {
             category = ?, is_viewed = ?, updated_at = datetime(\'now\', \'localtime\')
         WHERE file_path = ?
       `)
-      return stmt.run(
+      result = stmt.run(
         data.rating || null,
         data.recommendationReason || null,
         customEvaluationStr,
@@ -300,7 +301,7 @@ export const mediaRatings = {
          custom_evaluation, category, is_viewed)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      return stmt.run(
+      result = stmt.run(
         data.filePath,
         data.fileName,
         data.fileType,
@@ -311,6 +312,27 @@ export const mediaRatings = {
         data.isViewed ? 1 : 0
       )
     }
+    
+    // 同步更新 scan_files 表的 is_viewed 状态
+    if (data.isViewed !== undefined) {
+      try {
+        const updateScanFilesStmt = db.prepare(`
+          UPDATE scan_files 
+          SET is_viewed = ?
+          WHERE filename = ?
+        `)
+        const scanResult = updateScanFilesStmt.run(data.isViewed ? 1 : 0, data.filePath)
+        
+        if (scanResult.changes > 0) {
+          console.log(`✅ [mediaRatings.save] 同步更新 scan_files 已看过状态: ${data.filePath}`)
+        }
+      } catch (scanError) {
+        console.error(`⚠️ [mediaRatings.save] 同步更新 scan_files 失败:`, scanError)
+        // 不影响主流程
+      }
+    }
+    
+    return result
     } catch (error) {
       console.error('保存媒体评分失败:', error)
       throw error
@@ -1330,6 +1352,304 @@ export const scanFiles = {
     } catch (error: any) {
       console.error('迁移所有扫描文件失败:', error)
       return { success: false, message: error.message, details: [] }
+    }
+  },
+
+  // 跨多个 cacheId 获取统计信息
+  getStatsMultiple: (cacheIds: number[]) => {
+    try {
+      ensureInitialized()
+      
+      if (cacheIds.length === 0) {
+        return { total: 0, images: 0, videos: 0, viewed: 0 }
+      }
+      
+      const placeholders = cacheIds.map(() => '?').join(',')
+      const stmt = db.prepare(`
+        SELECT 
+          COUNT(*) as total,
+          SUM(CASE WHEN file_type = 'image' THEN 1 ELSE 0 END) as images,
+          SUM(CASE WHEN file_type = 'video' THEN 1 ELSE 0 END) as videos,
+          SUM(CASE WHEN is_viewed = 1 THEN 1 ELSE 0 END) as viewed
+        FROM scan_files 
+        WHERE cache_id IN (${placeholders})
+      `)
+      return stmt.get(...cacheIds) as { total: number, images: number, videos: number, viewed: number }
+    } catch (error) {
+      console.error('获取多缓存统计失败:', error)
+      return { total: 0, images: 0, videos: 0, viewed: 0 }
+    }
+  },
+
+  // 跨多个 cacheId 随机获取文件
+  getRandomMultiple: (cacheIds: number[], options?: {
+    fileType?: 'image' | 'video'
+    isViewed?: boolean
+    excludeFilenames?: string[]
+  }) => {
+    try {
+      ensureInitialized()
+      
+      if (cacheIds.length === 0) return null
+      
+      const { fileType, isViewed, excludeFilenames = [] } = options || {}
+      const placeholders = cacheIds.map(() => '?').join(',')
+      
+      // 构建查询条件
+      let countSql = `SELECT COUNT(*) as count FROM scan_files WHERE cache_id IN (${placeholders})`
+      const params: any[] = [...cacheIds]
+      
+      if (fileType) {
+        countSql += ` AND file_type = ?`
+        params.push(fileType)
+      }
+      if (isViewed !== undefined) {
+        countSql += ` AND is_viewed = ?`
+        params.push(isViewed ? 1 : 0)
+      }
+      if (excludeFilenames.length > 0) {
+        const excludePlaceholders = excludeFilenames.map(() => '?').join(',')
+        countSql += ` AND filename NOT IN (${excludePlaceholders})`
+        params.push(...excludeFilenames)
+      }
+      
+      const { count } = db.prepare(countSql).get(...params) as { count: number }
+      if (count === 0) return null
+      
+      // 随机偏移
+      const offset = Math.floor(Math.random() * count)
+      
+      let sql = `SELECT * FROM scan_files WHERE cache_id IN (${placeholders})`
+      if (fileType) sql += ` AND file_type = ?`
+      if (isViewed !== undefined) sql += ` AND is_viewed = ?`
+      if (excludeFilenames.length > 0) {
+        const excludePlaceholders = excludeFilenames.map(() => '?').join(',')
+        sql += ` AND filename NOT IN (${excludePlaceholders})`
+      }
+      sql += ` LIMIT 1 OFFSET ?`
+      
+      return db.prepare(sql).get(...params, offset)
+    } catch (error) {
+      console.error('跨缓存随机获取文件失败:', error)
+      return null
+    }
+  },
+
+  // 跨多个 cacheId 获取随机图组
+  getRandomGroupMultiple: (cacheIds: number[], options?: {
+    fileType?: 'image' | 'video'
+    isViewed?: boolean
+    excludeParentPath?: string
+  }) => {
+    try {
+      ensureInitialized()
+      
+      if (cacheIds.length === 0) return { files: [], parentPath: null }
+      
+      const { fileType, isViewed, excludeParentPath } = options || {}
+      const placeholders = cacheIds.map(() => '?').join(',')
+      
+      // 构建查询条件
+      let whereClause = `cache_id IN (${placeholders})`
+      const params: any[] = [...cacheIds]
+      
+      if (fileType) {
+        whereClause += ` AND file_type = ?`
+        params.push(fileType)
+      }
+      if (isViewed !== undefined) {
+        whereClause += ` AND is_viewed = ?`
+        params.push(isViewed ? 1 : 0)
+      }
+      if (excludeParentPath) {
+        whereClause += ` AND parent_path != ?`
+        params.push(excludeParentPath)
+      }
+      
+      // 获取所有符合条件的目录
+      const groupsSql = `
+        SELECT parent_path, COUNT(*) as file_count 
+        FROM scan_files 
+        WHERE ${whereClause}
+        GROUP BY parent_path
+        HAVING file_count > 0
+      `
+      const groups = db.prepare(groupsSql).all(...params) as Array<{ parent_path: string, file_count: number }>
+      
+      if (groups.length === 0) {
+        return { files: [], parentPath: null, totalGroups: 0 }
+      }
+      
+      // 随机选择一个目录
+      const randomGroup = groups[Math.floor(Math.random() * groups.length)]
+      const selectedParentPath = randomGroup.parent_path
+      
+      // 获取该目录下的所有文件
+      let filesSql = `SELECT * FROM scan_files WHERE cache_id IN (${placeholders}) AND parent_path = ?`
+      const filesParams: any[] = [...cacheIds, selectedParentPath]
+      
+      if (fileType) {
+        filesSql += ` AND file_type = ?`
+        filesParams.push(fileType)
+      }
+      if (isViewed !== undefined) {
+        filesSql += ` AND is_viewed = ?`
+        filesParams.push(isViewed ? 1 : 0)
+      }
+      
+      filesSql += ` ORDER BY basename`
+      
+      const files = db.prepare(filesSql).all(...filesParams)
+      
+      return {
+        files,
+        parentPath: selectedParentPath,
+        totalGroups: groups.length
+      }
+    } catch (error) {
+      console.error('跨缓存随机获取图组失败:', error)
+      return { files: [], parentPath: null, totalGroups: 0 }
+    }
+  },
+
+  // 检查多个 cacheId 是否有数据
+  hasDataMultiple: (cacheIds: number[]) => {
+    try {
+      ensureInitialized()
+      
+      if (cacheIds.length === 0) return false
+      
+      const placeholders = cacheIds.map(() => '?').join(',')
+      const stmt = db.prepare(`SELECT COUNT(*) as count FROM scan_files WHERE cache_id IN (${placeholders}) LIMIT 1`)
+      const result = stmt.get(...cacheIds) as { count: number }
+      return result.count > 0
+    } catch (error) {
+      console.error('检查多缓存数据失败:', error)
+      return false
+    }
+  },
+
+  // 跨多个 cacheId 批量获取随机文件（支持随机性控制）
+  getRandomBatchMultiple: (cacheIds: number[], count: number, options?: {
+    fileType?: 'image' | 'video'
+    isViewed?: boolean
+    excludeFilenames?: string[]
+    minFileSize?: number
+    currentParentPath?: string  // 当前目录路径
+    randomness?: number         // 随机性：0=优先当前目录，1=完全随机
+  }) => {
+    try {
+      ensureInitialized()
+      
+      if (cacheIds.length === 0) return []
+      
+      const { fileType, isViewed, excludeFilenames = [], minFileSize, currentParentPath, randomness = 1 } = options || {}
+      const placeholders = cacheIds.map(() => '?').join(',')
+      
+      // 如果有当前目录且随机性 < 1，使用混合策略
+      if (currentParentPath && randomness < 1) {
+        // 根据随机性决定从当前目录获取多少个文件
+        const samePathCount = Math.round(count * (1 - randomness))
+        const otherPathCount = count - samePathCount
+        
+        const results: any[] = []
+        
+        // 1. 先从当前目录获取文件
+        if (samePathCount > 0) {
+          let sameSql = `SELECT * FROM scan_files WHERE cache_id IN (${placeholders}) AND parent_path = ?`
+          const sameParams: any[] = [...cacheIds, currentParentPath]
+          
+          if (fileType) {
+            sameSql += ` AND file_type = ?`
+            sameParams.push(fileType)
+          }
+          if (isViewed !== undefined) {
+            sameSql += ` AND is_viewed = ?`
+            sameParams.push(isViewed ? 1 : 0)
+          }
+          if (excludeFilenames.length > 0) {
+            const excludePlaceholders = excludeFilenames.map(() => '?').join(',')
+            sameSql += ` AND filename NOT IN (${excludePlaceholders})`
+            sameParams.push(...excludeFilenames)
+          }
+          if (minFileSize !== undefined && minFileSize > 0) {
+            sameSql += ` AND file_size >= ?`
+            sameParams.push(minFileSize)
+          }
+          
+          sameSql += ` ORDER BY RANDOM() LIMIT ?`
+          sameParams.push(samePathCount)
+          
+          const samePathFiles = db.prepare(sameSql).all(...sameParams)
+          results.push(...samePathFiles)
+        }
+        
+        // 2. 再从其他目录获取文件
+        const remainingCount = count - results.length
+        if (remainingCount > 0) {
+          let otherSql = `SELECT * FROM scan_files WHERE cache_id IN (${placeholders}) AND parent_path != ?`
+          const otherParams: any[] = [...cacheIds, currentParentPath]
+          
+          if (fileType) {
+            otherSql += ` AND file_type = ?`
+            otherParams.push(fileType)
+          }
+          if (isViewed !== undefined) {
+            otherSql += ` AND is_viewed = ?`
+            otherParams.push(isViewed ? 1 : 0)
+          }
+          // 排除已获取的文件
+          const allExclude = [...excludeFilenames, ...results.map((f: any) => f.filename)]
+          if (allExclude.length > 0) {
+            const excludePlaceholders = allExclude.map(() => '?').join(',')
+            otherSql += ` AND filename NOT IN (${excludePlaceholders})`
+            otherParams.push(...allExclude)
+          }
+          if (minFileSize !== undefined && minFileSize > 0) {
+            otherSql += ` AND file_size >= ?`
+            otherParams.push(minFileSize)
+          }
+          
+          otherSql += ` ORDER BY RANDOM() LIMIT ?`
+          otherParams.push(remainingCount)
+          
+          const otherPathFiles = db.prepare(otherSql).all(...otherParams)
+          results.push(...otherPathFiles)
+        }
+        
+        return results
+      }
+      
+      // 完全随机模式（randomness >= 1 或没有当前目录）
+      let sql = `SELECT * FROM scan_files WHERE cache_id IN (${placeholders})`
+      const params: any[] = [...cacheIds]
+      
+      if (fileType) {
+        sql += ` AND file_type = ?`
+        params.push(fileType)
+      }
+      if (isViewed !== undefined) {
+        sql += ` AND is_viewed = ?`
+        params.push(isViewed ? 1 : 0)
+      }
+      if (excludeFilenames.length > 0) {
+        const excludePlaceholders = excludeFilenames.map(() => '?').join(',')
+        sql += ` AND filename NOT IN (${excludePlaceholders})`
+        params.push(...excludeFilenames)
+      }
+      if (minFileSize !== undefined && minFileSize > 0) {
+        sql += ` AND file_size >= ?`
+        params.push(minFileSize)
+      }
+      
+      // 使用 ORDER BY RANDOM() 获取随机记录（对于小数量是可接受的）
+      sql += ` ORDER BY RANDOM() LIMIT ?`
+      params.push(count)
+      
+      return db.prepare(sql).all(...params)
+    } catch (error) {
+      console.error('批量随机获取文件失败:', error)
+      return []
     }
   }
 }

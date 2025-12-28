@@ -1,3 +1,25 @@
+/**
+ * 预加载管理器 - 内存模式（已弃用，保留作为备份）
+ * 
+ * ⚠️ 注意：此文件已被 databasePreloadManager.ts 替代
+ * 
+ * 此管理器需要将所有文件列表加载到内存中进行筛选，
+ * 对于大规模文件集合（100M+ 记录）会导致内存问题。
+ * 
+ * 现在推荐使用 databasePreloadManager.ts（数据库模式），
+ * 它直接从 scan_files 数据库表获取数据，不需要加载所有文件到内存。
+ * 
+ * 保留此文件的原因：
+ * 1. 作为"缓存加载模式"的备份实现
+ * 2. 如果需要回退到内存模式，可以参考此实现
+ * 3. 某些特殊场景可能仍需要内存模式的功能
+ * 
+ * 如需回退到内存模式：
+ * 在 page.tsx 中将 import 改为：
+ *   import preloadManager from '@/lib/preloadManager'
+ * 并删除 databasePreloadManager 的引用
+ */
+
 // 预加载管理器
 class PreloadManager {
   // 当前组缓存：存储当前正在浏览的图组文件

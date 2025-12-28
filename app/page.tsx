@@ -62,7 +62,7 @@ import DraggableBox from '@/components/DraggableBox'
 // 适用于全屏模式换一个按钮,非全屏模式换一个按钮可拖拽
 import DraggableFab from '@/components/DraggableFab'
 import InstantVideoPlayer from '@/components/InstantVideoPlayer'
-import preloadManager from '@/lib/preloadManager'
+import databasePreloadManager from '@/lib/databasePreloadManager'
 
 // 快速评分配置
 const QUICK_RATING_CONFIG = [
@@ -131,14 +131,12 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null)
   // 媒体文件 URL
   const [mediaUrl, setMediaUrl] = useState<string | null>(null)
-  // 文件统计信息
-  const [stats, setStats] = useState({ total: 0, images: 0, videos: 0 })
+  // 文件统计信息（从数据库获取）
+  const [stats, setStats] = useState({ total: 0, images: 0, videos: 0, viewed: 0 })
   // 媒体类型筛选
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all')
   // 已看过筛选，默认只显示未看过的
   const [viewedFilter, setViewedFilter] = useState<ViewedFilter>('unviewed')
-  // 所有文件列表
-  const [allFiles, setAllFiles] = useState<MediaFile[]>([])
   // 抽屉打开状态
   const [drawerOpen, setDrawerOpen] = useState(false)
   // 全屏状态
@@ -157,8 +155,6 @@ export default function HomePage() {
   
   // 预加载功能开关
   const [preloadEnabled, setPreloadEnabled] = useState(true)
-  // 预加载进度（初始加载时使用）
-  const [preloadProgress, setPreloadProgress] = useState<{ current: number, total: number, message: string } | null>(null)
   // 预加载状态（缓存大小信息）
   const [preloadStatus, setPreloadStatus] = useState<{ cacheSize: number, maxCacheSize: number } | null>(null)
   
@@ -179,10 +175,10 @@ export default function HomePage() {
     totalPending: number 
   } | null>(null)
   
-  // 已看过的文件集合 - 统一从 preloadManager 获取
+  // 已看过的文件集合 - 统一从 databasePreloadManager 获取
   // 使用版本号触发重新渲染
   const [viewedFilesVersion, setViewedFilesVersion] = useState(0)
-  const viewedFiles = useMemo(() => preloadManager.getViewedFiles(), [viewedFilesVersion])
+  const viewedFiles = useMemo(() => databasePreloadManager.getViewedFiles(), [viewedFilesVersion])
   
   // 触发已看过文件更新的辅助函数
   const refreshViewedFiles = useCallback(() => {
@@ -463,10 +459,10 @@ export default function HomePage() {
     loadViewedFiles()
   }, [])
 
-  // 当文件列表和已看过文件都加载完成后，触发初始预加载
+  // 当统计数据加载完成后，触发初始预加载
   // 注意：配置变化时的预加载由 toggleDrawer 处理
   useEffect(() => {
-    if (allFiles.length > 0 && viewedFiles.size >= 0 && preloadEnabled && config && !initialPreloadTriggeredRef.current) {
+    if (stats.total > 0 && viewedFiles.size >= 0 && preloadEnabled && config && !initialPreloadTriggeredRef.current) {
       initialPreloadTriggeredRef.current = true
       const preloadCount = config.scanSettings?.preloadCount || 10
       
@@ -476,9 +472,9 @@ export default function HomePage() {
         setCachePreloadProgress({ current: 0, total: preloadCount })
         
         // 使用图组模式专用预加载，带进度回调
-        preloadManager.preloadForGalleryMode(
+        databasePreloadManager.preloadForGalleryMode(
           config, 
-          allFiles, 
+          [], // 数据库模式不需要文件列表
           preloadCount, 
           viewedFilter,
           (current, total) => {
@@ -490,7 +486,7 @@ export default function HomePage() {
             }
           }
         ).then((result) => {
-          const cacheStatus = preloadManager.getCacheStatus()
+          const cacheStatus = databasePreloadManager.getCacheStatus()
           setPreloadStatus(cacheStatus)
           setGalleryPreloadReady(true)
           // 保持显示进度，基于当前缓存状态
@@ -499,10 +495,15 @@ export default function HomePage() {
             total: preloadCount 
           })
           console.log(`图组模式初始预加载完成: ${result.message}`)
+          
+          // 当前组加载完成后，异步预加载下一组（为切换做准备）
+          databasePreloadManager.preloadNextGroup(config, [], preloadCount, viewedFilter).catch(error => {
+            console.error('预加载下一组失败:', error)
+          })
         }).catch(error => {
           console.warn('图组模式初始预加载失败:', error)
           setGalleryPreloadReady(true) // 即使失败也允许预览
-          const cacheStatus = preloadManager.getCacheStatus()
+          const cacheStatus = databasePreloadManager.getCacheStatus()
           // 即使失败也显示当前缓存状态
           setCachePreloadProgress({ 
             current: cacheStatus.cacheSize, 
@@ -514,16 +515,16 @@ export default function HomePage() {
         console.log('大视频模式：跳过初始预加载')
         setGalleryPreloadReady(true)
         setCachePreloadProgress(null)
-        const cacheStatus = preloadManager.getCacheStatus()
+        const cacheStatus = databasePreloadManager.getCacheStatus()
         setPreloadStatus(cacheStatus)
       } else {
         // 随机模式：初始化进度显示
         setGalleryPreloadReady(true) // 随机模式不需要等待预加载完成
         setCachePreloadProgress({ current: 0, total: preloadCount })
         
-        preloadManager.refillCache(
+        databasePreloadManager.refillCache(
           config, 
-          allFiles, 
+          [], // 数据库模式不需要文件列表
           preloadCount, 
           viewedFilter,
           (current, total) => {
@@ -533,7 +534,9 @@ export default function HomePage() {
             }
           },
           preloadRandomness,
-          true // isInitialLoad: 初始加载，不限制并发
+          true, // isInitialLoad: 初始加载，不限制并发
+          undefined, // currentParentPath
+          mediaFilter // 媒体类型筛选
         ).then(() => {
           // 预加载完成后，如果已切换到大视频模式则忽略结果（使用 ref）
           if (viewModeRef.current === 'large-video') {
@@ -541,17 +544,17 @@ export default function HomePage() {
             return
           }
           
-          const cacheStatus = preloadManager.getCacheStatus()
+          const cacheStatus = databasePreloadManager.getCacheStatus()
           setPreloadStatus(cacheStatus)
           // 更新进度显示
           setCachePreloadProgress({ 
             current: cacheStatus.cacheSize, 
             total: preloadCount 
           })
-          console.log(`随机模式初始预加载完成，筛选条件: ${viewedFilter}`)
+          console.log(`随机模式初始预加载完成，筛选条件: ${viewedFilter}, ${mediaFilter}`)
         }).catch(error => {
           console.warn('随机模式初始预加载失败:', error)
-          const cacheStatus = preloadManager.getCacheStatus()
+          const cacheStatus = databasePreloadManager.getCacheStatus()
           // 大视频模式下不更新进度（使用 ref）
           if (viewModeRef.current !== 'large-video') {
             setCachePreloadProgress({ 
@@ -562,7 +565,7 @@ export default function HomePage() {
         })
       }
     }
-  }, [allFiles.length, viewedFilesVersion, preloadEnabled, config, viewMode, viewedFilter])
+  }, [stats.total, viewedFilesVersion, preloadEnabled, config, viewMode, viewedFilter, mediaFilter])
 
   // 监听缓存状态变化，自动更新进度显示（仅图组模式和随机模式，大视频模式不显示）
   useEffect(() => {
@@ -600,9 +603,9 @@ export default function HomePage() {
       const response = await fetch('/api/ratings/viewed?viewed=true')
       if (response.ok) {
         const data = await response.json()
-        // 更新 preloadManager 的缓存
+        // 更新 databasePreloadManager 的缓存
         data.filePaths.forEach((filePath: string) => {
-          preloadManager.addToViewedCache(filePath)
+          databasePreloadManager.addToViewedCache(filePath)
         })
         // 触发界面刷新
         refreshViewedFiles()
@@ -618,11 +621,29 @@ export default function HomePage() {
     setError(null)
     
     try {
-      // 首先尝试从缓存获取统计信息
-      const response = await fetch(`/api/scan-cache?webdavUrl=${encodeURIComponent(cfg.url)}&webdavUsername=${encodeURIComponent(cfg.username)}&webdavPassword=${encodeURIComponent(cfg.password)}`)
+      // 直接从数据库获取统计信息
+      const statsResponse = await fetch(`/api/scan-files/stats?webdavUrl=${encodeURIComponent(cfg.url)}&webdavUsername=${encodeURIComponent(cfg.username)}&paths=${encodeURIComponent(cfg.mediaPaths.join(','))}`)
       
-      if (response.ok) {
-        const data = await response.json()
+      if (statsResponse.ok) {
+        const statsData = await statsResponse.json()
+        
+        if (statsData.hasData) {
+          setStats({
+            total: statsData.total || 0,
+            images: statsData.images || 0,
+            videos: statsData.videos || 0,
+            viewed: statsData.viewed || 0
+          })
+          console.log('从数据库加载统计信息:', statsData)
+          return
+        }
+      }
+      
+      // 如果数据库没有数据，尝试从缓存获取并触发迁移
+      const cacheResponse = await fetch(`/api/scan-cache?webdavUrl=${encodeURIComponent(cfg.url)}&webdavUsername=${encodeURIComponent(cfg.username)}&webdavPassword=${encodeURIComponent(cfg.password)}`)
+      
+      if (cacheResponse.ok) {
+        const data = await cacheResponse.json()
         const pathStats = data.pathStats || {}
         
         // 检查是否有缓存数据
@@ -646,10 +667,11 @@ export default function HomePage() {
           setStats({
             total: totalFiles,
             images: totalImages,
-            videos: totalVideos
+            videos: totalVideos,
+            viewed: 0
           })
           
-          // 如果有缓存数据，使用增量加载
+          // 如果有缓存数据，使用增量加载（会触发数据迁移）
           await loadStatsIncremental(cfg)
           return
         }
@@ -668,10 +690,10 @@ export default function HomePage() {
     }
   }
 
-  // 增量加载统计信息
+  // 增量加载统计信息（触发数据迁移后重新获取统计）
   const loadStatsIncremental = async (cfg: WebDAVConfig) => {
     try {
-      // 使用增量模式加载文件列表
+      // 使用增量模式触发数据迁移
       const response = await fetch('/api/webdav/files', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -687,22 +709,6 @@ export default function HomePage() {
       }
 
       const data = await response.json()
-      const files = data.files || []
-      setAllFiles(files)
-      
-      const imageCount = files.filter((f: MediaFile) => 
-        /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(f.basename)
-      ).length
-      
-      const videoCount = files.filter((f: MediaFile) => 
-        /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(f.basename)
-      ).length
-
-      setStats({
-        total: files.length,
-        images: imageCount,
-        videos: videoCount,
-      })
       
       // 显示缓存状态
       if (data.fromCache) {
@@ -713,6 +719,19 @@ export default function HomePage() {
       if (data.pendingPaths && data.pendingPaths.length > 0) {
         console.log('启动后台扫描:', data.pendingPaths)
         startBackgroundScan(cfg, data.pendingPaths)
+      }
+      
+      // 重新从数据库获取统计信息
+      const statsResponse = await fetch(`/api/scan-files/stats?webdavUrl=${encodeURIComponent(cfg.url)}&webdavUsername=${encodeURIComponent(cfg.username)}&paths=${encodeURIComponent(cfg.mediaPaths.join(','))}`)
+      
+      if (statsResponse.ok) {
+        const statsData = await statsResponse.json()
+        setStats({
+          total: statsData.total || 0,
+          images: statsData.images || 0,
+          videos: statsData.videos || 0,
+          viewed: statsData.viewed || 0
+        })
       }
       
       // 预加载将在第二个useEffect中根据viewMode统一处理
@@ -800,7 +819,7 @@ export default function HomePage() {
     
     // 如果是强制重新扫描，清除已观看记录
     if (forceRescan) {
-      preloadManager.clearViewedFiles()
+      databasePreloadManager.clearViewedFiles()
       console.log('已清除观看记录')
     }
     
@@ -825,22 +844,6 @@ export default function HomePage() {
       }
 
       const data = await response.json()
-      const files = data.files || []
-      setAllFiles(files)
-      
-      const imageCount = files.filter((f: MediaFile) => 
-        /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(f.basename)
-      ).length
-      
-      const videoCount = files.filter((f: MediaFile) => 
-        /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(f.basename)
-      ).length
-
-      setStats({
-        total: files.length,
-        images: imageCount,
-        videos: videoCount,
-      })
       
       // 只有在强制重新扫描时才清理扫描进度
       if (forceRescan) {
@@ -853,6 +856,19 @@ export default function HomePage() {
       } else {
         console.log('重新扫描完成')
       }
+      
+      // 从数据库获取统计信息
+      const statsResponse = await fetch(`/api/scan-files/stats?webdavUrl=${encodeURIComponent(cfg.url)}&webdavUsername=${encodeURIComponent(cfg.username)}&paths=${encodeURIComponent(cfg.mediaPaths.join(','))}`)
+      
+      if (statsResponse.ok) {
+        const statsData = await statsResponse.json()
+        setStats({
+          total: statsData.total || 0,
+          images: statsData.images || 0,
+          videos: statsData.videos || 0,
+          viewed: statsData.viewed || 0
+        })
+      }
 
       // 预加载将在第二个useEffect中根据viewMode统一处理
     } catch (e: any) {
@@ -864,40 +880,6 @@ export default function HomePage() {
       }
     } finally {
       setLoading(false)
-    }
-  }
-
-  // 开始预加载
-  const startPreload = async (cfg: WebDAVConfig, files: MediaFile[]) => {
-    if (!preloadEnabled) return
-
-    // 从配置中获取预加载数量，默认为10
-    const preloadCount = cfg.scanSettings?.preloadCount || 10
-    setPreloadProgress({ current: 0, total: preloadCount, message: '开始预加载...' })
-    
-    // 设置预加载管理器缓存大小
-    preloadManager.setMaxCacheSize(preloadCount)
-    
-    try {
-      const result = await preloadManager.preloadFiles(cfg, files, preloadCount, viewedFilter)
-      
-      setPreloadProgress(null)
-      setPreloadStatus(preloadManager.getCacheStatus())
-      
-      console.log('预加载完成:', result.message)
-      
-      // 显示预加载成功提示
-      setSnackbarMessage(`🚀 预加载完成：${result.successCount} 个文件已缓存`)
-      setSnackbarSeverity('success')
-      setSnackbarOpen(true)
-      
-    } catch (error: any) {
-      console.error('预加载失败:', error)
-      setPreloadProgress(null)
-      
-      setSnackbarMessage('❌ 预加载失败，将使用正常加载模式')
-      setSnackbarSeverity('error')
-      setSnackbarOpen(true)
     }
   }
 
@@ -914,13 +896,13 @@ export default function HomePage() {
     try {
       // 从配置中获取预加载数量，默认为10
       const preloadCount = config.scanSettings?.preloadCount || 10
-      await preloadManager.smartPreload(config, allFiles, currentFile, preloadCount, viewedFilter, preloadRandomness)
+      await databasePreloadManager.smartPreload(config, [], currentFile, preloadCount, viewedFilter, preloadRandomness, mediaFilter)
       // 预加载完成后更新缓存状态显示
-      setPreloadStatus(preloadManager.getCacheStatus())
+      setPreloadStatus(databasePreloadManager.getCacheStatus())
     } catch (error) {
       console.error('智能预加载失败:', error)
       // 即使失败也更新显示，确保状态准确
-      setPreloadStatus(preloadManager.getCacheStatus())
+      setPreloadStatus(databasePreloadManager.getCacheStatus())
     }
   }
 
@@ -938,9 +920,9 @@ export default function HomePage() {
       setCachePreloadProgress({ current: 0, total: preloadCount })
       
       // 使用预加载管理器的图组模式优化方法，带进度回调
-      const result = await preloadManager.preloadForGalleryMode(
+      const result = await databasePreloadManager.preloadForGalleryMode(
         config, 
-        allFiles, 
+        [], // 数据库模式不需要文件列表
         preloadCount, 
         viewedFilter,
         (current, total) => {
@@ -953,7 +935,7 @@ export default function HomePage() {
         }
       )
       
-      const cacheStatus = preloadManager.getCacheStatus()
+      const cacheStatus = databasePreloadManager.getCacheStatus()
       setPreloadStatus(cacheStatus)
       setGalleryPreloadReady(true)
       // 保持显示进度，基于当前缓存状态
@@ -965,7 +947,7 @@ export default function HomePage() {
     } catch (error) {
       console.error('图组模式缓存重新加载失败:', error)
       setGalleryPreloadReady(true) // 即使失败也允许预览
-      const cacheStatus = preloadManager.getCacheStatus()
+      const cacheStatus = databasePreloadManager.getCacheStatus()
       // 即使失败也显示当前缓存状态
       setCachePreloadProgress({ 
         current: cacheStatus.cacheSize, 
@@ -976,6 +958,7 @@ export default function HomePage() {
 
   // 标记当前文件为已观看（不再补齐缓存，补齐由smartPreload统一处理）
   const markFileAsViewed = async (file: MediaFile) => {
+    console.log(`[DEBUG] markFileAsViewed 被调用: ${file.basename}, preloadEnabled: ${preloadEnabled}, config: ${!!config}, viewedFilter: ${viewedFilter}`)
     if (!preloadEnabled || !config) return
 
     try {
@@ -983,11 +966,10 @@ export default function HomePage() {
       if (viewedFilter === 'viewed') {
         console.log(`已标记为本地观看: ${file.basename}`)
         
-        // 检查是否所有已看过的文件都已看过
-        const totalViewedFiles = allFiles.filter(f => viewedFiles.has(f.filename)).length
-        const localViewedCount = preloadManager.getLocalViewedCount()
+        // 检查是否所有已看过的文件都已看过（使用数据库统计）
+        const localViewedCount = databasePreloadManager.getLocalViewedCount()
         
-        if (localViewedCount >= totalViewedFiles) {
+        if (localViewedCount >= stats.viewed) {
           console.log('所有已看过的文件都已看过，提示用户重新观看')
           setSnackbarMessage('🎉 所有已看过的文件都已看完！点击"重新观看"按钮重新开始')
           setSnackbarSeverity('success')
@@ -996,10 +978,25 @@ export default function HomePage() {
         }
       } else {
         // 其他模式：标记为已看过并同步到数据库
-        await preloadManager.markAsViewed(file.filename)
+        // 先检查是否已经标记过，避免重复计数
+        const wasAlreadyViewed = databasePreloadManager.isViewed(file.filename)
+        console.log(`[DEBUG] markFileAsViewed: ${file.basename}, wasAlreadyViewed: ${wasAlreadyViewed}`)
+        
+        await databasePreloadManager.markAsViewed(file.filename)
         
         // 触发界面刷新
         refreshViewedFiles()
+        
+        // 只有首次标记时才更新统计数据中的已看过计数
+        if (!wasAlreadyViewed) {
+          setStats(prev => {
+            console.log(`[DEBUG] 更新 stats.viewed: ${prev.viewed} -> ${prev.viewed + 1}`)
+            return {
+              ...prev,
+              viewed: prev.viewed + 1
+            }
+          })
+        }
         
         console.log(`已标记为观看: ${file.basename}`)
       }
@@ -1008,54 +1005,14 @@ export default function HomePage() {
     }
   }
 
-  const getFilteredFiles = () => {
-    let filtered = allFiles
-
-    // 按媒体类型筛选
-    if (mediaFilter === 'images') {
-      filtered = filtered.filter(f => /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(f.basename))
-    } else if (mediaFilter === 'videos') {
-      filtered = filtered.filter(f => /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(f.basename))
-    }
-
-    // 按已看过状态筛选
-    if (viewedFilter === 'viewed') {
-      filtered = filtered.filter(f => viewedFiles.has(f.filename))
-    } else if (viewedFilter === 'unviewed') {
-      filtered = filtered.filter(f => !viewedFiles.has(f.filename))
-    }
-    // viewedFilter === 'all' 时不进行筛选
-
-    return filtered
-  }
-
-  // 按文件夹分组
-  const groupFilesByFolder = (files: MediaFile[]): MediaGroup[] => {
-    const groups = new Map<string, MediaFile[]>()
-    
-    files.forEach(file => {
-      // 获取文件所在文件夹路径
-      const folderPath = file.filename.substring(0, file.filename.lastIndexOf('/'))
-      
-      if (!groups.has(folderPath)) {
-        groups.set(folderPath, [])
-      }
-      groups.get(folderPath)!.push(file)
-    })
-    
-    // 转换为数组并按文件数量排序（优先显示文件多的组）
-    return Array.from(groups.entries())
-      .map(([folderPath, files]) => ({ folderPath, files }))
-      .sort((a, b) => b.files.length - a.files.length)
-  }
 
   // 随机选择一个图组
   const loadRandomGroup = () => {
     console.log(`[DEBUG] loadRandomGroup 开始，当前筛选条件: ${viewedFilter}`)
     
     // 优先检查：如果有当前图组的缓存但页面未显示（首次点击），使用当前组
-    if (preloadEnabled && preloadManager.hasCurrentGroupCache() && currentGroup.length === 0) {
-      const currentGroupFromCache = preloadManager.getCurrentGroup()
+    if (preloadEnabled && databasePreloadManager.hasCurrentGroupCache() && currentGroup.length === 0) {
+      const currentGroupFromCache = databasePreloadManager.getCurrentGroup()
       console.log('[DEBUG] 首次点击，使用预加载的当前图组')
       setCurrentGroup(currentGroupFromCache)
       setCurrentGroupIndex(0)
@@ -1068,21 +1025,21 @@ export default function HomePage() {
     }
     
     // 如果预加载管理器中有下一组缓存，切换到下一组
-    if (preloadEnabled && preloadManager.hasNextGroupCache()) {
-      const nextGroup = preloadManager.getNextGroup()
+    if (preloadEnabled && databasePreloadManager.hasNextGroupCache()) {
+      const nextGroup = databasePreloadManager.getNextGroup()
       console.log('[DEBUG] 使用预加载的下一组图组')
-      preloadManager.switchToNextGroup()
+      databasePreloadManager.switchToNextGroup()
       
       // 更新缓存状态（切换后立即更新）
-      const cacheStatus = preloadManager.getCacheStatus()
+      const cacheStatus = databasePreloadManager.getCacheStatus()
       setPreloadStatus(cacheStatus)
       if (config) {
         const preloadCount = config.scanSettings?.preloadCount || 10
         setCachePreloadProgress({ current: cacheStatus.cacheSize, total: preloadCount })
       }
       
-      // 注意：switchToNextGroup()已经将下一组变为当前组，从preloadManager获取更新后的当前组
-      const currentGroupFromManager = preloadManager.getCurrentGroup()
+      // 注意：switchToNextGroup()已经将下一组变为当前组，从databasePreloadManager获取更新后的当前组
+      const currentGroupFromManager = databasePreloadManager.getCurrentGroup()
       setCurrentGroup(currentGroupFromManager)
       setCurrentGroupIndex(0)
       
@@ -1093,7 +1050,7 @@ export default function HomePage() {
       if (config) {
         setTimeout(() => {
           const preloadCount = config.scanSettings?.preloadCount || 10
-          preloadManager.preloadNextGroup(config, allFiles, preloadCount, viewedFilter).catch(error => {
+          databasePreloadManager.preloadNextGroup(config, [], preloadCount, viewedFilter).catch(error => {
             console.error('预加载下一组失败:', error)
           })
         }, 500)
@@ -1101,47 +1058,6 @@ export default function HomePage() {
       return
     }
     
-    // 如果没有下一组缓存，重新选择图组
-    /* const filteredFiles = getFilteredFiles()
-    
-    if (filteredFiles.length === 0) {
-      setError('没有找到媒体文件')
-      return
-    }
-    
-    const groups = groupFilesByFolder(filteredFiles)
-    
-    if (groups.length === 0) {
-      setError('没有找到文件组')
-      return
-    }
-    
-    console.log(`[DEBUG] 找到 ${groups.length} 个图组`)
-    
-    // 随机选择一个图组（优先选择文件多的）
-    const randomGroup = groups[Math.floor(Math.random() * Math.min(groups.length, 20))]
-    setCurrentGroup(randomGroup.files)
-    setCurrentGroupIndex(0)
-    
-    console.log(`[DEBUG] 选择图组: ${randomGroup.folderPath}, 包含 ${randomGroup.files.length} 个文件`)
-    
-    // 加载该组的第一个文件
-    loadFileFromGroup(randomGroup.files, 0)
-    
-    // 异步预加载当前图组的前几个文件（延迟执行，避免阻塞UI）
-    if (preloadEnabled && config) {
-      setTimeout(() => {
-        const preloadCount = config.scanSettings?.preloadCount || 10
-        preloadManager.preloadCurrentGroup(config, randomGroup.files, viewedFilter).catch(error => {
-          console.error('预加载当前图组失败:', error)
-        })
-        
-        // 异步预加载下一组
-        preloadManager.preloadNextGroup(config, allFiles, preloadCount, viewedFilter).catch(error => {
-          console.error('预加载下一组失败:', error)
-        })
-      }, 500)
-    } */
   }
 
   // 加载图组中的指定文件
@@ -1166,7 +1082,7 @@ export default function HomePage() {
       setCurrentFile(file)
       setCurrentGroupIndex(index)
       // 尝试从预加载缓存获取
-      let preloadedBlob = preloadManager.getPreloadedFile(file.filename)
+      let preloadedBlob = databasePreloadManager.getPreloadedFile(file.filename)
       console.log('preloadedBlob',preloadedBlob)
       
       let blob: Blob
@@ -1176,10 +1092,10 @@ export default function HomePage() {
         console.log(`[DEBUG] 图组模式使用预加载文件: ${file.basename}`)
       } else {
         // 检查是否正在预加载中
-        if (preloadManager.isPreloading(file.filename)) {
+        if (databasePreloadManager.isPreloading(file.filename)) {
           console.log(`[DEBUG] 图组模式文件正在预加载中，等待完成: ${file.basename}`)
           // 等待预加载完成
-          preloadedBlob = await preloadManager.waitForPreload(file.filename)
+          preloadedBlob = await databasePreloadManager.waitForPreload(file.filename)
           if (preloadedBlob) {
             blob = preloadedBlob
             console.log(`[DEBUG] 图组模式预加载完成，使用缓存文件: ${file.basename}`)
@@ -1201,9 +1117,9 @@ export default function HomePage() {
             // 将新加载的文件添加到缓存中
             if (preloadEnabled && config) {
               // 直接添加到缓存（避免重复请求）
-              preloadManager.addToCacheDirectly(file.filename, blob)
+              databasePreloadManager.addToCacheDirectly(file.filename, blob)
               // 更新缓存状态
-              const updatedCacheStatus = preloadManager.getCacheStatus()
+              const updatedCacheStatus = databasePreloadManager.getCacheStatus()
               setPreloadStatus(updatedCacheStatus)
             }
           }
@@ -1226,9 +1142,9 @@ export default function HomePage() {
           // 将新加载的文件添加到缓存中
           if (preloadEnabled && config) {
             // 直接添加到缓存（避免重复请求）
-            preloadManager.addToCacheDirectly(file.filename, blob)
+            databasePreloadManager.addToCacheDirectly(file.filename, blob)
             // 更新缓存状态
-            const updatedCacheStatus = preloadManager.getCacheStatus()
+            const updatedCacheStatus = databasePreloadManager.getCacheStatus()
             setPreloadStatus(updatedCacheStatus)
           }
         }
@@ -1272,17 +1188,17 @@ export default function HomePage() {
       
       // 检查是否浏览过半，如果是则预加载当前图组剩余的所有文件
       // 使用setTimeout延迟执行，确保评分加载完成后再开始预加载，避免占用网络资源
-      if (preloadEnabled && config && preloadManager.isBrowseHalfway(index)) {
+      if (preloadEnabled && config && databasePreloadManager.isBrowseHalfway(index)) {
         // 延迟执行预加载，给评分API等关键请求留出时间
         setTimeout(() => {
           console.log('[DEBUG] 浏览超过预设数量一半，开始预加载当前图组剩余文件')
           const preloadCount = config.scanSettings?.preloadCount || 10
-          preloadManager.preloadRemainingCurrentGroup(config, (current) => {
+          databasePreloadManager.preloadRemainingCurrentGroup(config, (current) => {
             // 实时更新进度显示（total固定为preloadCount）
             setCachePreloadProgress({ current, total: preloadCount })
           }).then(() => {
             // 更新缓存状态
-            const cacheStatus = preloadManager.getCacheStatus()
+            const cacheStatus = databasePreloadManager.getCacheStatus()
             setPreloadStatus(cacheStatus)
           }).catch(error => {
             console.error('预加载当前图组剩余文件失败:', error)
@@ -1298,6 +1214,7 @@ export default function HomePage() {
 
   // 保存当前评分并切换图片
   const saveAndSwitch = async (switchCallback: () => void) => {
+    console.log(`[DEBUG] saveAndSwitch 被调用, currentFile: ${currentFile?.basename}, viewMode: ${viewMode}`)
     if (isSwitching) {
       return
     }
@@ -1314,25 +1231,29 @@ export default function HomePage() {
       } */
       
       // 先标记当前文件为已观看（在切换之前）
-      if (currentFile && viewMode === 'random') {
+      // 保存当前文件的引用，避免在 switchCallback 后丢失
+      const fileToMark = currentFile
+      
+      if (fileToMark && viewMode === 'random') {
         // 无论什么模式，都添加到本地已看过记录（用于当前会话管理）
-        preloadManager.addLocalViewedFile(currentFile.filename)
+        databasePreloadManager.addLocalViewedFile(fileToMark.filename)
         
         // 所有模式都从缓存中移除已看过的文件
-        preloadManager.removeFromCache(currentFile.filename)
+        databasePreloadManager.removeFromCache(fileToMark.filename)
         
         // 立即更新缓存状态显示，避免前台显示不准确
-        setPreloadStatus(preloadManager.getCacheStatus())
+        setPreloadStatus(databasePreloadManager.getCacheStatus())
       }
       
       // 立即切换，不等待补齐缓存
       switchCallback()
       setIsSwitching(false)
       
-      // 后台异步补齐缓存
-      if (currentFile && viewMode === 'random') {
+      // 后台异步补齐缓存（使用保存的文件引用）
+      if (fileToMark && viewMode === 'random') {
+        console.log(`[DEBUG] 准备调用 markFileAsViewed: ${fileToMark.basename}`)
         // 不等待补齐完成，让它在后台进行
-        markFileAsViewed(currentFile).catch(error => {
+        markFileAsViewed(fileToMark).catch(error => {
           console.error('后台补齐缓存失败:', error)
         })
       }
@@ -1412,68 +1333,84 @@ export default function HomePage() {
   }
 
   const loadRandomFile = async () => {
-    debugger
-    console.log(`[DEBUG] loadRandomFile 开始，当前筛选条件: ${viewedFilter}`)
-    console.log(`[DEBUG] 已看过文件数量: ${viewedFiles.size}`)
-    console.log(`[DEBUG] 缓存文件数量: ${preloadManager.getCachedFilepaths().length}`)
+    if (!config) {
+      setError('请先配置WebDAV连接')
+      return
+    }
     
-    // 先尝试从预加载缓存中获取符合筛选条件的文件
-    const cachedPaths = preloadManager.getCachedFilepaths()
-    const filteredCachedFiles = cachedPaths.filter(filePath => {
-      const file = allFiles.find(f => f.filename === filePath)
-      if (!file) return false
-      
-      // 检查媒体类型筛选
-      const isImage = /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(file.basename)
-      const isVideo = /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(file.basename)
-      
-      if (mediaFilter === 'images' && !isImage) return false
-      if (mediaFilter === 'videos' && !isVideo) return false
-      
-      // 检查已看过状态筛选
-      if (viewedFilter === 'viewed' && !viewedFiles.has(file.filename)) return false
-      if (viewedFilter === 'unviewed' && viewedFiles.has(file.filename)) return false
-      
+    console.log(`[DEBUG] loadRandomFile 开始，筛选条件: viewedFilter=${viewedFilter}, mediaFilter=${mediaFilter}`)
+    console.log(`[DEBUG] 缓存文件数量: ${databasePreloadManager.getCachedFilepaths().length}`)
+    console.log(`[DEBUG] 本地已看过文件数量: ${databasePreloadManager.getLocalViewedCount()}`)
+    
+    // 从预加载缓存中获取文件（缓存中的文件已经过数据库层面的 viewedFilter 和 mediaFilter 筛选）
+    // 只需要排除本地已看过的文件（当前会话中看过但数据库可能还没同步的）
+    const cachedPaths = databasePreloadManager.getCachedFilepaths()
+    const availableCachedFiles = cachedPaths.filter(filePath => {
       // 排除本地已看过的文件（所有模式都适用）
-      if (preloadManager.isLocalViewed(file.filename)) return false
-      
+      if (databasePreloadManager.isLocalViewed(filePath)) return false
       return true
     })
     
-    console.log(`[DEBUG] 符合条件的缓存文件数量: ${filteredCachedFiles.length}`)
-    console.log(`[DEBUG] 本地已看过文件数量: ${preloadManager.getLocalViewedCount()}`)
+    console.log(`[DEBUG] 可用缓存文件数量: ${availableCachedFiles.length}`)
     
     let fileToLoad: MediaFile | null = null
     
-    if (filteredCachedFiles.length > 0) {
-      // 从符合条件的缓存文件中随机选择一个
-      const randomCachedPath = filteredCachedFiles[Math.floor(Math.random() * filteredCachedFiles.length)]
-      fileToLoad = allFiles.find(f => f.filename === randomCachedPath) || null
+    if (availableCachedFiles.length > 0) {
+      // 从可用的缓存文件中随机选择一个
+      const randomCachedPath = availableCachedFiles[Math.floor(Math.random() * availableCachedFiles.length)]
+      
+      // 数据库模式：直接构造文件对象
+      const basename = randomCachedPath.substring(randomCachedPath.lastIndexOf('/') + 1)
+      fileToLoad = {
+        filename: randomCachedPath,
+        basename: basename,
+        size: 0,
+        type: 'file',
+        lastmod: ''
+      }
       console.log(`[DEBUG] 从预加载缓存中选择文件: ${fileToLoad?.basename}`)
     } else {
-      console.log(`[DEBUG] 缓存中没有符合条件的文件，从所有文件中选择`)
-      // 如果缓存中没有符合条件的文件，从所有符合条件的文件中随机选择一个
-      const filteredFiles = getFilteredFiles()
+      console.log(`[DEBUG] 缓存中没有可用文件，从数据库随机获取`)
+      // 如果缓存中没有可用文件，从数据库随机获取一个文件
+      try {
+        const fileTypeParam = mediaFilter === 'images' ? 'image' : mediaFilter === 'videos' ? 'video' : ''
+        const isViewedParam = viewedFilter === 'viewed' ? 'true' : viewedFilter === 'unviewed' ? 'false' : ''
+        
+        const params = new URLSearchParams({
+          webdavUrl: config.url,
+          webdavUsername: config.username,
+          paths: config.mediaPaths.join(','),
+          count: '1'
+        })
+        if (fileTypeParam) params.append('fileType', fileTypeParam)
+        if (isViewedParam) params.append('isViewed', isViewedParam)
+        
+        const response = await fetch(`/api/scan-files/random?${params.toString()}`)
+        if (response.ok) {
+          const data = await response.json()
+          if (data.files && data.files.length > 0) {
+            const dbFile = data.files[0]
+            fileToLoad = {
+              filename: dbFile.filename,
+              basename: dbFile.basename,
+              size: dbFile.file_size || 0,
+              type: 'file',
+              lastmod: dbFile.lastmod || ''
+            }
+            console.log(`[DEBUG] 从数据库随机获取文件: ${fileToLoad.basename}`)
+          }
+        }
+      } catch (e) {
+        console.error('从数据库获取随机文件失败:', e)
+      }
       
-      if (filteredFiles.length === 0) {
+      if (!fileToLoad) {
         const filterMsg = viewedFilter === 'viewed' ? '已看过' : 
                          viewedFilter === 'unviewed' ? '未看过' : '全部'
         const mediaMsg = mediaFilter === 'images' ? '图片' : 
                         mediaFilter === 'videos' ? '视频' : '媒体'
         setError(`没有找到符合条件的${mediaMsg}文件（${filterMsg}）`)
         return
-      }
-      
-      const randomIndex = Math.floor(Math.random() * filteredFiles.length)
-      fileToLoad = filteredFiles[randomIndex]
-      console.log(`[DEBUG] 从筛选文件中选择文件: ${fileToLoad.basename}`)
-      
-      // 如果选中的文件不在缓存中，异步预加载它（不等待）
-      if (!cachedPaths.includes(fileToLoad.filename)) {
-        console.log(`[DEBUG] 文件 ${fileToLoad.basename} 不在缓存中，开始异步预加载...`)
-        preloadManager.preloadFiles(config, [fileToLoad], 1, viewedFilter).catch(error => {
-          console.warn('异步预加载失败:', error)
-        })
       }
     }
     
@@ -1498,7 +1435,7 @@ export default function HomePage() {
       setCurrentFile(fileToLoad)
 
       // 尝试从预加载缓存获取（如果文件在缓存中）
-      const preloadedBlob = preloadManager.getPreloadedFile(fileToLoad.filename)
+      const preloadedBlob = databasePreloadManager.getPreloadedFile(fileToLoad.filename)
       
       let blob: Blob
       if (preloadedBlob) {
@@ -1590,16 +1527,16 @@ export default function HomePage() {
   // 大视频模式：加载随机大视频文件（使用即点即播）
   const loadLargeVideoFile = async () => {
     console.log(`[大视频模式] 开始加载，筛选条件: ${viewedFilter}，随机性: ${preloadRandomness}`)
-    console.log(`[大视频模式] 当前缓存文件数量: ${preloadManager.getCachedFilepaths().length}`)
+    console.log(`[大视频模式] 当前缓存文件数量: ${databasePreloadManager.getCachedFilepaths().length}`)
     
     // ⭐ 关键修复：在加载新视频前，先清理当前正在播放的视频
     // 这会触发浏览器取消网络请求，服务端会收到 abort 信号并释放 WebDAV 流
     cleanupCurrentStreamVideo()
     
     // 强制清空缓存，确保不使用任何预加载的文件
-    if (preloadManager.getCachedFilepaths().length > 0) {
+    if (databasePreloadManager.getCachedFilepaths().length > 0) {
       console.log('[大视频模式] 检测到缓存文件，强制清空')
-      preloadManager.clearCache()
+      databasePreloadManager.clearCache()
     }
     
     if (!config) {
@@ -1607,86 +1544,79 @@ export default function HomePage() {
       return
     }
     
-    // 获取所有视频文件（只选择大于100MB的）
-    const maxVideoSize = 100 * 1024 * 1024 // 100MB
-    const videoFiles = allFiles.filter(file => isVideo(file.filename) && file.size > maxVideoSize)
-    console.log(`[大视频模式] 全部大视频文件数量（>100MB）: ${videoFiles.length}`)
-    
-    // 应用已看过筛选
-    let filteredVideos = videoFiles.filter(file => {
-      // 检查已看过状态筛选
-      if (viewedFilter === 'viewed' && !viewedFiles.has(file.filename)) return false
-      if (viewedFilter === 'unviewed' && viewedFiles.has(file.filename)) return false
-      
-      // 排除本地已看过的文件
-      if (preloadManager.isLocalViewed(file.filename)) return false
-      
-      return true
-    })
-    
-    if (filteredVideos.length === 0) {
-      const filterMsg = viewedFilter === 'viewed' ? '已看过' : 
-                       viewedFilter === 'unviewed' ? '未看过' : '全部'
-      setError(`没有找到符合条件的视频文件（${filterMsg}）`)
-      return
-    }
-    
-    // 应用随机性：如果有当前文件，根据随机性参数决定是否优先选择同目录的视频
-    let fileToLoad: MediaFile
-    
-    if (currentFile && preloadRandomness < 1) {
-      // 获取当前文件所在目录
-      const currentDir = currentFile.filename.substring(0, currentFile.filename.lastIndexOf('/'))
-      
-      // 获取同目录的视频
-      const sameDirVideos = filteredVideos.filter(file => 
-        file.filename.startsWith(currentDir)
-      )
-      
-      // 根据随机性参数决定选择策略
-      const useSameDir = Math.random() > preloadRandomness
-      
-      if (useSameDir && sameDirVideos.length > 0) {
-        // 从同目录选择
-        const randomIndex = Math.floor(Math.random() * sameDirVideos.length)
-        fileToLoad = sameDirVideos[randomIndex]
-        console.log(`[大视频模式] 从同目录选择: ${fileToLoad.basename}`)
-      } else {
-        // 从所有视频中随机选择
-        const randomIndex = Math.floor(Math.random() * filteredVideos.length)
-        fileToLoad = filteredVideos[randomIndex]
-        console.log(`[大视频模式] 从所有视频中选择: ${fileToLoad.basename}`)
-      }
-    } else {
-      // 完全随机选择
-      const randomIndex = Math.floor(Math.random() * filteredVideos.length)
-      fileToLoad = filteredVideos[randomIndex]
-      console.log(`[大视频模式] 完全随机选择: ${fileToLoad.basename}`)
-    }
-    
-    // 切换文件时立即重置自动评分标志
-    hasAutoRatedRef.current = false
-    
-    // 清除保存的视频状态，确保新视频可以自动播放
-    videoStateRef.current = null
-    
-    // 检测媒体类型变化并处理全屏切换，返回是否需要自动进入视频全屏
-    const shouldEnterVideoFullscreen = handleMediaTypeChangeInFullscreen(fileToLoad)
-    
-    setLoading(true)
-    setError(null)
+    // 从数据库获取大视频文件（大于100MB）
+    const minVideoSize = 100 * 1024 * 1024 // 100MB
     
     try {
+      const isViewedParam = viewedFilter === 'viewed' ? 'true' : viewedFilter === 'unviewed' ? 'false' : ''
+      const currentParentPath = currentFile ? currentFile.filename.substring(0, currentFile.filename.lastIndexOf('/')) : ''
+      
+      const params = new URLSearchParams({
+        webdavUrl: config.url,
+        webdavUsername: config.username,
+        paths: config.mediaPaths.join(','),
+        count: '1',
+        fileType: 'video',
+        minFileSize: minVideoSize.toString(),
+        randomness: preloadRandomness.toString()
+      })
+      if (isViewedParam) params.append('isViewed', isViewedParam)
+      if (currentParentPath && preloadRandomness < 1) params.append('currentParentPath', currentParentPath)
+      
+      // 排除本地已看过的文件
+      const localViewedFiles = Array.from(databasePreloadManager.getLocalViewedFilenames())
+      if (localViewedFiles.length > 0) {
+        params.append('excludeFilenames', localViewedFiles.join(','))
+      }
+      
+      const response = await fetch(`/api/scan-files/random?${params.toString()}`)
+      
+      if (!response.ok) {
+        throw new Error('获取大视频文件失败')
+      }
+      
+      const data = await response.json()
+      
+      if (!data.files || data.files.length === 0) {
+        const filterMsg = viewedFilter === 'viewed' ? '已看过' : 
+                         viewedFilter === 'unviewed' ? '未看过' : '全部'
+        setError(`没有找到符合条件的大视频文件（${filterMsg}，>100MB）`)
+        return
+      }
+      
+      const dbFile = data.files[0]
+      const fileToLoad: MediaFile = {
+        filename: dbFile.filename,
+        basename: dbFile.basename,
+        size: dbFile.file_size || 0,
+        type: 'file',
+        lastmod: dbFile.lastmod || ''
+      }
+      
+      console.log(`[大视频模式] 从数据库获取: ${fileToLoad.basename}`)
+    
+      // 切换文件时立即重置自动评分标志
+      hasAutoRatedRef.current = false
+      
+      // 清除保存的视频状态，确保新视频可以自动播放
+      videoStateRef.current = null
+      
+      // 检测媒体类型变化并处理全屏切换，返回是否需要自动进入视频全屏
+      const shouldEnterVideoFullscreen = handleMediaTypeChangeInFullscreen(fileToLoad)
+      
+      setLoading(true)
+      setError(null)
+      
       setCurrentFile(fileToLoad)
       
       // 构建即点即播URL（使用 instant-stream API）
-      const params = new URLSearchParams({
+      const streamParams = new URLSearchParams({
         url: config.url,
         username: config.username,
         password: config.password,
         filepath: fileToLoad.filename,
       })
-      const streamUrl = `/api/webdav/instant-stream?${params.toString()}`
+      const streamUrl = `/api/webdav/instant-stream?${streamParams.toString()}`
       
       console.log(`[大视频模式] 使用流式播放: ${fileToLoad.basename}, 大小: ${formatFileSize(fileToLoad.size)}`)
       console.log(`[大视频模式] 流媒体URL: ${streamUrl}`)
@@ -1750,7 +1680,7 @@ export default function HomePage() {
       
       // 如果切换到已看过模式，清除本地已看过记录
       if (newFilter === 'viewed') {
-        preloadManager.clearLocalViewedFiles()
+        databasePreloadManager.clearLocalViewedFiles()
       }
       
       // 如果当前显示的文件不符合新筛选条件，清空显示
@@ -1772,7 +1702,7 @@ export default function HomePage() {
     if (!config) return
     
     // 清除本地已看过记录
-    preloadManager.clearLocalViewedFiles()
+    databasePreloadManager.clearLocalViewedFiles()
     
     // 清空当前显示
     setCurrentFile(null)
@@ -1784,9 +1714,9 @@ export default function HomePage() {
       
       if (viewMode === 'gallery') {
         // 图组模式：使用图组模式专用预加载，带进度回调
-        await preloadManager.preloadForGalleryMode(
+        await databasePreloadManager.preloadForGalleryMode(
           config, 
-          allFiles, 
+          [], // 数据库模式不需要文件列表
           preloadCount, 
           'viewed',
           (current, total) => {
@@ -1796,20 +1726,23 @@ export default function HomePage() {
         )
       } else {
         // 随机模式：使用随机预加载，带进度回调
-        await preloadManager.refillCache(
+        await databasePreloadManager.refillCache(
           config, 
-          allFiles, 
+          [], // 数据库模式不需要文件列表
           preloadCount, 
           'viewed',
           (current, total) => {
             // 实时更新进度显示
             setCachePreloadProgress({ current, total })
           },
-          preloadRandomness
+          preloadRandomness,
+          false, // isInitialLoad
+          undefined, // currentParentPath
+          mediaFilter // 媒体类型筛选
         )
       }
       
-      const cacheStatus = preloadManager.getCacheStatus()
+      const cacheStatus = databasePreloadManager.getCacheStatus()
       setPreloadStatus(cacheStatus)
       // 更新进度显示
       setCachePreloadProgress({ 
@@ -1838,14 +1771,13 @@ export default function HomePage() {
   }
 
   const getFilteredStats = () => {
-    const filteredFiles = getFilteredFiles()
-    
+    // 使用数据库统计信息
     if (mediaFilter === 'images') {
-      return { total: filteredFiles.length, label: '图片' }
+      return { total: stats.images, label: '图片' }
     } else if (mediaFilter === 'videos') {
-      return { total: filteredFiles.length, label: '视频' }
+      return { total: stats.videos, label: '视频' }
     }
-    return { total: filteredFiles.length, label: '全部' }
+    return { total: stats.total, label: '全部' }
   }
 
   const toggleDrawer = (open: boolean) => () => {
@@ -1875,7 +1807,7 @@ export default function HomePage() {
         setCurrentGroupIndex(0)
         
         // 触发预加载重新加载
-        if (preloadEnabled && config && allFiles.length > 0) {
+        if (preloadEnabled && config && stats.total > 0) {
           const preloadCount = config.scanSettings?.preloadCount || 10
           
           // 大视频模式：完全跳过预加载逻辑
@@ -1883,16 +1815,16 @@ export default function HomePage() {
             console.log('[大视频模式] 配置变化：跳过预加载，清空缓存')
             setGalleryPreloadReady(true)
             setCachePreloadProgress(null)
-            preloadManager.clearCache()
-            const cacheStatus = preloadManager.getCacheStatus()
+            databasePreloadManager.clearCache()
+            const cacheStatus = databasePreloadManager.getCacheStatus()
             setPreloadStatus(cacheStatus)
             
             // 延迟再次清空，防止正在进行的预加载填充缓存
             setTimeout(() => {
               if (viewMode === 'large-video') {
                 console.log('[大视频模式] 延迟清空缓存（防止配置变化时的预加载填充）')
-                preloadManager.clearCache()
-                const updatedStatus = preloadManager.getCacheStatus()
+                databasePreloadManager.clearCache()
+                const updatedStatus = databasePreloadManager.getCacheStatus()
                 setPreloadStatus(updatedStatus)
               }
             }, 1000)
@@ -1903,9 +1835,9 @@ export default function HomePage() {
             setCachePreloadProgress({ current: 0, total: preloadCount })
             
             // 使用图组模式专用预加载，带进度回调
-            preloadManager.preloadForGalleryMode(
+            databasePreloadManager.preloadForGalleryMode(
               config, 
-              allFiles, 
+              [], // 数据库模式不需要文件列表
               preloadCount, 
               viewedFilter,
               (current, total) => {
@@ -1917,7 +1849,7 @@ export default function HomePage() {
                 }
               }
             ).then((result) => {
-              const cacheStatus = preloadManager.getCacheStatus()
+              const cacheStatus = databasePreloadManager.getCacheStatus()
               setPreloadStatus(cacheStatus)
               setGalleryPreloadReady(true)
               // 保持显示进度，基于当前缓存状态
@@ -1929,7 +1861,7 @@ export default function HomePage() {
             }).catch(error => {
               console.warn('配置变化后图组模式预加载失败:', error)
               setGalleryPreloadReady(true) // 即使失败也允许预览
-              const cacheStatus = preloadManager.getCacheStatus()
+              const cacheStatus = databasePreloadManager.getCacheStatus()
               // 即使失败也显示当前缓存状态
               setCachePreloadProgress({ 
                 current: cacheStatus.cacheSize, 
@@ -1940,10 +1872,10 @@ export default function HomePage() {
             // 随机模式：配置变化时先清空缓存，然后重新预加载
             setGalleryPreloadReady(true) // 随机模式不需要等待预加载完成
             setCachePreloadProgress({ current: 0, total: preloadCount })
-            preloadManager.clearCache()
-            preloadManager.refillCache(
+            databasePreloadManager.clearCache()
+            databasePreloadManager.refillCache(
               config, 
-              allFiles, 
+              [], // 数据库模式不需要文件列表
               preloadCount, 
               viewedFilter,
               (current, total) => {
@@ -1953,7 +1885,9 @@ export default function HomePage() {
                 }
               },
               preloadRandomness,
-              true // isInitialLoad: 配置变化后重新加载，不限制并发
+              true, // isInitialLoad: 配置变化后重新加载，不限制并发
+              undefined, // currentParentPath
+              mediaFilter // 媒体类型筛选
             ).then(() => {
               // 预加载完成后，如果已切换到大视频模式则忽略结果（使用 ref）
               if (viewModeRef.current === 'large-video') {
@@ -1961,7 +1895,7 @@ export default function HomePage() {
                 return
               }
               
-              const cacheStatus = preloadManager.getCacheStatus()
+              const cacheStatus = databasePreloadManager.getCacheStatus()
               setPreloadStatus(cacheStatus)
               // 更新进度显示
               setCachePreloadProgress({ 
@@ -1971,7 +1905,7 @@ export default function HomePage() {
               console.log(`配置变化后随机模式预加载完成，筛选条件: ${viewedFilter}`)
             }).catch(error => {
               console.warn('配置变化后随机模式预加载失败:', error)
-              const cacheStatus = preloadManager.getCacheStatus()
+              const cacheStatus = databasePreloadManager.getCacheStatus()
               // 大视频模式下不更新进度（使用 ref）
               if (viewModeRef.current !== 'large-video') {
                 setCachePreloadProgress({ 
@@ -2262,8 +2196,8 @@ export default function HomePage() {
 
       await saveRating(ratingData)
       
-      // 同步更新 preloadManager 的已看过缓存（不重复更新数据库）
-      preloadManager.addToViewedCache(currentFile.filename)
+      // 同步更新 databasePreloadManager 的已看过缓存（不重复更新数据库）
+      databasePreloadManager.addToViewedCache(currentFile.filename)
       
       // 触发界面刷新
       refreshViewedFiles()
@@ -2311,6 +2245,9 @@ export default function HomePage() {
         }
       }
       
+      // 先检查是否已经标记过，避免重复计数
+      const wasAlreadyViewed = databasePreloadManager.isViewed(targetFile.filename)
+      
       // 自动标记为已看过，默认2星，评价"一般"
       const autoRatingData = {
         rating: 2,
@@ -2320,11 +2257,22 @@ export default function HomePage() {
 
       await saveRating(autoRatingData, targetFile)
       
-      // 同步更新 preloadManager 的已看过缓存（不重复更新数据库）
-      preloadManager.addToViewedCache(targetFile.filename)
+      // 同步更新 databasePreloadManager 的已看过缓存（不重复更新数据库）
+      databasePreloadManager.addToViewedCache(targetFile.filename)
       
       // 触发界面刷新
       refreshViewedFiles()
+      
+      // 只有首次标记时才更新统计数据中的已看过计数
+      if (!wasAlreadyViewed) {
+        setStats(prev => {
+          console.log(`[DEBUG] 自动评分更新 stats.viewed: ${prev.viewed} -> ${prev.viewed + 1}`)
+          return {
+            ...prev,
+            viewed: prev.viewed + 1
+          }
+        })
+      }
       
       // 确保评分状态已更新
       console.log(`自动评分完成: ${targetFile.basename}`)
@@ -2594,15 +2542,7 @@ export default function HomePage() {
           <Typography variant="body1" fontWeight="medium">
             {viewMode === 'gallery' && currentGroup.length > 0
               ? `${currentGroupIndex + 1} / ${currentGroup.length}`
-              : (() => {
-                  const filteredFiles = getFilteredFiles()
-                  const currentIndex = currentFile 
-                    ? filteredFiles.findIndex(f => f.filename === currentFile.filename)
-                    : -1
-                  return currentIndex >= 0 
-                    ? `${currentIndex + 1} / ${filteredFiles.length}`
-                    : '1 / 1'
-                })()}
+              : '随机浏览'}
           </Typography>
         </Box>
 
@@ -3104,15 +3044,7 @@ export default function HomePage() {
                     <Typography variant="body1" fontWeight="medium">
                       {viewMode === 'gallery' && currentGroup.length > 0
                         ? `${currentGroupIndex + 1} / ${currentGroup.length}`
-                        : (() => {
-                            const filteredFiles = getFilteredFiles()
-                            const currentIndex = currentFile 
-                              ? filteredFiles.findIndex(f => f.filename === currentFile.filename)
-                              : -1
-                            return currentIndex >= 0 
-                              ? `${currentIndex + 1} / ${filteredFiles.length}`
-                              : '1 / 1'
-                          })()}
+                        : '随机浏览'}
                     </Typography>
                   </Box>
 
@@ -3463,9 +3395,9 @@ export default function HomePage() {
             <Typography variant="caption" color="text.secondary" sx={{ textAlign: 'center' }}>
               递归扫描可能需要一些时间，请耐心等待
             </Typography>
-            {allFiles.length > 0 && (
+            {stats.total > 0 && (
               <Typography variant="body2" color="success.main" sx={{ mt: 2 }}>
-                已找到 {allFiles.length} 个文件
+                已找到 {stats.total} 个文件
               </Typography>
             )}
           </Box>
@@ -3528,16 +3460,16 @@ export default function HomePage() {
                     setCachePreloadProgress(null)
                     // 立即清空预加载缓存
                     if (preloadEnabled) {
-                      preloadManager.clearCache()
-                      const cacheStatus = preloadManager.getCacheStatus()
+                      databasePreloadManager.clearCache()
+                      const cacheStatus = databasePreloadManager.getCacheStatus()
                       setPreloadStatus(cacheStatus)
                       
                       // 延迟再次清空，防止正在进行的预加载填充缓存
                       setTimeout(() => {
                         if (viewMode === 'large-video') {
                           console.log('[大视频模式] 延迟清空缓存（防止预加载填充）')
-                          preloadManager.clearCache()
-                          const updatedStatus = preloadManager.getCacheStatus()
+                          databasePreloadManager.clearCache()
+                          const updatedStatus = databasePreloadManager.getCacheStatus()
                           setPreloadStatus(updatedStatus)
                         }
                       }, 500)
@@ -3738,24 +3670,13 @@ export default function HomePage() {
                 </Paper>
               )}
               
-              {preloadProgress && (
-                <Paper variant="outlined" sx={{ p: 1.5 }}>
-                  <Typography variant="caption" color="text.secondary" display="block">
-                    {preloadProgress.message}
-                  </Typography>
-                  <Typography variant="body2" fontWeight="medium">
-                    {preloadProgress.current} / {preloadProgress.total}
-                  </Typography>
-                </Paper>
-              )}
-              
               <Button
                 variant="outlined"
                 size="small"
                 fullWidth
                 onClick={() => {
-                  preloadManager.clearCache()
-                  setPreloadStatus(preloadManager.getCacheStatus())
+                  databasePreloadManager.clearCache()
+                  setPreloadStatus(databasePreloadManager.getCacheStatus())
                   setSnackbarMessage('缓存已清理')
                   setSnackbarSeverity('info')
                   setSnackbarOpen(true)
@@ -3787,15 +3708,15 @@ export default function HomePage() {
             >
               <ToggleButton value="unviewed">
                 <StarIcon sx={{ mr: 1 }} />
-                未看过 ({allFiles.filter(f => !viewedFiles.has(f.filename)).length})
+                未看过 ({stats.total - stats.viewed})
               </ToggleButton>
               <ToggleButton value="viewed">
                 <StarIcon sx={{ mr: 1, color: 'gold' }} />
-                已看过 ({viewedFiles.size})
+                已看过 ({stats.viewed})
               </ToggleButton>
               <ToggleButton value="all">
                 <PhotoLibraryIcon sx={{ mr: 1 }} />
-                全部 ({allFiles.length})
+                全部 ({stats.total})
               </ToggleButton>
             </ToggleButtonGroup>
             
@@ -3819,7 +3740,7 @@ export default function HomePage() {
                   重新观看已看过的文件
                 </Button>
                 <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1, textAlign: 'center' }}>
-                  已本地观看: {preloadManager.getLocalViewedCount()} / {allFiles.filter(f => viewedFiles.has(f.filename)).length}
+                  已本地观看: {databasePreloadManager.getLocalViewedCount()} / {stats.viewed}
                 </Typography>
               </Box>
             )}

@@ -68,12 +68,7 @@ export async function POST(request: NextRequest) {
       `)
       const result = stmt.run(isViewed ? 1 : 0, filePath)
       
-      console.log(`✅ [API POST] 更新已看过状态成功: ${filePath}`)
-      
-      return NextResponse.json({ 
-        success: true, 
-        changes: result.changes 
-      })
+      console.log(`✅ [API POST] 更新 media_ratings 已看过状态成功: ${filePath}`)
     } else {
       // 创建新记录（只记录已看过状态，不包含评分）
       const fileName = filePath.split('/').pop() || filePath
@@ -86,14 +81,31 @@ export async function POST(request: NextRequest) {
       `)
       const result = stmt.run(filePath, fileName, fileType, isViewed ? 1 : 0)
       
-      console.log(`✅ [API POST] 创建已看过状态记录成功: ${filePath}`)
-      
-      return NextResponse.json({ 
-        success: true, 
-        id: result.lastInsertRowid,
-        changes: result.changes 
-      })
+      console.log(`✅ [API POST] 创建 media_ratings 已看过状态记录成功: ${filePath}`)
     }
+    
+    // 同步更新 scan_files 表的 is_viewed 状态
+    try {
+      const updateScanFilesStmt = db.prepare(`
+        UPDATE scan_files 
+        SET is_viewed = ?
+        WHERE filename = ?
+      `)
+      const scanResult = updateScanFilesStmt.run(isViewed ? 1 : 0, filePath)
+      
+      if (scanResult.changes > 0) {
+        console.log(`✅ [API POST] 同步更新 scan_files 已看过状态成功: ${filePath}, 影响 ${scanResult.changes} 行`)
+      } else {
+        console.log(`⚠️ [API POST] scan_files 中未找到文件: ${filePath}`)
+      }
+    } catch (scanError) {
+      console.error(`⚠️ [API POST] 同步更新 scan_files 失败:`, scanError)
+      // 不影响主流程，继续返回成功
+    }
+    
+    return NextResponse.json({ 
+      success: true
+    })
   } catch (error: any) {
     console.error('更新已看过状态失败:', error)
     return NextResponse.json(
