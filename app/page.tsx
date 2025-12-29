@@ -2237,14 +2237,17 @@ export default function HomePage() {
     hasAutoRatedRef.current = true
     
     try {
-      // 检查文件是否已经有评分，如果有评分就不执行自动评分
-      const response = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(targetFile.filename)}`)
-      if (response.ok) {
-        const data = await response.json()
-        if (data.rating && data.rating.rating) {
-          // 文件已经有评分，不执行自动评分
-          console.log(`文件 ${targetFile.basename} 已有评分 ${data.rating.rating} 星，跳过自动评分`)
-          return
+      // 未看过模式下跳过检查现有评分（未看过的文件肯定没有评分，节省一次网络请求）
+      if (viewedFilter !== 'unviewed') {
+        // 检查文件是否已经有评分，如果有评分就不执行自动评分
+        const response = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(targetFile.filename)}`)
+        if (response.ok) {
+          const data = await response.json()
+          if (data.rating && data.rating.rating) {
+            // 文件已经有评分，不执行自动评分
+            console.log(`文件 ${targetFile.basename} 已有评分 ${data.rating.rating} 星，跳过自动评分`)
+            return
+          }
         }
       }
       
@@ -2283,7 +2286,7 @@ export default function HomePage() {
     } catch (error) {
       console.error('自动标记已看过失败:', error)
     }
-  }, [currentFile, saveRating, refreshViewedFiles])
+  }, [currentFile, saveRating, refreshViewedFiles, viewedFilter])
 
   // 自动标记已看过
   const startAutoMarkTimer = (file?: MediaFile) => {
