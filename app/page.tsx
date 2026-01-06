@@ -1937,8 +1937,14 @@ export default function HomePage() {
       
       const response = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(filePath)}`)
       if (response.ok) {
-        const data = await response.json()
-        setCurrentRating(data.rating || null)
+        // 安全解析 JSON，处理空响应
+        const text = await response.text()
+        if (text) {
+          const data = JSON.parse(text)
+          setCurrentRating(data.rating || null)
+        } else {
+          setCurrentRating(null)
+        }
       } else {
         setCurrentRating(null)
       }
@@ -1956,15 +1962,27 @@ export default function HomePage() {
       if (ratingType === 'media' && targetFile) {
         const response = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(targetFile.filename)}`)
         if (response.ok) {
-          const data = await response.json()
-          setCurrentRating(data.rating || null)
+          // 安全解析 JSON，处理空响应
+          const text = await response.text()
+          if (text) {
+            const data = JSON.parse(text)
+            setCurrentRating(data.rating || null)
+          } else {
+            setCurrentRating(null)
+          }
         }
       } else if (ratingType === 'group' && currentGroup.length > 0) {
         const groupPath = getGroupPath(currentGroup[0].filename)
         const response = await fetch(`/api/ratings/group?groupPath=${encodeURIComponent(groupPath)}`)
         if (response.ok) {
-          const data = await response.json()
-          setCurrentRating(data.rating || null)
+          // 安全解析 JSON，处理空响应
+          const text = await response.text()
+          if (text) {
+            const data = JSON.parse(text)
+            setCurrentRating(data.rating || null)
+          } else {
+            setCurrentRating(null)
+          }
         }
       }
     } catch (error) {
@@ -1990,8 +2008,18 @@ export default function HomePage() {
         })
         
         if (!response.ok) {
-          const errorData = await response.json()
-          throw new Error(errorData.error || '保存媒体评分失败')
+          // 安全解析错误响应
+          const text = await response.text()
+          let errorMessage = '保存媒体评分失败'
+          if (text) {
+            try {
+              const errorData = JSON.parse(text)
+              errorMessage = errorData.error || errorMessage
+            } catch {
+              errorMessage = text || errorMessage
+            }
+          }
+          throw new Error(errorMessage)
         }
         
         // 保存成功后重新从服务器获取最新评分数据
@@ -2012,8 +2040,18 @@ export default function HomePage() {
         })
         
         if (!response.ok) {
-          const errorData = await response.json()
-          throw new Error(errorData.error || '保存图组评分失败')
+          // 安全解析错误响应
+          const text = await response.text()
+          let errorMessage = '保存图组评分失败'
+          if (text) {
+            try {
+              const errorData = JSON.parse(text)
+              errorMessage = errorData.error || errorMessage
+            } catch {
+              errorMessage = text || errorMessage
+            }
+          }
+          throw new Error(errorMessage)
         }
         
         // 保存成功后重新从服务器获取最新评分数据
@@ -2091,11 +2129,15 @@ export default function HomePage() {
         // 检查文件是否已经有评分，如果有评分就不执行自动评分
         const response = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(targetFile.filename)}`)
         if (response.ok) {
-          const data = await response.json()
-          if (data.rating && data.rating.rating) {
-            // 文件已经有评分，不执行自动评分
-            console.log(`文件 ${targetFile.basename} 已有评分 ${data.rating.rating} 星，跳过自动评分`)
-            return
+          // 安全解析 JSON，处理空响应
+          const text = await response.text()
+          if (text) {
+            const data = JSON.parse(text)
+            if (data.rating && data.rating.rating) {
+              // 文件已经有评分，不执行自动评分
+              console.log(`文件 ${targetFile.basename} 已有评分 ${data.rating.rating} 星，跳过自动评分`)
+              return
+            }
           }
         }
       }
