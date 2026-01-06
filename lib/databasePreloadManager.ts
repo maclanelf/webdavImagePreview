@@ -16,6 +16,8 @@ class DatabasePreloadManager {
     url: string
     timestamp: number
     filepath: string
+    size: number
+    lastmod: string
   }>()
   
   // 图组模式专用：下一组预加载缓存
@@ -24,6 +26,8 @@ class DatabasePreloadManager {
     url: string
     timestamp: number
     filepath: string
+    size: number
+    lastmod: string
   }>()
   
   // 预加载队列：正在预加载的文件路径集合
@@ -38,10 +42,7 @@ class DatabasePreloadManager {
   // 缓存过期时间（毫秒）
   private cacheExpireTime = 300 * 60 * 1000 // 300分钟
   
-  // 已观看文件缓存
-  private viewedFiles = new Set<string>()
-  
-  // 本地已观看文件（当前会话）
+  // 本地已观看文件（当前会话，用于避免重复标记请求）
   private localViewedFiles = new Set<string>()
   
   // 图组模式相关状态
@@ -125,23 +126,6 @@ class DatabasePreloadManager {
     return false
   }
 
-  // 从数据库加载已看过的文件列表
-  private async loadViewedFilesFromDatabase(): Promise<void> {
-    try {
-      const response = await fetch('/api/ratings/viewed?viewed=true')
-      if (response.ok) {
-        const data = await response.json()
-        this.viewedFiles.clear()
-        data.filePaths.forEach((filePath: string) => {
-          this.viewedFiles.add(filePath)
-        })
-        console.log(`[数据库模式] 从数据库加载已看过文件: ${data.count} 个`)
-      }
-    } catch (error) {
-      console.error('[数据库模式] 从数据库加载已看过文件失败:', error)
-    }
-  }
-
   // 预加载单个文件（带并发控制）
   private async preloadFile(config: any, file: any): Promise<void> {
     const filepath = file.filename
@@ -176,7 +160,9 @@ class DatabasePreloadManager {
         blob,
         url,
         timestamp: Date.now(),
-        filepath
+        filepath,
+        size: file.size || 0,
+        lastmod: file.lastmod || ''
       })
 
       if (this.cache.size > this.maxCacheSize) {
@@ -242,7 +228,9 @@ class DatabasePreloadManager {
         blob,
         url,
         timestamp: Date.now(),
-        filepath
+        filepath,
+        size: file.size || 0,
+        lastmod: file.lastmod || ''
       })
       
       console.log(`[数据库模式] 预加载完成: ${file.basename}`)
@@ -290,7 +278,9 @@ class DatabasePreloadManager {
         blob,
         url,
         timestamp: Date.now(),
-        filepath
+        filepath,
+        size: file.size || 0,
+        lastmod: file.lastmod || ''
       })
       
       if (this.nextGroupCache.size > this.maxCacheSize) {
@@ -442,6 +432,16 @@ class DatabasePreloadManager {
     return Array.from(this.cache.keys())
   }
 
+  // 获取所有缓存的文件信息（包含元数据）
+  getCachedFiles(): Array<{ filename: string, basename: string, size: number, lastmod: string }> {
+    return Array.from(this.cache.entries()).map(([filepath, cached]) => ({
+      filename: filepath,
+      basename: filepath.substring(filepath.lastIndexOf('/') + 1),
+      size: cached.size,
+      lastmod: cached.lastmod
+    }))
+  }
+
   // 从缓存中随机获取文件
   getRandomCachedFile(): string | null {
     const cachedPaths = this.getCachedFilepaths()
@@ -452,12 +452,14 @@ class DatabasePreloadManager {
   }
 
   // 标记文件为已观看
+  // 优化：使用 localViewedFiles 避免重复请求，不再维护全量 viewedFiles
   async markAsViewed(filepath: string): Promise<void> {
-    if (this.viewedFiles.has(filepath)) {
+    // 使用本地会话缓存避免重复请求
+    if (this.localViewedFiles.has(filepath)) {
       return
     }
     
-    this.viewedFiles.add(filepath)
+    this.localViewedFiles.add(filepath)
     
     try {
       const response = await fetch('/api/ratings/viewed', {
@@ -477,24 +479,9 @@ class DatabasePreloadManager {
     }
   }
 
-  // 检查文件是否已观看
+  // 检查文件是否已观看（当前会话）
   isViewed(filepath: string): boolean {
-    return this.viewedFiles.has(filepath)
-  }
-
-  // 添加到已看过缓存（不更新数据库）
-  addToViewedCache(filepath: string): void {
-    this.viewedFiles.add(filepath)
-  }
-
-  // 获取已看过的文件集合
-  getViewedFiles(): Set<string> {
-    return new Set(this.viewedFiles)
-  }
-
-  // 获取已看过的文件数量
-  getViewedCount(): number {
-    return this.viewedFiles.size
+    return this.localViewedFiles.has(filepath)
   }
 
   // 从缓存中移除文件
@@ -506,13 +493,8 @@ class DatabasePreloadManager {
     }
   }
 
-  // 清除已观看记录
-  clearViewedFiles() {
-    this.viewedFiles.clear()
-  }
-
   // 直接添加文件到缓存
-  addToCacheDirectly(filepath: string, blob: Blob): void {
+  addToCacheDirectly(filepath: string, blob: Blob, size: number = 0, lastmod: string = ''): void {
     if (this.cache.has(filepath)) return
 
     const url = URL.createObjectURL(blob)
@@ -521,7 +503,9 @@ class DatabasePreloadManager {
       blob,
       url,
       timestamp: Date.now(),
-      filepath
+      filepath,
+      size,
+      lastmod
     })
   }
 
@@ -532,8 +516,7 @@ class DatabasePreloadManager {
 
   isLocalViewed(filepath: string): boolean {
     return this.localViewedFiles.has(filepath)
-  }
-
+  }  
   clearLocalViewedFiles() {
     this.localViewedFiles.clear()
   }
@@ -617,7 +600,8 @@ class DatabasePreloadManager {
     this.setMaxCacheSize(count)
     this.clearCache()
     
-    await this.loadViewedFilesFromDatabase()
+    // 优化：移除重复的 loadViewedFilesFromDatabase 调用
+    // 已看过文件列表由前端 loadViewedFiles 统一加载，SQL 层面通过 isViewed 参数过滤
     
     if (onProgress) {
       onProgress(0, count)
@@ -672,7 +656,8 @@ class DatabasePreloadManager {
         filename: f.filename,
         basename: f.basename,
         size: f.file_size || 0,
-        type: f.file_type
+        type: f.file_type,
+        lastmod: f.lastmod || ''
       }))
       
       let completedCount = 0
@@ -738,7 +723,8 @@ class DatabasePreloadManager {
     this.setMaxCacheSize(count)
     this.clearCache()
     
-    await this.loadViewedFilesFromDatabase()
+    // 优化：移除重复的 loadViewedFilesFromDatabase 调用
+    // 已看过文件列表由前端 loadViewedFiles 统一加载，SQL 层面通过 isViewed 参数过滤
     
     if (onProgress) {
       onProgress(0, count)
@@ -795,7 +781,8 @@ class DatabasePreloadManager {
         filename: f.filename,
         basename: f.basename,
         size: f.file_size || 0,
-        type: f.file_type
+        type: f.file_type,
+        lastmod: f.lastmod || ''
       }))
       this.currentGroupPreloadTriggered = false
       
@@ -895,7 +882,8 @@ class DatabasePreloadManager {
         filename: f.filename,
         basename: f.basename,
         size: f.file_size || 0,
-        type: f.file_type
+        type: f.file_type,
+        lastmod: f.lastmod || ''
       }))
       
       const filesToPreload = this.nextGroupFiles.slice(0, Math.min(count, data.files.length))
@@ -1002,7 +990,8 @@ class DatabasePreloadManager {
         filename: f.filename,
         basename: f.basename,
         size: f.file_size || 0,
-        type: f.file_type
+        type: f.file_type,
+        lastmod: f.lastmod || ''
       }))
       
       const preloadPromises = filesToPreload.map((file: any) =>
@@ -1318,7 +1307,8 @@ class DatabasePreloadManager {
         filename: data.files[0].filename,
         basename: data.files[0].basename,
         size: data.files[0].file_size || 0,
-        type: data.files[0].file_type
+        type: data.files[0].file_type,
+        lastmod: data.files[0].lastmod || ''
       }
       
       // 预加载单个文件

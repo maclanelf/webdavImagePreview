@@ -3,6 +3,7 @@ import { scanFiles, scanCache } from '@/lib/database'
 
 // GET: 获取文件统计信息
 export async function GET(request: NextRequest) {
+  const startTime = Date.now()
   try {
     const { searchParams } = new URL(request.url)
     const webdavUrl = searchParams.get('webdavUrl')
@@ -18,14 +19,11 @@ export async function GET(request: NextRequest) {
 
     const pathList = paths.split(',').filter(p => p.trim())
 
-    // 获取所有相关 cache 的 ID
-    const cacheIds: number[] = []
-    for (const path of pathList) {
-      const cache = scanCache.get(webdavUrl, webdavUsername, path) as any
-      if (cache) {
-        cacheIds.push(cache.id)
-      }
-    }
+    // 优化：使用批量查询获取所有 cacheIds（一次查询代替 N 次循环查询）
+    const caches = scanCache.getMultiple(webdavUrl, webdavUsername, pathList) as any[]
+    const cacheIds = caches.map(c => c.id)
+    
+    console.log(`⏱️ [stats] 批量获取 cacheIds: ${Date.now() - startTime}ms, 找到 ${cacheIds.length} 个`)
 
     if (cacheIds.length === 0) {
       return NextResponse.json({ 
@@ -38,24 +36,19 @@ export async function GET(request: NextRequest) {
       })
     }
 
-    // 检查是否有迁移数据
-    if (!scanFiles.hasDataMultiple(cacheIds)) {
-      return NextResponse.json({ 
-        total: 0, 
-        images: 0, 
-        videos: 0, 
-        viewed: 0,
-        hasData: false,
-        message: '数据尚未迁移，请先执行迁移' 
-      })
-    }
-
-    // 获取统计信息
+    // 优化：直接获取统计信息，跳过 hasDataMultiple 检查
+    // getStatsMultiple 返回 total=0 即表示无数据
+    const statsStartTime = Date.now()
     const stats = scanFiles.getStatsMultiple(cacheIds)
+    console.log(`⏱️ [stats] getStatsMultiple: ${Date.now() - statsStartTime}ms`)
+
+    const hasData = stats.total > 0
+    
+    console.log(`⏱️ [stats] 总耗时: ${Date.now() - startTime}ms`)
 
     return NextResponse.json({ 
       ...stats,
-      hasData: true
+      hasData
     })
 
   } catch (error: any) {

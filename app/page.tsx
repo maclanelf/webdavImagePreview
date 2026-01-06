@@ -175,16 +175,6 @@ export default function HomePage() {
     totalPending: number 
   } | null>(null)
   
-  // 已看过的文件集合 - 统一从 databasePreloadManager 获取
-  // 使用版本号触发重新渲染
-  const [viewedFilesVersion, setViewedFilesVersion] = useState(0)
-  const viewedFiles = useMemo(() => databasePreloadManager.getViewedFiles(), [viewedFilesVersion])
-  
-  // 触发已看过文件更新的辅助函数
-  const refreshViewedFiles = useCallback(() => {
-    setViewedFilesVersion(v => v + 1)
-  }, [])
-  
   // 评分对话框打开状态
   const [ratingDialogOpen, setRatingDialogOpen] = useState(false)
   // 当前评分数据
@@ -454,15 +444,13 @@ export default function HomePage() {
         setPreloadRandomness(randomness)
       }
     }
-
-    // 加载已看过文件列表
-    loadViewedFiles()
   }, [])
 
   // 当统计数据加载完成后，触发初始预加载
   // 注意：配置变化时的预加载由 toggleDrawer 处理
   useEffect(() => {
-    if (stats.total > 0 && viewedFiles.size >= 0 && preloadEnabled && config && !initialPreloadTriggeredRef.current) {
+    // 优化：移除 viewedFiles.size 条件，已看过过滤在 SQL 层面完成
+    if (stats.total > 0 && preloadEnabled && config && !initialPreloadTriggeredRef.current) {
       initialPreloadTriggeredRef.current = true
       const preloadCount = config.scanSettings?.preloadCount || 10
       
@@ -565,7 +553,7 @@ export default function HomePage() {
         })
       }
     }
-  }, [stats.total, viewedFilesVersion, preloadEnabled, config, viewMode, viewedFilter, mediaFilter])
+  }, [stats.total, preloadEnabled, config, viewMode, viewedFilter, mediaFilter])
 
   // 监听缓存状态变化，自动更新进度显示（仅图组模式和随机模式，大视频模式不显示）
   useEffect(() => {
@@ -598,24 +586,7 @@ export default function HomePage() {
   
 
   // 加载已看过文件列表
-  const loadViewedFiles = async () => {
-    try {
-      const response = await fetch('/api/ratings/viewed?viewed=true')
-      if (response.ok) {
-        const data = await response.json()
-        // 更新 databasePreloadManager 的缓存
-        data.filePaths.forEach((filePath: string) => {
-          databasePreloadManager.addToViewedCache(filePath)
-        })
-        // 触发界面刷新
-        refreshViewedFiles()
-        console.log(`加载已看过文件: ${data.count} 个`)
-      }
-    } catch (error) {
-      console.error('加载已看过文件失败:', error)
-    }
-  }
-
+  // 优化：不再需要加载全量路径列表
   const loadStatsFromCache = async (cfg: WebDAVConfig) => {
     setLoading(true)
     setError(null)
@@ -817,12 +788,6 @@ export default function HomePage() {
   const loadStats = async (cfg: WebDAVConfig, forceRescan = false) => {
     setLoading(true)
     
-    // 如果是强制重新扫描，清除已观看记录
-    if (forceRescan) {
-      databasePreloadManager.clearViewedFiles()
-      console.log('已清除观看记录')
-    }
-    
     // 只有在强制重新扫描时才显示扫描进度
     if (forceRescan) {
       setScanProgress({ currentPath: '开始扫描...', fileCount: 0 })
@@ -1017,8 +982,8 @@ export default function HomePage() {
             
             // 将新加载的文件添加到缓存中
             if (preloadEnabled && config) {
-              // 直接添加到缓存（避免重复请求）
-              databasePreloadManager.addToCacheDirectly(file.filename, blob)
+              // 直接添加到缓存（避免重复请求），包含元数据
+              databasePreloadManager.addToCacheDirectly(file.filename, blob, file.size, file.lastmod)
               // 更新缓存状态
               const updatedCacheStatus = databasePreloadManager.getCacheStatus()
               setPreloadStatus(updatedCacheStatus)
@@ -1042,8 +1007,8 @@ export default function HomePage() {
           
           // 将新加载的文件添加到缓存中
           if (preloadEnabled && config) {
-            // 直接添加到缓存（避免重复请求）
-            databasePreloadManager.addToCacheDirectly(file.filename, blob)
+            // 直接添加到缓存（避免重复请求），包含元数据
+            databasePreloadManager.addToCacheDirectly(file.filename, blob, file.size, file.lastmod)
             // 更新缓存状态
             const updatedCacheStatus = databasePreloadManager.getCacheStatus()
             setPreloadStatus(updatedCacheStatus)
@@ -1236,10 +1201,10 @@ export default function HomePage() {
     
     // 从预加载缓存中获取文件（缓存中的文件已经过数据库层面的 viewedFilter 和 mediaFilter 筛选）
     // 只需要排除本地已看过的文件（当前会话中看过但数据库可能还没同步的）
-    const cachedPaths = databasePreloadManager.getCachedFilepaths()
-    const availableCachedFiles = cachedPaths.filter(filePath => {
+    const cachedFiles = databasePreloadManager.getCachedFiles()
+    const availableCachedFiles = cachedFiles.filter(file => {
       // 排除本地已看过的文件（所有模式都适用）
-      if (databasePreloadManager.isLocalViewed(filePath)) return false
+      if (databasePreloadManager.isLocalViewed(file.filename)) return false
       return true
     })
     
@@ -1248,17 +1213,14 @@ export default function HomePage() {
     let fileToLoad: MediaFile | null = null
     
     if (availableCachedFiles.length > 0) {
-      // 从可用的缓存文件中随机选择一个
-      const randomCachedPath = availableCachedFiles[Math.floor(Math.random() * availableCachedFiles.length)]
-      
-      // 数据库模式：直接构造文件对象
-      const basename = randomCachedPath.substring(randomCachedPath.lastIndexOf('/') + 1)
+      // 从可用的缓存文件中随机选择一个（已包含完整元数据）
+      const randomFile = availableCachedFiles[Math.floor(Math.random() * availableCachedFiles.length)]
       fileToLoad = {
-        filename: randomCachedPath,
-        basename: basename,
-        size: 0,
+        filename: randomFile.filename,
+        basename: randomFile.basename,
+        size: randomFile.size,
         type: 'file',
-        lastmod: ''
+        lastmod: randomFile.lastmod
       }
       console.log(`[DEBUG] 从预加载缓存中选择文件: ${fileToLoad?.basename}`)
     } else {//通常是在浏览预加载指定数量的文件没有可以预览的数量了,那么就会从这个方法走
@@ -1580,7 +1542,8 @@ export default function HomePage() {
       
       // 如果当前显示的文件不符合新筛选条件，清空显示
       if (currentFile) {
-        const isViewed = viewedFiles.has(currentFile.filename)
+        // 优化：使用 currentRating?.isViewed 替代 viewedFiles.has()
+        const isViewed = currentRating?.isViewed || false
         
         if ((newFilter === 'viewed' && !isViewed) || (newFilter === 'unviewed' && isViewed)) {
           setCurrentFile(null)
@@ -2091,12 +2054,6 @@ export default function HomePage() {
 
       await saveRating(ratingData)
       
-      // 同步更新 databasePreloadManager 的已看过缓存（不重复更新数据库）
-      databasePreloadManager.addToViewedCache(currentFile.filename)
-      
-      // 触发界面刷新
-      refreshViewedFiles()
-      
       // 评分已保存，状态会在 saveRating 中自动更新
       
       // 显示评分成功提示
@@ -2109,7 +2066,7 @@ export default function HomePage() {
       setSnackbarSeverity('error')
       setSnackbarOpen(true)
     }
-  }, [currentFile, currentRating, saveRating, refreshViewedFiles])
+  }, [currentFile, currentRating, saveRating])
   
   // 关闭提示
   const handleCloseSnackbar = () => {
@@ -2155,12 +2112,6 @@ export default function HomePage() {
 
       await saveRating(autoRatingData, targetFile)
       
-      // 同步更新 databasePreloadManager 的已看过缓存（不重复更新数据库）
-      databasePreloadManager.addToViewedCache(targetFile.filename)
-      
-      // 触发界面刷新
-      refreshViewedFiles()
-      
       // 只有首次标记时才更新统计数据中的已看过计数
       if (!wasAlreadyViewed) {
         setStats(prev => {
@@ -2178,7 +2129,7 @@ export default function HomePage() {
     } catch (error) {
       console.error('自动标记已看过失败:', error)
     }
-  }, [currentFile, saveRating, refreshViewedFiles, viewedFilter])
+  }, [currentFile, saveRating, viewedFilter])
 
   // 自动标记已看过
   const startAutoMarkTimer = (file?: MediaFile) => {
