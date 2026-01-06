@@ -59,6 +59,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const startTime = Date.now()
   try {
     // 确保数据库已初始化
     ensureInitialized()
@@ -74,7 +75,7 @@ export async function POST(request: NextRequest) {
       isViewed
     } = body
 
-    console.log(`💾 [API POST] 保存媒体评分: ${fileName} (${rating}星)`)
+    console.log(`⏱️ [ratings/media POST] 开始: ${fileName}`)
 
     if (!filePath || !fileName || !fileType) {
       console.log(`❌ [API POST] 缺少必要参数: ${fileName}`)
@@ -84,6 +85,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    const saveStartTime = Date.now()
     const result = mediaRatings.save({
       filePath,
       fileName,
@@ -94,6 +96,7 @@ export async function POST(request: NextRequest) {
       category,
       isViewed
     })
+    console.log(`⏱️ [ratings/media POST] mediaRatings.save完成: ${Date.now() - saveStartTime}ms`)
 
     // 更新自定义评价标签的使用计数
     if (customEvaluation) {
@@ -115,7 +118,7 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    console.log(`✅ [API POST] 评分保存成功: ${fileName} (ID: ${result.lastInsertRowid})`)
+    console.log(`⏱️ [ratings/media POST] 总耗时: ${Date.now() - startTime}ms`)
 
     return NextResponse.json({ 
       success: true, 

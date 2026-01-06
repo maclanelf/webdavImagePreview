@@ -19,49 +19,63 @@ if (!fs.existsSync(dataDir)) {
   }
 }
 
-// 创建数据库连接
+// 使用 globalThis 缓存数据库连接，避免开发模式下重复初始化
+declare global {
+  var __db: Database.Database | undefined
+  var __dbInitialized: boolean | undefined
+}
+
+// 创建数据库连接（使用缓存）
 let db: Database.Database
-try {
-  console.log('尝试连接数据库:', dbPath)
-  console.log('当前工作目录:', process.cwd())
-  console.log('数据目录是否存在:', fs.existsSync(dataDir))
-  
-  // 创建数据库连接
-  db = new Database(dbPath)
-  
+if (globalThis.__db) {
+  db = globalThis.__db
+  console.log('♻️ 复用已有数据库连接')
+} else {
   try {
-    // 先设置忙碌超时，再启用 WAL 模式
-    db.pragma('busy_timeout = 10000')
+    console.log('尝试连接数据库:', dbPath)
+    console.log('当前工作目录:', process.cwd())
+    console.log('数据目录是否存在:', fs.existsSync(dataDir))
     
-    // 尝试启用 WAL 模式
-    const currentMode = db.pragma('journal_mode', { simple: true })
-    console.log('当前日志模式:', currentMode)
+    // 创建数据库连接
+    db = new Database(dbPath)
     
-    if (currentMode !== 'wal') {
-      console.log('尝试切换到 WAL 模式...')
-      const newMode = db.pragma('journal_mode = WAL', { simple: true })
-      console.log('新日志模式:', newMode)
+    try {
+      // 先设置忙碌超时，再启用 WAL 模式
+      db.pragma('busy_timeout = 10000')
+      
+      // 尝试启用 WAL 模式
+      const currentMode = db.pragma('journal_mode', { simple: true })
+      console.log('当前日志模式:', currentMode)
+      
+      if (currentMode !== 'wal') {
+        console.log('尝试切换到 WAL 模式...')
+        const newMode = db.pragma('journal_mode = WAL', { simple: true })
+        console.log('新日志模式:', newMode)
+      }
+      
+      // 设置同步模式为NORMAL以提高性能
+      db.pragma('synchronous = NORMAL')
+      
+      // 设置缓存大小
+      db.pragma('cache_size = -64000') // 64MB
+      
+      console.log('数据库配置完成')
+    } catch (pragmaError) {
+      console.warn('设置数据库pragma失败，使用默认配置:', pragmaError)
+      // 即使 pragma 失败，也继续使用数据库
     }
     
-    // 设置同步模式为NORMAL以提高性能
-    db.pragma('synchronous = NORMAL')
+    console.log('数据库连接成功:', dbPath)
     
-    // 设置缓存大小
-    db.pragma('cache_size = -64000') // 64MB
-    
-    console.log('数据库配置完成')
-  } catch (pragmaError) {
-    console.warn('设置数据库pragma失败，使用默认配置:', pragmaError)
-    // 即使 pragma 失败，也继续使用数据库
+    // 缓存到 globalThis
+    globalThis.__db = db
+  } catch (error) {
+    console.error('数据库连接失败:', error)
+    console.error('数据库路径:', dbPath)
+    console.error('数据目录:', dataDir)
+    console.error('数据目录权限:', fs.existsSync(dataDir) ? '存在' : '不存在')
+    throw error
   }
-  
-  console.log('数据库连接成功:', dbPath)
-} catch (error) {
-  console.error('数据库连接失败:', error)
-  console.error('数据库路径:', dbPath)
-  console.error('数据目录:', dataDir)
-  console.error('数据目录权限:', fs.existsSync(dataDir) ? '存在' : '不存在')
-  throw error
 }
 
 // 初始化数据库表
@@ -226,6 +240,12 @@ export function initDatabase() {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_files_parent ON scan_files(parent_path)`)
     db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_files_unique ON scan_files(cache_id, filename)`)
     db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_files_query ON scan_files(cache_id, file_type, is_viewed)`)
+    // 为 filename 单独创建索引，用于 mediaRatings.save 中的同步更新
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_files_filename ON scan_files(filename)`)
+
+    // 创建 scan_cache 索引（加速批量查询）
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_cache_config ON scan_cache(webdav_url, webdav_username)`)
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_cache_unique ON scan_cache(webdav_url, webdav_username, path)`)
 
     console.log('数据库表创建完成')
   } catch (error) {
@@ -259,9 +279,14 @@ export const mediaRatings = {
     category?: string | string[]
     isViewed?: boolean
   }) => {
+    const saveStartTime = Date.now()
     try {
       ensureInitialized()
+      console.log(`⏱️ [mediaRatings.save] ensureInitialized: ${Date.now() - saveStartTime}ms`)
+      
+      const getStartTime = Date.now()
       const existing = mediaRatings.get(data.filePath)
+      console.log(`⏱️ [mediaRatings.save] get existing: ${Date.now() - getStartTime}ms`)
     
     // 将数组转换为JSON字符串
     const customEvaluationStr = data.customEvaluation 
@@ -277,6 +302,7 @@ export const mediaRatings = {
       : null
     
     let result
+    const dbStartTime = Date.now()
     if (existing) {
       // 更新
       const stmt = db.prepare(`
@@ -312,16 +338,19 @@ export const mediaRatings = {
         data.isViewed ? 1 : 0
       )
     }
+    console.log(`⏱️ [mediaRatings.save] ${existing ? 'UPDATE' : 'INSERT'} media_ratings: ${Date.now() - dbStartTime}ms`)
     
     // 同步更新 scan_files 表的 is_viewed 状态
     if (data.isViewed !== undefined) {
       try {
+        const scanUpdateStartTime = Date.now()
         const updateScanFilesStmt = db.prepare(`
           UPDATE scan_files 
           SET is_viewed = ?
           WHERE filename = ?
         `)
         const scanResult = updateScanFilesStmt.run(data.isViewed ? 1 : 0, data.filePath)
+        console.log(`⏱️ [mediaRatings.save] UPDATE scan_files: ${Date.now() - scanUpdateStartTime}ms, changes=${scanResult.changes}`)
         
         if (scanResult.changes > 0) {
           console.log(`✅ [mediaRatings.save] 同步更新 scan_files 已看过状态: ${data.filePath}`)
@@ -332,6 +361,7 @@ export const mediaRatings = {
       }
     }
     
+    console.log(`⏱️ [mediaRatings.save] 总耗时: ${Date.now() - saveStartTime}ms`)
     return result
     } catch (error) {
       console.error('保存媒体评分失败:', error)
@@ -575,6 +605,24 @@ export const scanCache = {
   get: (webdavUrl: string, webdavUsername: string, path: string) => {
     const stmt = db.prepare('SELECT * FROM scan_cache WHERE webdav_url = ? AND webdav_username = ? AND path = ?')
     return stmt.get(webdavUrl, webdavUsername, path)
+  },
+
+  // 获取表中总记录数
+  count: () => {
+    const result = db.prepare('SELECT COUNT(*) as count FROM scan_cache').get() as { count: number }
+    return result.count
+  },
+
+  // 批量获取多个路径的缓存（一次查询，避免循环查询）
+  getMultiple: (webdavUrl: string, webdavUsername: string, paths: string[]) => {
+    if (paths.length === 0) return []
+    const startTime = Date.now()
+    const placeholders = paths.map(() => '?').join(',')
+    const sql = `SELECT id, path FROM scan_cache WHERE webdav_url = ? AND webdav_username = ? AND path IN (${placeholders})`
+    const stmt = db.prepare(sql)
+    const result = stmt.all(webdavUrl, webdavUsername, ...paths)
+    console.log(`⏱️ [scanCache.getMultiple] SQL执行: ${Date.now() - startTime}ms, 返回${result.length}条`)
+    return result
   },
 
   // 保存缓存
@@ -1540,6 +1588,7 @@ export const scanFiles = {
   },
 
   // 跨多个 cacheId 批量获取随机文件（支持随机性控制）
+  // 优化：使用 OFFSET 随机而非 ORDER BY RANDOM()，大幅提升大数据量下的性能
   getRandomBatchMultiple: (cacheIds: number[], count: number, options?: {
     fileType?: 'image' | 'video'
     isViewed?: boolean
@@ -1556,107 +1605,99 @@ export const scanFiles = {
       const { fileType, isViewed, excludeFilenames = [], minFileSize, currentParentPath, randomness = 1 } = options || {}
       const placeholders = cacheIds.map(() => '?').join(',')
       
+      // 构建基础 WHERE 条件（不包含 excludeFilenames，因为会在内存中过滤）
+      const buildWhereClause = (includeParentPath?: string, excludeParentPath?: string) => {
+        let where = `cache_id IN (${placeholders})`
+        const params: any[] = [...cacheIds]
+        
+        if (includeParentPath) {
+          where += ` AND parent_path = ?`
+          params.push(includeParentPath)
+        }
+        if (excludeParentPath) {
+          where += ` AND parent_path != ?`
+          params.push(excludeParentPath)
+        }
+        if (fileType) {
+          where += ` AND file_type = ?`
+          params.push(fileType)
+        }
+        if (isViewed !== undefined) {
+          where += ` AND is_viewed = ?`
+          params.push(isViewed ? 1 : 0)
+        }
+        if (minFileSize !== undefined && minFileSize > 0) {
+          where += ` AND file_size >= ?`
+          params.push(minFileSize)
+        }
+        return { where, params }
+      }
+      
+      // 使用 OFFSET 随机获取单个文件（比 ORDER BY RANDOM() 快得多）
+      const getRandomFile = (whereClause: string, params: any[], excludeSet: Set<string>): any => {
+        // 先获取总数
+        const countResult = db.prepare(`SELECT COUNT(*) as count FROM scan_files WHERE ${whereClause}`).get(...params) as { count: number }
+        if (countResult.count === 0) return null
+        
+        // 最多尝试 10 次随机获取（避免无限循环）
+        for (let attempt = 0; attempt < 10; attempt++) {
+          const offset = Math.floor(Math.random() * countResult.count)
+          const file = db.prepare(`SELECT * FROM scan_files WHERE ${whereClause} LIMIT 1 OFFSET ?`).get(...params, offset) as any
+          
+          if (file && !excludeSet.has(file.filename)) {
+            return file
+          }
+        }
+        return null
+      }
+      
+      // 将 excludeFilenames 转为 Set 以提高查找效率
+      const excludeSet = new Set(excludeFilenames)
+      const results: any[] = []
+      
       // 如果有当前目录且随机性 < 1，使用混合策略
       if (currentParentPath && randomness < 1) {
-        // 根据随机性决定从当前目录获取多少个文件
         const samePathCount = Math.round(count * (1 - randomness))
-        const otherPathCount = count - samePathCount
         
-        const results: any[] = []
-        
-        // 1. 先从当前目录获取文件
+        // 1. 从当前目录获取文件
         if (samePathCount > 0) {
-          let sameSql = `SELECT * FROM scan_files WHERE cache_id IN (${placeholders}) AND parent_path = ?`
-          const sameParams: any[] = [...cacheIds, currentParentPath]
-          
-          if (fileType) {
-            sameSql += ` AND file_type = ?`
-            sameParams.push(fileType)
+          const { where, params } = buildWhereClause(currentParentPath)
+          for (let i = 0; i < samePathCount && results.length < count; i++) {
+            const file = getRandomFile(where, params, excludeSet)
+            if (file) {
+              results.push(file)
+              excludeSet.add(file.filename)
+            }
           }
-          if (isViewed !== undefined) {
-            sameSql += ` AND is_viewed = ?`
-            sameParams.push(isViewed ? 1 : 0)
-          }
-          if (excludeFilenames.length > 0) {
-            const excludePlaceholders = excludeFilenames.map(() => '?').join(',')
-            sameSql += ` AND filename NOT IN (${excludePlaceholders})`
-            sameParams.push(...excludeFilenames)
-          }
-          if (minFileSize !== undefined && minFileSize > 0) {
-            sameSql += ` AND file_size >= ?`
-            sameParams.push(minFileSize)
-          }
-          
-          sameSql += ` ORDER BY RANDOM() LIMIT ?`
-          sameParams.push(samePathCount)
-          
-          const samePathFiles = db.prepare(sameSql).all(...sameParams)
-          results.push(...samePathFiles)
         }
         
-        // 2. 再从其他目录获取文件
+        // 2. 从其他目录获取文件
         const remainingCount = count - results.length
         if (remainingCount > 0) {
-          let otherSql = `SELECT * FROM scan_files WHERE cache_id IN (${placeholders}) AND parent_path != ?`
-          const otherParams: any[] = [...cacheIds, currentParentPath]
-          
-          if (fileType) {
-            otherSql += ` AND file_type = ?`
-            otherParams.push(fileType)
+          const { where, params } = buildWhereClause(undefined, currentParentPath)
+          for (let i = 0; i < remainingCount; i++) {
+            const file = getRandomFile(where, params, excludeSet)
+            if (file) {
+              results.push(file)
+              excludeSet.add(file.filename)
+            }
           }
-          if (isViewed !== undefined) {
-            otherSql += ` AND is_viewed = ?`
-            otherParams.push(isViewed ? 1 : 0)
-          }
-          // 排除已获取的文件
-          const allExclude = [...excludeFilenames, ...results.map((f: any) => f.filename)]
-          if (allExclude.length > 0) {
-            const excludePlaceholders = allExclude.map(() => '?').join(',')
-            otherSql += ` AND filename NOT IN (${excludePlaceholders})`
-            otherParams.push(...allExclude)
-          }
-          if (minFileSize !== undefined && minFileSize > 0) {
-            otherSql += ` AND file_size >= ?`
-            otherParams.push(minFileSize)
-          }
-          
-          otherSql += ` ORDER BY RANDOM() LIMIT ?`
-          otherParams.push(remainingCount)
-          
-          const otherPathFiles = db.prepare(otherSql).all(...otherParams)
-          results.push(...otherPathFiles)
         }
         
         return results
       }
       
-      // 完全随机模式（randomness >= 1 或没有当前目录）
-      let sql = `SELECT * FROM scan_files WHERE cache_id IN (${placeholders})`
-      const params: any[] = [...cacheIds]
-      
-      if (fileType) {
-        sql += ` AND file_type = ?`
-        params.push(fileType)
-      }
-      if (isViewed !== undefined) {
-        sql += ` AND is_viewed = ?`
-        params.push(isViewed ? 1 : 0)
-      }
-      if (excludeFilenames.length > 0) {
-        const excludePlaceholders = excludeFilenames.map(() => '?').join(',')
-        sql += ` AND filename NOT IN (${excludePlaceholders})`
-        params.push(...excludeFilenames)
-      }
-      if (minFileSize !== undefined && minFileSize > 0) {
-        sql += ` AND file_size >= ?`
-        params.push(minFileSize)
+      // 完全随机模式
+      const { where, params } = buildWhereClause()
+      for (let i = 0; i < count; i++) {
+        const file = getRandomFile(where, params, excludeSet)
+        if (file) {
+          results.push(file)
+          excludeSet.add(file.filename)
+        }
       }
       
-      // 使用 ORDER BY RANDOM() 获取随机记录（对于小数量是可接受的）
-      sql += ` ORDER BY RANDOM() LIMIT ?`
-      params.push(count)
-      
-      return db.prepare(sql).all(...params)
+      return results
     } catch (error) {
       console.error('批量随机获取文件失败:', error)
       return []
@@ -1786,14 +1827,13 @@ function calculateNextRun(cronExpression: string): string {
   }
 
   // 延迟初始化数据库
-  let isInitialized = false
-  
   function ensureInitialized() {
-    if (!isInitialized) {
+    // 使用 globalThis 缓存初始化状态，避免开发模式下重复初始化
+    if (!globalThis.__dbInitialized) {
       try {
         initDatabase()
         initDefaultData()
-        isInitialized = true
+        globalThis.__dbInitialized = true
         console.log('数据库初始化成功')
       } catch (error) {
         console.error('数据库初始化失败:', error)
@@ -1803,7 +1843,7 @@ function calculateNextRun(cronExpression: string): string {
           repairDatabase()
           initDatabase()
           initDefaultData()
-          isInitialized = true
+          globalThis.__dbInitialized = true
           console.log('数据库修复并初始化成功')
         } catch (repairError) {
           console.error('数据库修复失败:', repairError)

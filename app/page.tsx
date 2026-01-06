@@ -906,105 +906,6 @@ export default function HomePage() {
     }
   }
 
-  // 为图组模式重新加载缓存
-  const reloadCacheForGalleryMode = async () => {
-    if (!preloadEnabled || !config) return
-
-    const preloadCount = config.scanSettings?.preloadCount || 10
-    
-    try {
-      console.log('[DEBUG] 图组模式：清除现有缓存并重新加载')
-      
-      // 重置预加载状态
-      setGalleryPreloadReady(false)
-      setCachePreloadProgress({ current: 0, total: preloadCount })
-      
-      // 使用预加载管理器的图组模式优化方法，带进度回调
-      const result = await databasePreloadManager.preloadForGalleryMode(
-        config, 
-        [], // 数据库模式不需要文件列表
-        preloadCount, 
-        viewedFilter,
-        (current, total) => {
-          setCachePreloadProgress({ current, total })
-          // 当所有文件加载完成时，标记为就绪，但保持显示进度
-          if (current >= total) {
-            setGalleryPreloadReady(true)
-            // 不设置为 null，保持显示完成状态
-          }
-        }
-      )
-      
-      const cacheStatus = databasePreloadManager.getCacheStatus()
-      setPreloadStatus(cacheStatus)
-      setGalleryPreloadReady(true)
-      // 保持显示进度，基于当前缓存状态
-      setCachePreloadProgress({ 
-        current: cacheStatus.cacheSize, 
-        total: preloadCount 
-      })
-      console.log(`[DEBUG] 图组模式：缓存重新加载完成 - ${result.message}`)
-    } catch (error) {
-      console.error('图组模式缓存重新加载失败:', error)
-      setGalleryPreloadReady(true) // 即使失败也允许预览
-      const cacheStatus = databasePreloadManager.getCacheStatus()
-      // 即使失败也显示当前缓存状态
-      setCachePreloadProgress({ 
-        current: cacheStatus.cacheSize, 
-        total: preloadCount 
-      })
-    }
-  }
-
-  // 标记当前文件为已观看（不再补齐缓存，补齐由smartPreload统一处理）
-  const markFileAsViewed = async (file: MediaFile) => {
-    console.log(`[DEBUG] markFileAsViewed 被调用: ${file.basename}, preloadEnabled: ${preloadEnabled}, config: ${!!config}, viewedFilter: ${viewedFilter}`)
-    if (!preloadEnabled || !config) return
-
-    try {
-      // 在已看过模式下，使用本地管理，不向数据库同步
-      if (viewedFilter === 'viewed') {
-        console.log(`已标记为本地观看: ${file.basename}`)
-        
-        // 检查是否所有已看过的文件都已看过（使用数据库统计）
-        const localViewedCount = databasePreloadManager.getLocalViewedCount()
-        
-        if (localViewedCount >= stats.viewed) {
-          console.log('所有已看过的文件都已看过，提示用户重新观看')
-          setSnackbarMessage('🎉 所有已看过的文件都已看完！点击"重新观看"按钮重新开始')
-          setSnackbarSeverity('success')
-          setSnackbarOpen(true)
-          return
-        }
-      } else {
-        // 其他模式：标记为已看过并同步到数据库
-        // 先检查是否已经标记过，避免重复计数
-        const wasAlreadyViewed = databasePreloadManager.isViewed(file.filename)
-        console.log(`[DEBUG] markFileAsViewed: ${file.basename}, wasAlreadyViewed: ${wasAlreadyViewed}`)
-        
-        await databasePreloadManager.markAsViewed(file.filename)
-        
-        // 触发界面刷新
-        refreshViewedFiles()
-        
-        // 只有首次标记时才更新统计数据中的已看过计数
-        if (!wasAlreadyViewed) {
-          setStats(prev => {
-            console.log(`[DEBUG] 更新 stats.viewed: ${prev.viewed} -> ${prev.viewed + 1}`)
-            return {
-              ...prev,
-              viewed: prev.viewed + 1
-            }
-          })
-        }
-        
-        console.log(`已标记为观看: ${file.basename}`)
-      }
-    } catch (error) {
-      console.error('标记已观看失败:', error)
-    }
-  }
-
 
   // 随机选择一个图组
   const loadRandomGroup = () => {
@@ -1248,15 +1149,6 @@ export default function HomePage() {
       // 立即切换，不等待补齐缓存
       switchCallback()
       setIsSwitching(false)
-      
-      // 后台异步补齐缓存（使用保存的文件引用）
-      if (fileToMark && viewMode === 'random') {
-        console.log(`[DEBUG] 准备调用 markFileAsViewed: ${fileToMark.basename}`)
-        // 不等待补齐完成，让它在后台进行
-        markFileAsViewed(fileToMark).catch(error => {
-          console.error('后台补齐缓存失败:', error)
-        })
-      }
     } catch (error) {
       console.error('保存评分失败:', error)
       // 即使保存失败也继续切换，避免卡住
@@ -1369,7 +1261,7 @@ export default function HomePage() {
         lastmod: ''
       }
       console.log(`[DEBUG] 从预加载缓存中选择文件: ${fileToLoad?.basename}`)
-    } else {
+    } else {//通常是在浏览预加载指定数量的文件没有可以预览的数量了,那么就会从这个方法走
       console.log(`[DEBUG] 缓存中没有可用文件，从数据库随机获取`)
       // 如果缓存中没有可用文件，从数据库随机获取一个文件
       try {
