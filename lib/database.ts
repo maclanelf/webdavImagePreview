@@ -242,6 +242,10 @@ export function initDatabase() {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_files_query ON scan_files(cache_id, file_type, is_viewed)`)
     // 为 filename 单独创建索引，用于 mediaRatings.save 中的同步更新
     db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_files_filename ON scan_files(filename)`)
+    // 优化随机查询的复合索引（cache_id + is_viewed + id 覆盖 ROWID 范围查询）
+    // 3列索引让 WHERE cache_id IN (...) AND is_viewed = ? AND id >= ? ORDER BY id 
+    // 可以直接在索引中完成定位和排序，无需回表后再排序
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_files_random ON scan_files(cache_id, is_viewed, id)`)
 
     // 创建 scan_cache 索引（加速批量查询）
     db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_cache_config ON scan_cache(webdav_url, webdav_username)`)
@@ -1203,7 +1207,7 @@ export const scanFiles = {
     }
   },
 
-  // 随机获取一个文件（亿级数据高效随机）
+  // 随机获取一个文件（亿级数据高效随机 - 使用 ROWID 范围）
   getRandom: (cacheId: number, options?: {
     fileType?: 'image' | 'video'
     isViewed?: boolean
@@ -1213,31 +1217,37 @@ export const scanFiles = {
       
       const { fileType, isViewed } = options || {}
       
-      // 先获取符合条件的总数
-      let countSql = `SELECT COUNT(*) as count FROM scan_files WHERE cache_id = ?`
+      // 构建 WHERE 条件
+      let whereClause = `cache_id = ?`
       const params: any[] = [cacheId]
       
       if (fileType) {
-        countSql += ` AND file_type = ?`
+        whereClause += ` AND file_type = ?`
         params.push(fileType)
       }
       if (isViewed !== undefined) {
-        countSql += ` AND is_viewed = ?`
+        whereClause += ` AND is_viewed = ?`
         params.push(isViewed ? 1 : 0)
       }
       
-      const { count } = db.prepare(countSql).get(...params) as { count: number }
-      if (count === 0) return null
+      // 获取 ID 范围和数量
+      const stats = db.prepare(`SELECT COUNT(*) as count, MIN(id) as minId, MAX(id) as maxId FROM scan_files WHERE ${whereClause}`).get(...params) as any
+      if (!stats || stats.count === 0) return null
       
-      // 随机偏移
-      const offset = Math.floor(Math.random() * count)
+      // 在 ID 范围内随机，最多尝试 5 次
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const randomId = stats.minId + Math.floor(Math.random() * (stats.maxId - stats.minId + 1))
+        
+        // 获取 >= randomId 的第一条符合条件的记录
+        let file = db.prepare(`SELECT * FROM scan_files WHERE ${whereClause} AND id >= ? ORDER BY id LIMIT 1`).get(...params, randomId) as any
+        if (file) return file
+        
+        // 如果没找到，尝试 < randomId 的记录
+        file = db.prepare(`SELECT * FROM scan_files WHERE ${whereClause} AND id < ? ORDER BY id DESC LIMIT 1`).get(...params, randomId) as any
+        if (file) return file
+      }
       
-      let sql = `SELECT * FROM scan_files WHERE cache_id = ?`
-      if (fileType) sql += ` AND file_type = ?`
-      if (isViewed !== undefined) sql += ` AND is_viewed = ?`
-      sql += ` LIMIT 1 OFFSET ?`
-      
-      return db.prepare(sql).get(...params, offset)
+      return null
     } catch (error) {
       console.error('随机获取扫描文件失败:', error)
       return null
@@ -1439,7 +1449,7 @@ export const scanFiles = {
     }
   },
 
-  // 跨多个 cacheId 随机获取文件
+  // 跨多个 cacheId 随机获取文件（使用 ROWID 范围）
   getRandomMultiple: (cacheIds: number[], options?: {
     fileType?: 'image' | 'video'
     isViewed?: boolean
@@ -1452,41 +1462,39 @@ export const scanFiles = {
       
       const { fileType, isViewed, excludeFilenames = [] } = options || {}
       const placeholders = cacheIds.map(() => '?').join(',')
+      const excludeSet = new Set(excludeFilenames)
       
-      // 构建查询条件
-      let countSql = `SELECT COUNT(*) as count FROM scan_files WHERE cache_id IN (${placeholders})`
+      // 构建 WHERE 条件（不包含 excludeFilenames，在内存中过滤）
+      let whereClause = `cache_id IN (${placeholders})`
       const params: any[] = [...cacheIds]
       
       if (fileType) {
-        countSql += ` AND file_type = ?`
+        whereClause += ` AND file_type = ?`
         params.push(fileType)
       }
       if (isViewed !== undefined) {
-        countSql += ` AND is_viewed = ?`
+        whereClause += ` AND is_viewed = ?`
         params.push(isViewed ? 1 : 0)
       }
-      if (excludeFilenames.length > 0) {
-        const excludePlaceholders = excludeFilenames.map(() => '?').join(',')
-        countSql += ` AND filename NOT IN (${excludePlaceholders})`
-        params.push(...excludeFilenames)
+      
+      // 获取 ID 范围和数量
+      const stats = db.prepare(`SELECT COUNT(*) as count, MIN(id) as minId, MAX(id) as maxId FROM scan_files WHERE ${whereClause}`).get(...params) as any
+      if (!stats || stats.count === 0) return null
+      
+      // 在 ID 范围内随机，最多尝试 5 次
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const randomId = stats.minId + Math.floor(Math.random() * (stats.maxId - stats.minId + 1))
+        
+        // 获取 >= randomId 的第一条符合条件的记录
+        let file = db.prepare(`SELECT * FROM scan_files WHERE ${whereClause} AND id >= ? ORDER BY id LIMIT 1`).get(...params, randomId) as any
+        if (file && !excludeSet.has(file.filename)) return file
+        
+        // 如果没找到或被排除，尝试 < randomId 的记录
+        file = db.prepare(`SELECT * FROM scan_files WHERE ${whereClause} AND id < ? ORDER BY id DESC LIMIT 1`).get(...params, randomId) as any
+        if (file && !excludeSet.has(file.filename)) return file
       }
       
-      const { count } = db.prepare(countSql).get(...params) as { count: number }
-      if (count === 0) return null
-      
-      // 随机偏移
-      const offset = Math.floor(Math.random() * count)
-      
-      let sql = `SELECT * FROM scan_files WHERE cache_id IN (${placeholders})`
-      if (fileType) sql += ` AND file_type = ?`
-      if (isViewed !== undefined) sql += ` AND is_viewed = ?`
-      if (excludeFilenames.length > 0) {
-        const excludePlaceholders = excludeFilenames.map(() => '?').join(',')
-        sql += ` AND filename NOT IN (${excludePlaceholders})`
-      }
-      sql += ` LIMIT 1 OFFSET ?`
-      
-      return db.prepare(sql).get(...params, offset)
+      return null
     } catch (error) {
       console.error('跨缓存随机获取文件失败:', error)
       return null
@@ -1588,7 +1596,7 @@ export const scanFiles = {
   },
 
   // 跨多个 cacheId 批量获取随机文件（支持随机性控制）
-  // 优化：使用 OFFSET 随机而非 ORDER BY RANDOM()，大幅提升大数据量下的性能
+  // 优化：ROWID 范围随机获取而非OFFSET ORDER BY RANDOM()，大幅提升大数据量下的性能
   getRandomBatchMultiple: (cacheIds: number[], count: number, options?: {
     fileType?: 'image' | 'video'
     isViewed?: boolean
@@ -1597,6 +1605,7 @@ export const scanFiles = {
     currentParentPath?: string  // 当前目录路径
     randomness?: number         // 随机性：0=优先当前目录，1=完全随机
   }) => {
+    const totalStartTime = Date.now()
     try {
       ensureInitialized()
       
@@ -1633,19 +1642,41 @@ export const scanFiles = {
         return { where, params }
       }
       
-      // 使用 OFFSET 随机获取单个文件（比 ORDER BY RANDOM() 快得多）
+      // 缓存 COUNT 和 ROWID 范围结果，避免重复查询
+      const statsCache = new Map<string, { count: number, minId: number, maxId: number }>()
+      
+      // 使用 ROWID 范围随机获取单个文件（比 OFFSET 快得多）
       const getRandomFile = (whereClause: string, params: any[], excludeSet: Set<string>): any => {
-        // 先获取总数
-        const countResult = db.prepare(`SELECT COUNT(*) as count FROM scan_files WHERE ${whereClause}`).get(...params) as { count: number }
-        if (countResult.count === 0) return null
+        const cacheKey = whereClause + JSON.stringify(params)
+        let stats = statsCache.get(cacheKey)
         
-        // 最多尝试 10 次随机获取（避免无限循环）
-        for (let attempt = 0; attempt < 10; attempt++) {
-          const offset = Math.floor(Math.random() * countResult.count)
-          const file = db.prepare(`SELECT * FROM scan_files WHERE ${whereClause} LIMIT 1 OFFSET ?`).get(...params, offset) as any
+        if (!stats) {
+          // 获取符合条件的记录的 ID 范围和数量
+          const result = db.prepare(`SELECT COUNT(*) as count, MIN(id) as minId, MAX(id) as maxId FROM scan_files WHERE ${whereClause}`).get(...params) as any
+          stats = { count: result.count || 0, minId: result.minId || 0, maxId: result.maxId || 0 }
+          statsCache.set(cacheKey, stats)
+        }
+        
+        if (stats.count === 0) return null
+        
+        // 最多尝试 5 次随机获取
+        for (let attempt = 0; attempt < 5; attempt++) {
+          // 在 ID 范围内随机选择一个 ID
+          const randomId = stats.minId + Math.floor(Math.random() * (stats.maxId - stats.minId + 1))
+          
+          // 获取 >= randomId 的第一条符合条件的记录
+          const file = db.prepare(`SELECT * FROM scan_files WHERE ${whereClause} AND id >= ? ORDER BY id LIMIT 1`).get(...params, randomId) as any
           
           if (file && !excludeSet.has(file.filename)) {
             return file
+          }
+          
+          // 如果没找到，尝试 < randomId 的记录
+          if (!file) {
+            const fallbackFile = db.prepare(`SELECT * FROM scan_files WHERE ${whereClause} AND id < ? ORDER BY id DESC LIMIT 1`).get(...params, randomId) as any
+            if (fallbackFile && !excludeSet.has(fallbackFile.filename)) {
+              return fallbackFile
+            }
           }
         }
         return null
@@ -1684,11 +1715,22 @@ export const scanFiles = {
           }
         }
         
+        console.log(`⏱️ [getRandomBatchMultiple] 混合模式完成: ${Date.now() - totalStartTime}ms`)
         return results
       }
       
       // 完全随机模式
       const { where, params } = buildWhereClause()
+      const countStartTime = Date.now()
+      
+      // 先获取一次统计信息（COUNT + ID范围）
+      const statsResult = db.prepare(`SELECT COUNT(*) as count, MIN(id) as minId, MAX(id) as maxId FROM scan_files WHERE ${where}`).get(...params) as any
+      console.log(`⏱️ [getRandomBatchMultiple] 统计查询: ${Date.now() - countStartTime}ms, 总数=${statsResult.count}, ID范围=${statsResult.minId}-${statsResult.maxId}`)
+      
+      if (statsResult.count === 0) return []
+      statsCache.set(where + JSON.stringify(params), { count: statsResult.count, minId: statsResult.minId, maxId: statsResult.maxId })
+      
+      const fetchStartTime = Date.now()
       for (let i = 0; i < count; i++) {
         const file = getRandomFile(where, params, excludeSet)
         if (file) {
@@ -1696,6 +1738,8 @@ export const scanFiles = {
           excludeSet.add(file.filename)
         }
       }
+      console.log(`⏱️ [getRandomBatchMultiple] 获取${count}个文件: ${Date.now() - fetchStartTime}ms`)
+      console.log(`⏱️ [getRandomBatchMultiple] 总耗时: ${Date.now() - totalStartTime}ms`)
       
       return results
     } catch (error) {
