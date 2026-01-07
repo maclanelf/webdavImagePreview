@@ -3046,9 +3046,9 @@ export default function HomePage() {
                     </Tooltip>
                   </DraggableBox>
 
-                  {/* 右下角：换一个按钮（可拖动） */}
+                  {/* 右下角：换一个按钮（可拖动） - 使用与视频模式相同的 storageKey 保持位置一致 */}
                   <DraggableFab
-                    storageKey="fullscreen_next"
+                    storageKey="fullscreen_shuffle"
                     onClick={loadRandomMedia}
                     disabled={isSwitching}
                   >
