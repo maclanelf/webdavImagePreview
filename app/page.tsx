@@ -2062,6 +2062,13 @@ export default function HomePage() {
     }
   }, [currentFile, ratingType, currentGroup, loadMediaRating, loadCurrentRating])
 
+  // 手动评分包装函数（用于评分对话框，保存后阻止自动评分覆盖）
+  const saveRatingManual = useCallback(async (data: MediaRating | GroupRating, file?: MediaFile) => {
+    await saveRating(data, file)
+    // 手动评分后标记，防止自动评分覆盖
+    hasAutoRatedRef.current = true
+  }, [saveRating])
+
 
   // 获取图组路径
   const getGroupPath = (filePath: string): string => {
@@ -2092,7 +2099,8 @@ export default function HomePage() {
 
       await saveRating(ratingData)
       
-      // 评分已保存，状态会在 saveRating 中自动更新
+      // 手动评分后标记，防止自动评分覆盖
+      hasAutoRatedRef.current = true
       
       // 显示评分成功提示
       setSnackbarMessage(`${rating}星 - ${evaluation}`)
@@ -2672,7 +2680,7 @@ export default function HomePage() {
         <RatingDialog
           open={ratingDialogOpen}
           onClose={closeRatingDialog}
-          onSave={saveRating}
+          onSave={saveRatingManual}
           title={ratingType === 'media' ? '评分媒体文件' : '评分图组'}
           subtitle={
             ratingType === 'media' 
@@ -3069,7 +3077,7 @@ export default function HomePage() {
                   <RatingDialog
                     open={ratingDialogOpen}
                     onClose={closeRatingDialog}
-                    onSave={saveRating}
+                    onSave={saveRatingManual}
                     title={ratingType === 'media' ? '评分媒体文件' : '评分图组'}
                     subtitle={
                       ratingType === 'media' 
@@ -3840,7 +3848,7 @@ export default function HomePage() {
       <RatingDialog
         open={ratingDialogOpen}
         onClose={closeRatingDialog}
-        onSave={saveRating}
+        onSave={saveRatingManual}
         title={ratingType === 'media' ? '评分媒体文件' : '评分图组'}
         subtitle={
           ratingType === 'media' 
