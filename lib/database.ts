@@ -1376,20 +1376,107 @@ export const scanFiles = {
         return { success: false, message: '文件数据为空' }
       }
       
+      // 记录迁移前的状态
+      const beforeStats = scanFiles.getStats(cacheId)
+      const beforeTotal = beforeStats.total
+      const beforeViewed = beforeStats.viewed
+      
+      console.log(`📊 [迁移数据] 迁移前: 文件数量 ${beforeTotal}, 已看过 ${beforeViewed}`)
+      
       // 先删除旧数据
       scanFiles.deleteByCache(cacheId)
       
       // 批量插入
       const result = scanFiles.batchInsert(cacheId, files)
       
+      // 从 media_ratings 表同步 is_viewed 状态
+      // media_ratings.file_path 和 scan_files.filename 都是唯一的全量路径
+      const syncResult = scanFiles.syncViewedFromRatings(cacheId)
+      
+      // 记录迁移后的状态
+      const afterStats = scanFiles.getStats(cacheId)
+      const afterTotal = afterStats.total
+      const afterViewed = afterStats.viewed
+      
+      const logMessage = `迁移前: 文件数量 ${beforeTotal}, 已看过 ${beforeViewed} | 迁移后: 文件数量 ${afterTotal}, 同步已看过 ${afterViewed}`
+      console.log(`✅ [迁移数据] ${logMessage}`)
+      
+      // 写入扫描日志（和扫描日志写在同一个文件）
+      try {
+        const { writeScanLog } = require('./scanLogger')
+        writeScanLog({
+          webdavUrl: cache.webdav_url,
+          webdavUsername: cache.webdav_username,
+          path: cache.path,
+          scanType: 'migration',
+          status: 'completed',
+          totalFiles: afterTotal,
+          logDetails: `数据迁移完成\n迁移前: 文件数量 ${beforeTotal}, 已看过 ${beforeViewed}\n迁移后: 文件数量 ${afterTotal}, 同步已看过 ${afterViewed}\n从 media_ratings 同步了 ${syncResult.synced} 条已看记录`
+        })
+      } catch (logError) {
+        console.error('写入迁移日志失败:', logError)
+      }
+      
       return { 
         success: true, 
-        message: `成功迁移 ${result.inserted} 个文件`,
-        count: result.inserted
+        message: logMessage,
+        count: result.inserted,
+        syncedViewed: syncResult.synced,
+        beforeStats: { total: beforeTotal, viewed: beforeViewed },
+        afterStats: { total: afterTotal, viewed: afterViewed }
       }
     } catch (error: any) {
       console.error('迁移扫描文件失败:', error)
+      
+      // 写入失败日志
+      try {
+        const cache = db.prepare('SELECT * FROM scan_cache WHERE id = ?').get(cacheId) as any
+        if (cache) {
+          const { writeScanLog } = require('./scanLogger')
+          writeScanLog({
+            webdavUrl: cache.webdav_url,
+            webdavUsername: cache.webdav_username,
+            path: cache.path,
+            scanType: 'migration',
+            status: 'failed',
+            errorMessage: error.message,
+            logDetails: `数据迁移失败: ${error.message}`
+          })
+        }
+      } catch (logError) {
+        console.error('写入迁移失败日志失败:', logError)
+      }
+      
       return { success: false, message: error.message }
+    }
+  },
+
+  // 从 media_ratings 表同步 is_viewed 状态到 scan_files
+  // 利用 media_ratings.file_path 和 scan_files.filename 的唯一性进行匹配
+  syncViewedFromRatings: (cacheId: number) => {
+    try {
+      ensureInitialized()
+      
+      // 使用 UPDATE ... WHERE EXISTS 批量更新，避免逐条查询
+      const stmt = db.prepare(`
+        UPDATE scan_files 
+        SET is_viewed = 1 
+        WHERE cache_id = ? 
+          AND is_viewed = 0
+          AND EXISTS (
+            SELECT 1 FROM media_ratings 
+            WHERE media_ratings.file_path = scan_files.filename 
+              AND media_ratings.is_viewed = 1
+          )
+      `)
+      
+      const result = stmt.run(cacheId)
+      console.log(`✅ [syncViewedFromRatings] 同步已看状态: cacheId=${cacheId}, 更新=${result.changes}条`)
+      
+      return { synced: result.changes }
+    } catch (error) {
+      console.error('同步已看状态失败:', error)
+      return { synced: 0 }
     }
   },
 

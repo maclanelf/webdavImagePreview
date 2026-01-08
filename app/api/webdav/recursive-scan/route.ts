@@ -104,7 +104,9 @@ export async function POST(request: NextRequest) {
         scanFiles.deleteByCache(savedCache.id)
         // 批量插入新数据
         scanFiles.batchInsert(savedCache.id, filesData)
-        console.log(`已同步写入 scan_files 表: ${filesData.length} 个文件`)
+        // 从 media_ratings 同步已看状态
+        const syncResult = scanFiles.syncViewedFromRatings(savedCache.id)
+        console.log(`已同步写入 scan_files 表: ${filesData.length} 个文件，同步 ${syncResult.synced} 个已看记录`)
       }
 
       // 记录扫描完成日志，包含完整的进度信息
