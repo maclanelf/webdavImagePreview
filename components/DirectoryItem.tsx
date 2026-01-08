@@ -708,67 +708,65 @@ export default function DirectoryItem({
           ) : (
             <List>
               {logs.map((log, index) => (
-                <ListItem key={`${log.timestamp}-${index}`} divider={index < logs.length - 1}>
-                  <ListItemText
-                    primary={
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <Chip 
-                          label={log.status === 'completed' ? '完成' : log.status === 'failed' ? '失败' : log.status === 'started' ? '开始' : '进度'}
-                          color={log.status === 'completed' ? 'success' : log.status === 'failed' ? 'error' : log.status === 'started' ? 'primary' : 'info'}
-                          size="small"
-                        />
-                        <Typography variant="body2" color="text.secondary">
-                          {new Date(log.timestamp).toLocaleString('zh-CN')}
+                <ListItem key={`${log.timestamp}-${index}`} divider={index < logs.length - 1} sx={{ flexDirection: 'column', alignItems: 'flex-start' }}>
+                  <Box sx={{ width: '100%' }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                      <Chip 
+                        label={log.status === 'completed' ? '完成' : log.status === 'failed' ? '失败' : log.status === 'started' ? '开始' : '进度'}
+                        color={log.status === 'completed' ? 'success' : log.status === 'failed' ? 'error' : log.status === 'started' ? 'primary' : 'info'}
+                        size="small"
+                      />
+                      <Typography variant="body2" color="text.secondary">
+                        {new Date(log.timestamp).toLocaleString('zh-CN')}
+                      </Typography>
+                    </Box>
+                    
+                    <Typography variant="body2" sx={{ mb: 0.5 }}>
+                      扫描类型: {log.scanType === 'recursive' ? '手动扫描' : log.scanType === 'scheduled' ? '定时扫描' : log.scanType} | 
+                      {log.totalFiles !== undefined && `文件总数: ${log.totalFiles} | `}
+                      {log.imageCount !== undefined && `图片: ${log.imageCount} | `}
+                      {log.videoCount !== undefined && `视频: ${log.videoCount}`}
+                    </Typography>
+                    
+                    {log.durationMs && (
+                      <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                        耗时: {log.durationMs}ms
+                      </Typography>
+                    )}
+                    
+                    {log.errorMessage && (
+                      <Typography variant="body2" color="error" sx={{ mb: 0.5 }}>
+                        错误: {log.errorMessage}
+                      </Typography>
+                    )}
+                    
+                    {log.logDetails && (
+                      <Box sx={{ mt: 1 }}>
+                        <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block' }}>
+                          扫描详情:
                         </Typography>
+                        <Box sx={{ 
+                          bgcolor: 'grey.50', 
+                          p: 1, 
+                          borderRadius: 1, 
+                          border: '1px solid', 
+                          borderColor: 'grey.200',
+                          maxHeight: '200px',
+                          overflow: 'auto'
+                        }}>
+                          <pre style={{ 
+                            fontSize: '12px', 
+                            margin: 0, 
+                            whiteSpace: 'pre-wrap',
+                            fontFamily: 'monospace',
+                            lineHeight: '1.4'
+                          }}>
+                            {log.logDetails}
+                          </pre>
+                        </Box>
                       </Box>
-                    }
-                    secondary={
-                      <Box>
-                        <Typography variant="body2">
-                          扫描类型: {log.scanType === 'recursive' ? '手动扫描' : log.scanType === 'scheduled' ? '定时扫描' : log.scanType} | 
-                          {log.totalFiles !== undefined && `文件总数: ${log.totalFiles} | `}
-                          {log.imageCount !== undefined && `图片: ${log.imageCount} | `}
-                          {log.videoCount !== undefined && `视频: ${log.videoCount}`}
-                        </Typography>
-                        {log.durationMs && (
-                          <Typography variant="body2" color="text.secondary">
-                            耗时: {log.durationMs}ms
-                          </Typography>
-                        )}
-                        {log.errorMessage && (
-                          <Typography variant="body2" color="error">
-                            错误: {log.errorMessage}
-                          </Typography>
-                        )}
-                        {log.logDetails && (
-                          <Box sx={{ mt: 1 }}>
-                            <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block' }}>
-                              扫描详情:
-                            </Typography>
-                            <Box sx={{ 
-                              bgcolor: 'grey.50', 
-                              p: 1, 
-                              borderRadius: 1, 
-                              border: '1px solid', 
-                              borderColor: 'grey.200',
-                              maxHeight: '200px',
-                              overflow: 'auto'
-                            }}>
-                              <pre style={{ 
-                                fontSize: '12px', 
-                                margin: 0, 
-                                whiteSpace: 'pre-wrap',
-                                fontFamily: 'monospace',
-                                lineHeight: '1.4'
-                              }}>
-                                {log.logDetails}
-                              </pre>
-                            </Box>
-                          </Box>
-                        )}
-                      </Box>
-                    }
-                  />
+                    )}
+                  </Box>
                 </ListItem>
               ))}
             </List>
