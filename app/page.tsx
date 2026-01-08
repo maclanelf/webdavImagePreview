@@ -1900,35 +1900,11 @@ export default function HomePage() {
 
   /**
    * 检测媒体类型变化并处理全屏状态切换
-   * - 图片Dialog全屏 → 视频：显示过渡遮罩，退出Dialog全屏，视频加载后自动进入原生全屏
-   * - 视频原生全屏 → 图片：保持fullscreen=true，让图片直接渲染为Dialog全屏
-   * @returns 返回是否需要在视频加载后自动进入全屏
+   * 由于现在图片和视频都使用网页容器全屏（CSS 方式），不再需要特殊处理
+   * @returns 始终返回 false
    */
   const handleMediaTypeChangeInFullscreen = (nextFile: MediaFile): boolean => {
-    if (!fullscreen || !currentFile) return false
-    
-    const currentIsImage = !isVideo(currentFile.filename)
-    const nextIsImage = !isVideo(nextFile.filename)
-    
-    // 媒体类型没有变化，不需要处理
-    if (currentIsImage === nextIsImage) return false
-    
-    // 从图片Dialog全屏 → 视频
-    if (currentIsImage && !nextIsImage) {
-      console.log('[全屏状态] 图片全屏切换到视频，显示过渡遮罩')
-      // 先显示过渡遮罩，避免看到非全屏页面
-      setFullscreenTransitionOverlay(true)
-      setFullscreen(false)
-      return true // 需要在视频加载后进入原生全屏
-    }
-    
-    // 从视频原生全屏 → 图片
-    if (!currentIsImage && nextIsImage) {
-      console.log('[全屏状态] 视频全屏切换到图片，保持fullscreen=true用于Dialog全屏')
-      // 保持 fullscreen=true，图片会直接渲染为Dialog全屏
-      return false
-    }
-    
+    // 图片和视频都使用网页容器全屏，无需特殊处理
     return false
   }
 
@@ -2006,33 +1982,8 @@ export default function HomePage() {
   }
 
   const toggleFullscreen = async () => {
-    const isVideoFile = currentFile && isVideo(currentFile.filename)
-    
-    if (isVideoFile) {
-      // 视频使用原生全屏 API（无需保存状态，播放器实例不变）
-      const container = videoPlayerContainerRef.current
-      if (!container) {
-        console.warn('[原生全屏] 容器未找到')
-        return
-      }
-      
-      try {
-        if (!document.fullscreenElement) {
-          // 进入全屏
-          await container.requestFullscreen()
-          console.log('[原生全屏] 进入全屏')
-        } else {
-          // 退出全屏
-          await document.exitFullscreen()
-          console.log('[原生全屏] 退出全屏')
-        }
-      } catch (error) {
-        console.error('[原生全屏] 切换失败:', error)
-      }
-    } else {
-      // 图片使用 Dialog 方式（保持原有逻辑）
-      setFullscreen(!fullscreen)
-    }
+    // 统一使用网页容器全屏方式（通过 CSS 实现，不使用原生全屏 API）
+    setFullscreen(!fullscreen)
   }
 
   // 评分相关函数
@@ -2508,312 +2459,6 @@ export default function HomePage() {
 
   const filteredStats = getFilteredStats()
 
-  // 全屏模式（仅用于图片，视频使用原生全屏 API）
-  if (fullscreen && currentFile && mediaUrl && !isVideo(currentFile.filename)) {
-    return (
-      <Box
-        ref={fullscreenContainerRef}
-        sx={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: '#000',
-          zIndex: 2000,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        {/* 全屏图片展示 */}
-        <Box
-          component="img"
-          src={mediaUrl}
-          alt={currentFile.basename}
-          sx={{
-            maxWidth: '100%',
-            maxHeight: '100%',
-            width: 'auto',
-            height: 'auto',
-            objectFit: 'contain',
-          }}
-        />
-
-        {/* 左上角：索引信息 */}
-        <Box
-          sx={{
-            position: 'fixed',
-            top: 24,
-            left: 24,
-            backgroundColor: 'rgba(0, 0, 0, 0.7)',
-            color: 'white',
-            px: 2.5,
-            py: 1.5,
-            borderRadius: 2,
-            zIndex: 2001,
-            backdropFilter: 'blur(10px)',
-          }}
-        >
-          <Typography variant="body1" fontWeight="medium">
-            {viewMode === 'gallery' && currentGroup.length > 0
-              ? `${currentGroupIndex + 1} / ${currentGroup.length}`
-              : '随机浏览'}
-          </Typography>
-        </Box>
-
-        {/* 左侧边：星星等级设置 - 纵向显示，可拖动 */}
-        <DraggableBox
-          storageKey="fullscreen_rating"
-          defaultSx={{
-            backgroundColor: 'rgba(0, 0, 0, 0.5)',
-            backdropFilter: 'blur(8px)',
-            px: 1,
-            py: 1.5,
-            borderRadius: 1.5,
-            zIndex: 2001,
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: 0.5,
-            opacity: 0.5,
-            '&:hover': {
-              opacity: 1,
-            },
-            '@media (max-width: 768px)': {
-              px: 0.5,
-              py: 1,
-            },
-          }}
-          sx={({ position }: { position: { x: number; y: number } | null; isDragging: boolean }) => ({
-            // 如果没有保存位置，使用默认位置和响应式样式
-            ...(!position && {
-              left: 8,
-              top: viewMode === 'gallery' && currentGroup.length > 0 ? '65%' : '75%',
-              transform: 'translateY(-50%)',
-              '@media (max-width: 768px)': {
-                left: 4,
-                ...(viewMode === 'gallery' && currentGroup.length > 0 && {
-                  top: '60%',
-                }),
-              },
-            }),
-          })}
-        >
-          {/* 预加载数量显示 */}
-          {preloadEnabled && cachePreloadProgress && viewMode !== 'large-video' && (
-            <Typography
-              variant="caption"
-              sx={{
-                color: 'rgba(255, 255, 255, 0.8)',
-                fontSize: '10px',
-                mb: 0.5,
-              }}
-            >
-              {cachePreloadProgress.current}
-            </Typography>
-          )}
-          
-          <Box
-            sx={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: 0.5,
-            }}
-          >
-            {QUICK_RATING_CONFIG.map((config) => {
-              const isLit = currentRating?.rating && currentRating.rating >= config.rating
-              
-              return (
-                <Tooltip
-                  key={config.rating}
-                  title={`快捷键 ${config.rating}: ${config.rating}星 - ${config.evaluation} - 已看过`}
-                  placement="right"
-                >
-                  <IconButton
-                    size="small"
-                    onClick={() => handleQuickRate(config.rating, config.evaluation)}
-                    disabled={loading || isSwitching}
-                    sx={{
-                      color: isLit 
-                        ? 'warning.main' 
-                        : 'rgba(255, 255, 255, 0.7)',
-                      '&:hover': {
-                        backgroundColor: 'rgba(255, 255, 255, 0.2)',
-                        color: 'warning.main',
-                      },
-                      transition: 'all 0.2s ease-in-out',
-                      p: 0.5,
-                    }}
-                  >
-                    {isLit ? (
-                      <StarIcon fontSize="small" />
-                    ) : (
-                      <StarBorderIcon fontSize="small" />
-                    )}
-                  </IconButton>
-                </Tooltip>
-              )
-            })}
-          </Box>
-          
-          {/* 详情评分按钮 */}
-          <Tooltip title="详细评分 (R)" placement="right">
-            <IconButton
-              size="small"
-              onClick={() => openRatingDialog('media')}
-              disabled={loading || isSwitching || !currentFile}
-              sx={{
-                color: 'rgba(255, 255, 255, 0.7)',
-                mt: 0.5,
-                '&:hover': {
-                  backgroundColor: 'rgba(255, 255, 255, 0.2)',
-                  color: 'primary.main',
-                },
-                transition: 'all 0.2s ease-in-out',
-                p: 0.5,
-              }}
-            >
-              <RateReviewIcon fontSize="small" />
-            </IconButton>
-          </Tooltip>
-        </DraggableBox>
-
-        {/* 退出全屏按钮 */}
-        <Tooltip title="退出全屏" placement="left">
-          <Fab
-            color="secondary"
-            onClick={toggleFullscreen}
-            sx={{
-              position: 'fixed',
-              top: 24,
-              right: 24,
-              zIndex: 2001,
-            }}
-          >
-            <FullscreenExitIcon />
-          </Fab>
-        </Tooltip>
-
-        {/* 图组模式控制按钮 */}
-        {viewMode === 'gallery' && currentGroup.length > 0 && (
-          <>
-            {/* 上一张 */}
-            {currentGroupIndex > 0 && (
-              <Tooltip title="上一张" placement="left">
-                <Fab
-                  color="default"
-                  onClick={previousInGroup}
-                  disabled={loading || isSwitching}
-                  sx={{
-                    position: 'fixed',
-                    bottom: 120,
-                    left: 24,
-                    backgroundColor: 'rgba(255, 255, 255, 0.9)',
-                    zIndex: 2001,
-                  }}
-                >
-                  <ArrowBackIcon />
-                </Fab>
-              </Tooltip>
-            )}
-
-            {/* 下一张 */}
-            <Tooltip title="下一张" placement="right">
-              <Fab
-                color="default"
-                onClick={nextInGroup}
-                disabled={loading || isSwitching}
-                sx={{
-                  position: 'fixed',
-                  bottom: 100,
-                  right: 24,
-                  backgroundColor: 'rgba(255, 255, 255, 0.9)',
-                }}
-              >
-                <ArrowForwardIcon />
-              </Fab>
-            </Tooltip>
-
-
-            {/* 换组按钮 */}
-            <Tooltip title="换下一组" placement="left">
-              <Fab
-                color="secondary"
-                onClick={() => {
-                  playIntentRef.current = true
-                  loadRandomGroup()
-                }}
-                disabled={loading || isSwitching}
-                sx={{
-                  position: 'fixed',
-                  bottom: 180,
-                  right: 24,
-                }}
-              >
-                <SkipNextIcon />
-              </Fab>
-            </Tooltip>
-          </>
-        )}
-
-        {/* 换一个按钮（随机模式或图组模式下的默认按钮）- 可拖动 */}
-        <Tooltip title={loading ? '加载中...' : (viewMode === 'gallery' ? '下一张' : '换一个')} placement="left">
-          <DraggableFab
-            storageKey="fullscreen_shuffle"
-            color="primary"
-            aria-label="换一个"
-            onClick={loadRandomMedia}
-            disabled={loading || isSwitching}
-          >
-            {loading ? (
-              <CircularProgress size={24} color="inherit" />
-            ) : (
-              viewMode === 'gallery' ? <ArrowForwardIcon /> : <ShuffleIcon />
-            )}
-          </DraggableFab>
-        </Tooltip>
-
-        {/* 评分提示 - 全屏模式 */}
-        <Snackbar
-          open={snackbarOpen}
-          autoHideDuration={2000}
-          onClose={handleCloseSnackbar}
-          anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
-          sx={{ zIndex: 9999 }}
-        >
-          <Alert 
-            onClose={handleCloseSnackbar} 
-            severity={snackbarSeverity}
-            variant="filled"
-            sx={{ width: '100%', fontSize: '1.1rem', fontWeight: 'bold' }}
-          >
-            {snackbarMessage}
-          </Alert>
-        </Snackbar>
-
-        {/* 评分对话框 - 全屏模式 */}
-        <RatingDialog
-          open={ratingDialogOpen}
-          onClose={closeRatingDialog}
-          onSave={saveRatingManual}
-          title={ratingType === 'media' ? '评分媒体文件' : '评分图组'}
-          subtitle={
-            ratingType === 'media' 
-              ? currentFile?.basename 
-              : currentGroup.length > 0 
-                ? `${getGroupName(getGroupPath(currentGroup[0].filename))} (${currentGroup.length} 个文件)`
-                : undefined
-          }
-          initialData={currentRating || undefined}
-          type={ratingType}
-          container={fullscreenContainerRef.current}
-        />
-      </Box>
-    )
-  }
-
   return (
     <Box sx={{ minHeight: '100vh', backgroundColor: '#f5f5f5' }}>
       {/* 顶部工具栏 - 简洁版 */}
@@ -2902,25 +2547,35 @@ export default function HomePage() {
           <Card 
             elevation={0} 
             sx={{ 
-              borderRadius: 2, 
+              borderRadius: fullscreen ? 0 : 2, 
               overflow: 'hidden',
-              backgroundColor: 'transparent',
+              backgroundColor: fullscreen ? '#000' : 'transparent',
+              // 全屏模式样式（通过 CSS 实现，不使用原生全屏 API）
+              ...(fullscreen && {
+                position: 'fixed',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                zIndex: 2000,
+              }),
             }}
           >
             <Box 
-              ref={currentFile && isVideo(currentFile.filename) ? videoPlayerContainerRef : undefined}
+              ref={videoPlayerContainerRef}
               sx={{ 
                 position: 'relative', 
                 backgroundColor: '#000',
-                borderRadius: 2,
+                borderRadius: fullscreen ? 0 : 2,
                 overflow: 'hidden',
-                // 原生全屏时的样式（仅用于视频）
-                '&:fullscreen': {
+                // 全屏模式样式
+                ...(fullscreen && {
+                  width: '100%',
+                  height: '100%',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  borderRadius: 0,
-                },
+                }),
               }}
             >
               {mediaType === 'image' && (
@@ -2929,8 +2584,9 @@ export default function HomePage() {
                   image={mediaUrl}
                   alt={currentFile.basename}
                   sx={{
-                    width: '100%',
-                    maxHeight: 'calc(100vh - 150px)',
+                    width: fullscreen ? 'auto' : '100%',
+                    maxWidth: '100%',
+                    maxHeight: fullscreen ? '100%' : 'calc(100vh - 150px)',
                     objectFit: 'contain',
                   }}
                 />
@@ -3018,8 +2674,9 @@ export default function HomePage() {
                     }
                   }}
                   sx={{
-                    width: '100%',
-                    maxHeight: 'calc(100vh - 150px)',
+                    width: fullscreen ? 'auto' : '100%',
+                    maxWidth: '100%',
+                    maxHeight: fullscreen ? '100%' : 'calc(100vh - 150px)',
                   }}
                 />
               )}
@@ -3042,8 +2699,8 @@ export default function HomePage() {
                 />
               )}
 
-              {/* 视频全屏时的 UI 覆盖层 */}
-              {currentFile && isVideo(currentFile.filename) && fullscreen && (
+              {/* 全屏时的 UI 覆盖层（图片和视频通用） */}
+              {currentFile && fullscreen && (
                 <>
                   {/* 左上角：文件信息 */}
                   <Box
@@ -3172,7 +2829,70 @@ export default function HomePage() {
                     </Tooltip>
                   </DraggableBox>
 
-                  {/* 右下角：换一个按钮（可拖动） - 使用与视频模式相同的 storageKey 保持位置一致 */}
+                  {/* 图组模式控制按钮 */}
+                  {viewMode === 'gallery' && currentGroup.length > 0 && (
+                    <>
+                      {/* 上一张 */}
+                      {currentGroupIndex > 0 && (
+                        <Tooltip title="上一张" placement="left">
+                          <Fab
+                            color="default"
+                            onClick={previousInGroup}
+                            disabled={loading || isSwitching}
+                            sx={{
+                              position: 'fixed',
+                              bottom: 120,
+                              left: 24,
+                              backgroundColor: 'rgba(255, 255, 255, 0.9)',
+                              zIndex: 2001,
+                            }}
+                          >
+                            <ArrowBackIcon />
+                          </Fab>
+                        </Tooltip>
+                      )}
+
+                      {/* 下一张 */}
+                      <Tooltip title="下一张" placement="right">
+                        <Fab
+                          color="default"
+                          onClick={nextInGroup}
+                          disabled={loading || isSwitching}
+                          sx={{
+                            position: 'fixed',
+                            bottom: 100,
+                            right: 24,
+                            backgroundColor: 'rgba(255, 255, 255, 0.9)',
+                            zIndex: 2001,
+                          }}
+                        >
+                          <ArrowForwardIcon />
+                        </Fab>
+                      </Tooltip>
+
+                      {/* 换组按钮 */}
+                      <Tooltip title="换下一组" placement="left">
+                        <Fab
+                          color="secondary"
+                          onClick={() => {
+                            playIntentRef.current = true
+                            loadRandomGroup()
+                          }}
+                          disabled={loading || isSwitching}
+                          sx={{
+                            position: 'fixed',
+                            bottom: 180,
+                            right: 24,
+                            zIndex: 2001,
+                          }}
+                        >
+                          <SkipNextIcon />
+                        </Fab>
+                      </Tooltip>
+                    </>
+                  )}
+
+                  {/* 右下角：换一个按钮（可拖动） */}
                   <DraggableFab
                     storageKey="fullscreen_shuffle"
                     onClick={loadRandomMedia}
@@ -3199,7 +2919,7 @@ export default function HomePage() {
                     <FullscreenExitIcon />
                   </IconButton>
 
-                  {/* 评分对话框 - 视频全屏模式 */}
+                  {/* 评分对话框 - 全屏模式 */}
                   <RatingDialog
                     open={ratingDialogOpen}
                     onClose={closeRatingDialog}
@@ -3214,16 +2934,15 @@ export default function HomePage() {
                     }
                     initialData={currentRating || undefined}
                     type={ratingType}
-                    container={mediaType === 'stream-video' 
-                      ? instantVideoRef.current?.getContainerElement() 
-                      : videoPlayerContainerRef.current}
+                    container={videoPlayerContainerRef.current}
                   />
                 </>
               )}
               
             </Box>
             
-            {/* 文件信息 - 紧凑显示 */}
+            {/* 文件信息 - 紧凑显示（全屏模式下隐藏） */}
+            {!fullscreen && (
             <CardContent sx={{ py: 1.5 }}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 1 }}>
                 <Typography 
@@ -3352,6 +3071,7 @@ export default function HomePage() {
                 </Box>
               )}
             </CardContent>
+            )}
           </Card>
         )}
 
