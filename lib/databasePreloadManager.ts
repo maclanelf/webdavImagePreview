@@ -56,6 +56,10 @@ class DatabasePreloadManager {
   private pendingPreloadQueue: Array<() => void> = []
   private concurrencyLimitEnabled = true
 
+  // 取消预加载控制
+  private abortController: AbortController | null = null
+  private preloadCancelled = false
+
   // 设置缓存大小
   setMaxCacheSize(size: number) {
     this.maxCacheSize = size
@@ -70,6 +74,45 @@ class DatabasePreloadManager {
   setConcurrencyLimitEnabled(enabled: boolean) {
     this.concurrencyLimitEnabled = enabled
     console.log(`[数据库模式][并发控制] 并发限制${enabled ? '已启用' : '已禁用'}`)
+  }
+
+  // 取消所有正在进行的预加载请求
+  cancelAllPreloads(): void {
+    console.log('[数据库模式] 取消所有预加载请求')
+    this.preloadCancelled = true
+    
+    // 中止当前的 AbortController
+    if (this.abortController) {
+      this.abortController.abort()
+      this.abortController = null
+    }
+    
+    // 清空待处理队列
+    this.pendingPreloadQueue = []
+    
+    // 清空预加载队列
+    this.queue.clear()
+    
+    // 重置活动计数
+    this.activePreloadCount = 0
+    
+    console.log('[数据库模式] 预加载请求已取消')
+  }
+
+  // 重置取消状态（在开始新的预加载前调用）
+  private resetCancelState(): void {
+    this.preloadCancelled = false
+    this.abortController = new AbortController()
+  }
+
+  // 检查预加载是否已被取消
+  private isPreloadCancelled(): boolean {
+    return this.preloadCancelled
+  }
+
+  // 获取当前的 AbortSignal
+  private getAbortSignal(): AbortSignal | undefined {
+    return this.abortController?.signal
   }
 
   // 获取预加载许可
@@ -130,10 +173,23 @@ class DatabasePreloadManager {
   private async preloadFile(config: any, file: any): Promise<void> {
     const filepath = file.filename
     
+    // 检查是否已取消
+    if (this.isPreloadCancelled()) {
+      console.log(`[数据库模式] 预加载已取消，跳过: ${file.basename}`)
+      return
+    }
+    
     if (this.cache.has(filepath)) return
     if (this.queue.has(filepath)) return
 
     await this.acquirePreloadSlot()
+    
+    // 再次检查是否已取消（等待期间可能被取消）
+    if (this.isPreloadCancelled()) {
+      this.releasePreloadSlot()
+      console.log(`[数据库模式] 预加载已取消，跳过: ${file.basename}`)
+      return
+    }
     
     try {
       if (this.cache.has(filepath)) return
@@ -147,13 +203,27 @@ class DatabasePreloadManager {
           ...config,
           filepath: file.filename,
         }),
+        signal: this.getAbortSignal(),
       })
+
+      // 检查是否已取消
+      if (this.isPreloadCancelled()) {
+        console.log(`[数据库模式] 预加载已取消，丢弃响应: ${file.basename}`)
+        return
+      }
 
       if (!streamResponse.ok) {
         throw new Error('获取文件流失败')
       }
 
       const blob = await streamResponse.blob()
+      
+      // 再次检查是否已取消
+      if (this.isPreloadCancelled()) {
+        console.log(`[数据库模式] 预加载已取消，丢弃blob: ${file.basename}`)
+        return
+      }
+      
       const url = URL.createObjectURL(blob)
       
       this.cache.set(filepath, {
@@ -171,7 +241,12 @@ class DatabasePreloadManager {
 
       console.log(`[数据库模式] 预加载完成: ${file.basename}`)
 
-    } catch (error) {
+    } catch (error: any) {
+      // 如果是取消导致的错误，不记录为错误
+      if (error.name === 'AbortError' || this.isPreloadCancelled()) {
+        console.log(`[数据库模式] 预加载被取消: ${file.basename}`)
+        return
+      }
       console.error(`[数据库模式] 预加载失败 ${file.basename}:`, error)
       throw error
     } finally {
@@ -184,10 +259,23 @@ class DatabasePreloadManager {
   private async preloadFileWithoutLimit(config: any, file: any): Promise<void> {
     const filepath = file.filename
     
+    // 检查是否已取消
+    if (this.isPreloadCancelled()) {
+      console.log(`[数据库模式] 预加载已取消，跳过: ${file.basename}`)
+      return
+    }
+    
     if (this.cache.has(filepath)) return
     if (this.queue.has(filepath)) return
     
     await this.acquirePreloadSlot()
+    
+    // 再次检查是否已取消
+    if (this.isPreloadCancelled()) {
+      this.releasePreloadSlot()
+      console.log(`[数据库模式] 预加载已取消，跳过: ${file.basename}`)
+      return
+    }
     
     try {
       if (this.cache.has(filepath)) return
@@ -201,13 +289,27 @@ class DatabasePreloadManager {
           ...config,
           filepath: file.filename,
         }),
+        signal: this.getAbortSignal(),
       })
+      
+      // 检查是否已取消
+      if (this.isPreloadCancelled()) {
+        console.log(`[数据库模式] 预加载已取消，丢弃响应: ${file.basename}`)
+        return
+      }
       
       if (!streamResponse.ok) {
         throw new Error('获取文件流失败')
       }
       
       const blob = await streamResponse.blob()
+      
+      // 再次检查是否已取消
+      if (this.isPreloadCancelled()) {
+        console.log(`[数据库模式] 预加载已取消，丢弃blob: ${file.basename}`)
+        return
+      }
+      
       const url = URL.createObjectURL(blob)
       
       // 检查文件是否还属于当前图组
@@ -235,7 +337,12 @@ class DatabasePreloadManager {
       
       console.log(`[数据库模式] 预加载完成: ${file.basename}`)
       
-    } catch (error) {
+    } catch (error: any) {
+      // 如果是取消导致的错误，不记录为错误
+      if (error.name === 'AbortError' || this.isPreloadCancelled()) {
+        console.log(`[数据库模式] 预加载被取消: ${file.basename}`)
+        return
+      }
       console.error(`[数据库模式] 预加载失败 ${file.basename}:`, error)
       throw error
     } finally {
@@ -248,10 +355,23 @@ class DatabasePreloadManager {
   private async preloadFileToNextGroup(config: any, file: any): Promise<void> {
     const filepath = file.filename
     
+    // 检查是否已取消
+    if (this.isPreloadCancelled()) {
+      console.log(`[数据库模式] 预加载已取消，跳过下一组: ${file.basename}`)
+      return
+    }
+    
     if (this.nextGroupCache.has(filepath)) return
     if (this.queue.has(filepath)) return
     
     await this.acquirePreloadSlot()
+    
+    // 再次检查是否已取消
+    if (this.isPreloadCancelled()) {
+      this.releasePreloadSlot()
+      console.log(`[数据库模式] 预加载已取消，跳过下一组: ${file.basename}`)
+      return
+    }
     
     try {
       if (this.nextGroupCache.has(filepath)) return
@@ -265,13 +385,27 @@ class DatabasePreloadManager {
           ...config,
           filepath: file.filename,
         }),
+        signal: this.getAbortSignal(),
       })
+      
+      // 检查是否已取消
+      if (this.isPreloadCancelled()) {
+        console.log(`[数据库模式] 预加载已取消，丢弃下一组响应: ${file.basename}`)
+        return
+      }
       
       if (!streamResponse.ok) {
         throw new Error('获取文件流失败')
       }
       
       const blob = await streamResponse.blob()
+      
+      // 再次检查是否已取消
+      if (this.isPreloadCancelled()) {
+        console.log(`[数据库模式] 预加载已取消，丢弃下一组blob: ${file.basename}`)
+        return
+      }
+      
       const url = URL.createObjectURL(blob)
       
       this.nextGroupCache.set(filepath, {
@@ -288,7 +422,12 @@ class DatabasePreloadManager {
       }
       
       console.log(`[数据库模式] 下一组预加载完成: ${file.basename}`)
-    } catch (error) {
+    } catch (error: any) {
+      // 如果是取消导致的错误，不记录为错误
+      if (error.name === 'AbortError' || this.isPreloadCancelled()) {
+        console.log(`[数据库模式] 下一组预加载被取消: ${file.basename}`)
+        return
+      }
       console.error(`[数据库模式] 下一组预加载失败 ${file.basename}:`, error)
       throw error
     } finally {
@@ -596,6 +735,9 @@ class DatabasePreloadManager {
   }> {
     console.log(`[数据库模式] 随机预加载开始，目标数量: ${count}，筛选条件: ${viewedFilter}`)
     
+    // 重置取消状态
+    this.resetCancelState()
+    
     this.setConcurrencyLimitEnabled(false)
     this.setMaxCacheSize(count)
     this.clearCache()
@@ -718,6 +860,9 @@ class DatabasePreloadManager {
     totalFiles: number
   }> {
     console.log(`[数据库模式] 图组预加载开始，目标数量: ${count}，筛选条件: ${viewedFilter}`)
+    
+    // 重置取消状态
+    this.resetCancelState()
     
     this.setConcurrencyLimitEnabled(false)
     this.setMaxCacheSize(count)
@@ -845,6 +990,12 @@ class DatabasePreloadManager {
   ): Promise<void> {
     console.log(`[数据库模式] 开始后台预加载下一组图组...`)
     
+    // 检查是否已取消（不重置状态，因为这是后台任务）
+    if (this.isPreloadCancelled()) {
+      console.log('[数据库模式] 预加载已取消，跳过下一组图组预加载')
+      return
+    }
+    
     try {
       const currentParentPath = this.currentGroupFiles.length > 0
         ? this.currentGroupFiles[0].filename.substring(0, this.currentGroupFiles[0].filename.lastIndexOf('/'))
@@ -911,9 +1062,16 @@ class DatabasePreloadManager {
     randomness: number = 1,      // 随机性：0=优先当前目录，1=完全随机
     mediaFilter: string = 'all'  // 媒体类型筛选：all/images/videos
   ): Promise<void> {
-    // 初始加载时禁用并发限制，加速预加载
+    // 初始加载时重置取消状态
     if (isInitialLoad) {
+      this.resetCancelState()
       this.setConcurrencyLimitEnabled(false)
+    }
+    
+    // 检查是否已取消
+    if (this.isPreloadCancelled()) {
+      console.log('[数据库模式] 预加载已取消，跳过缓存补齐')
+      return
     }
     
     this.setMaxCacheSize(targetCount)
@@ -1109,6 +1267,12 @@ class DatabasePreloadManager {
       return
     }
     
+    // 检查是否已取消
+    if (this.isPreloadCancelled()) {
+      console.log('[数据库模式] 预加载已取消，跳过剩余文件预加载')
+      return
+    }
+    
     if (this.currentGroupPreloadTriggered) {
       console.log('[数据库模式] 当前图组已经触发过预加载，跳过')
       return
@@ -1133,6 +1297,12 @@ class DatabasePreloadManager {
     const currentGroupFilepaths = new Set(this.currentGroupFiles.map(f => f.filename))
     
     while (currentIndex < remainingFiles.length) {
+      // 检查是否已取消
+      if (this.isPreloadCancelled()) {
+        console.log('[数据库模式] 预加载已取消，停止剩余文件预加载')
+        break
+      }
+      
       const firstFileInBatch = remainingFiles[currentIndex]
       if (!currentGroupFilepaths.has(firstFileInBatch.filename)) {
         console.log('[数据库模式] 检测到图组已切换，停止预加载上一图组的剩余文件')
@@ -1234,6 +1404,12 @@ class DatabasePreloadManager {
     mediaFilter: string = 'all' // 媒体类型筛选：all/images/videos
   ): Promise<void> {
     if (!currentFile) return
+    
+    // 检查是否已取消
+    if (this.isPreloadCancelled()) {
+      console.log('[数据库模式] 预加载已取消，跳过智能预加载')
+      return
+    }
     
     // 更新最大缓存大小
     this.setMaxCacheSize(maxCount)

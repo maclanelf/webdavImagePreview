@@ -1791,24 +1791,19 @@ export default function HomePage() {
         if (preloadEnabled && config && stats.total > 0) {
           const preloadCount = config.scanSettings?.preloadCount || 10
           
+          // 所有模式切换都先取消前一模式的预加载任务
+          console.log(`[配置变化] 取消前一模式的预加载任务`)
+          databasePreloadManager.cancelAllPreloads()
+          databasePreloadManager.clearCache()
+          databasePreloadManager.clearNextGroupCache()
+          
           // 大视频模式：完全跳过预加载逻辑
           if (viewMode === 'large-video') {
-            console.log('[大视频模式] 配置变化：跳过预加载，清空缓存')
+            console.log('[大视频模式] 配置变化：不启动预加载')
             setGalleryPreloadReady(true)
             setCachePreloadProgress(null)
-            databasePreloadManager.clearCache()
             const cacheStatus = databasePreloadManager.getCacheStatus()
             setPreloadStatus(cacheStatus)
-            
-            // 延迟再次清空，防止正在进行的预加载填充缓存
-            setTimeout(() => {
-              if (viewMode === 'large-video') {
-                console.log('[大视频模式] 延迟清空缓存（防止配置变化时的预加载填充）')
-                databasePreloadManager.clearCache()
-                const updatedStatus = databasePreloadManager.getCacheStatus()
-                setPreloadStatus(updatedStatus)
-              }
-            }, 1000)
             // 不需要 return，继续执行到 setDrawerOpen(open)
           } else if (viewMode === 'gallery') {
             // 图组模式：重置预加载状态
@@ -1850,10 +1845,9 @@ export default function HomePage() {
               })
             })
           } else {
-            // 随机模式：配置变化时先清空缓存，然后重新预加载
+            // 随机模式：配置变化时重新预加载
             setGalleryPreloadReady(true) // 随机模式不需要等待预加载完成
             setCachePreloadProgress({ current: 0, total: preloadCount })
-            databasePreloadManager.clearCache()
             databasePreloadManager.refillCache(
               config, 
               [], // 数据库模式不需要文件列表
@@ -3526,35 +3520,30 @@ export default function HomePage() {
                   setViewMode(newMode)
                   localStorage.setItem('view_mode', newMode)
                   
+                  // 所有模式切换都先取消前一模式的预加载任务
+                  if (preloadEnabled) {
+                    console.log(`[模式切换] ${viewMode} → ${newMode}：取消预加载并清空缓存`)
+                    databasePreloadManager.cancelAllPreloads()
+                    databasePreloadManager.clearCache()
+                    databasePreloadManager.clearNextGroupCache()
+                    const cacheStatus = databasePreloadManager.getCacheStatus()
+                    setPreloadStatus(cacheStatus)
+                  }
+                  
                   // 切换到图组模式时，清空当前组
                   if (newMode === 'gallery') {
                     setCurrentGroup([])
                     setCurrentGroupIndex(0)
+                    setGalleryPreloadReady(false)
+                    setCachePreloadProgress(null)
                   } else if (newMode === 'random') {
                     // 切换到随机模式时，允许预览（不需要等待预加载）
                     setGalleryPreloadReady(true)
                     setCachePreloadProgress(null)
                   } else if (newMode === 'large-video') {
-                    // 切换到大视频模式时，立即清空缓存并停止预加载
-                    console.log('[大视频模式] 切换模式：立即清空缓存')
+                    // 切换到大视频模式时，不需要预加载
                     setGalleryPreloadReady(true)
                     setCachePreloadProgress(null)
-                    // 立即清空预加载缓存
-                    if (preloadEnabled) {
-                      databasePreloadManager.clearCache()
-                      const cacheStatus = databasePreloadManager.getCacheStatus()
-                      setPreloadStatus(cacheStatus)
-                      
-                      // 延迟再次清空，防止正在进行的预加载填充缓存
-                      setTimeout(() => {
-                        if (viewMode === 'large-video') {
-                          console.log('[大视频模式] 延迟清空缓存（防止预加载填充）')
-                          databasePreloadManager.clearCache()
-                          const updatedStatus = databasePreloadManager.getCacheStatus()
-                          setPreloadStatus(updatedStatus)
-                        }
-                      }, 500)
-                    }
                   }
                   // 预加载将在关闭抽屉时根据配置变化统一处理
                 }
