@@ -27,6 +27,8 @@ import {
   Stack,
   Snackbar,
   Slider,
+  Menu,
+  MenuItem,
 } from '@mui/material'
 import {
   Shuffle as ShuffleIcon,
@@ -52,6 +54,7 @@ import {
   Refresh as RefreshIcon,
   Download as DownloadIcon,
   Speed as SpeedIcon,
+  OpenInNew as OpenInNewIcon,
 } from '@mui/icons-material'
 import { useRouter } from 'next/navigation'
 import RatingDialog from '@/components/RatingDialog'
@@ -63,6 +66,7 @@ import DraggableBox from '@/components/DraggableBox'
 import DraggableFab from '@/components/DraggableFab'
 import InstantVideoPlayer from '@/components/InstantVideoPlayer'
 import databasePreloadManager from '@/lib/databasePreloadManager'
+import { getPlaybackStrategy, buildVideoStreamUrl } from '@/lib/videoFormat'
 
 // 快速评分配置
 const QUICK_RATING_CONFIG = [
@@ -131,6 +135,10 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null)
   // 媒体文件 URL
   const [mediaUrl, setMediaUrl] = useState<string | null>(null)
+  // 转码流 URL（用于不支持的格式自动降级）
+  const [transcodeUrl, setTranscodeUrl] = useState<string | null>(null)
+  // 是否正在使用转码流
+  const [isUsingTranscode, setIsUsingTranscode] = useState(false)
   // 文件统计信息（从数据库获取）
   const [stats, setStats] = useState({ total: 0, images: 0, videos: 0, viewed: 0 })
   // 媒体类型筛选
@@ -1152,6 +1160,90 @@ export default function HomePage() {
     })
   }
 
+  // 检测是否为移动端
+  const isMobile = useMemo(() => {
+    if (typeof window === 'undefined') return false
+    const userAgent = navigator.userAgent.toLowerCase()
+    return userAgent.includes('android') || /iphone|ipad|ipod/.test(userAgent)
+  }, [])
+
+  // 外部播放器菜单状态
+  const [externalPlayerAnchor, setExternalPlayerAnchor] = useState<null | HTMLElement>(null)
+  const externalPlayerMenuOpen = Boolean(externalPlayerAnchor)
+
+  // 使用外部播放器播放当前视频
+  const playWithExternalPlayer = useCallback((player?: 'potplayer' | 'vlc' | 'system') => {
+    if (!mediaUrl) {
+      console.log('⚠️ 没有可用的视频 URL')
+      return
+    }
+    
+    // 构建完整的视频 URL
+    const videoUrl = new URL(mediaUrl, window.location.origin).href
+    
+    console.log('🎬 调用外部播放器:', player || 'system', videoUrl)
+    
+    // 检测平台
+    const userAgent = navigator.userAgent.toLowerCase()
+    const isAndroid = userAgent.includes('android')
+    const isIOS = /iphone|ipad|ipod/.test(userAgent)
+    
+    // 使用隐藏的 iframe 打开协议，避免影响当前页面
+    const openProtocol = (url: string) => {
+      const iframe = document.createElement('iframe')
+      iframe.style.display = 'none'
+      iframe.src = url
+      document.body.appendChild(iframe)
+      
+      // 2秒后移除 iframe
+      setTimeout(() => {
+        document.body.removeChild(iframe)
+      }, 2000)
+    }
+    
+    if (isAndroid) {
+      // Android: 使用 intent 协议，让系统选择播放器
+      const intentUrl = `intent:${videoUrl}#Intent;type=video/*;end`
+      openProtocol(intentUrl)
+    } else if (isIOS) {
+      // iOS: 尝试 VLC 的 vlc-x-callback 协议
+      const vlcUrl = `vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(videoUrl)}`
+      openProtocol(vlcUrl)
+      
+      // 500ms 后如果没有跳转，直接打开
+      setTimeout(() => {
+        window.open(videoUrl, '_blank')
+      }, 500)
+    } else {
+      // PC 端: 根据选择的播放器打开
+      // 注意：videoUrl 已经包含编码过的参数，不需要再次编码
+      if (player === 'potplayer') {
+        // PotPlayer 协议格式: potplayer://URL
+        openProtocol(`potplayer://${videoUrl}`)
+      } else if (player === 'vlc') {
+        // VLC 协议格式: vlc://URL
+        openProtocol(`vlc://${videoUrl}`)
+      } else {
+        // 默认在新标签页打开
+        window.open(videoUrl, '_blank')
+      }
+    }
+    
+    // 关闭菜单
+    setExternalPlayerAnchor(null)
+  }, [mediaUrl])
+
+  // 处理外部播放按钮点击
+  const handleExternalPlayerClick = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    if (isMobile) {
+      // 移动端直接调用系统选择器
+      playWithExternalPlayer('system')
+    } else {
+      // PC 端显示下拉菜单
+      setExternalPlayerAnchor(event.currentTarget)
+    }
+  }, [isMobile, playWithExternalPlayer])
+
   const loadRandomMedia = async () => {
     if (!config) {
       setError('请先配置WebDAV连接')
@@ -1464,8 +1556,11 @@ export default function HomePage() {
       setCurrentFile(fileToLoad)
       
       // 构建即点即播URL（使用 instant-stream API）
-      // 注意：URLSearchParams 会将空格编码为 +，但 WebDAV 服务器需要 %20
-      // 所以我们需要手动替换
+      // 根据视频格式决定播放策略
+      const playbackStrategy = getPlaybackStrategy(fileToLoad.filename)
+      console.log(`[大视频模式] 播放策略: ${playbackStrategy}`)
+      
+      // 构建原始流 URL
       const streamParams = new URLSearchParams({
         url: config.url,
         username: config.username,
@@ -1475,15 +1570,43 @@ export default function HomePage() {
       // 将 + 替换为 %20，确保 WebDAV 服务器能正确解析路径中的空格
       const streamUrl = `/api/webdav/instant-stream?${streamParams.toString().replace(/\+/g, '%20')}`
       
+      // 构建转码流 URL（用于降级）
+      const transcodeParams = new URLSearchParams({
+        url: config.url,
+        username: config.username,
+        password: config.password,
+        filepath: fileToLoad.filename,
+        format: 'mp4',
+        quality: 'high',
+      })
+      const transcodeStreamUrl = `/api/webdav/transcode-stream?${transcodeParams.toString().replace(/\+/g, '%20')}`
+      
       console.log(`[大视频模式] 使用流式播放: ${fileToLoad.basename}, 大小: ${formatFileSize(fileToLoad.size)}`)
       console.log(`[大视频模式] 流媒体URL: ${streamUrl}`)
+      
+      // 根据播放策略决定使用哪个 URL
+      let finalUrl: string
+      let finalTranscodeUrl: string | null = null
+      
+      if (playbackStrategy === 'transcode') {
+        // 需要转码的格式，直接使用转码流
+        console.log(`[大视频模式] 格式需要转码，直接使用转码流`)
+        finalUrl = transcodeStreamUrl
+        setIsUsingTranscode(true)
+      } else {
+        // 原生支持或可能支持的格式，先尝试原始流
+        finalUrl = streamUrl
+        finalTranscodeUrl = transcodeStreamUrl // 保存转码 URL 用于降级
+        setIsUsingTranscode(false)
+      }
       
       // 清理旧的URL（如果是 Blob URL）
       if (mediaUrl && mediaUrl.startsWith('blob:')) {
         URL.revokeObjectURL(mediaUrl)
       }
       
-      setMediaUrl(streamUrl)
+      setMediaUrl(finalUrl)
+      setTranscodeUrl(finalTranscodeUrl)
       setMediaType('stream-video') // 标记为流式视频，用于渲染 InstantVideoPlayer
       
       // 如果需要自动进入视频全屏，延迟执行以确保视频元素已渲染
@@ -2913,12 +3036,15 @@ export default function HomePage() {
                   src={mediaUrl}
                   autoPlay={true}
                   playIntent={playIntentRef.current} // 传递播放意图，用于安卓浏览器自动播放
+                  transcodeUrl={transcodeUrl || undefined} // 转码流 URL，用于自动降级
+                  onTranscodeFallback={() => {
+                    console.log('[大视频模式] 已降级到转码流播放')
+                    setIsUsingTranscode(true)
+                  }}
                   onTimeUpdate={handleInstantVideoTimeUpdate}
                   onEnded={handleVideoEnded}
                   onNext={loadRandomMedia} // 换一个按钮
-                  onError={(error) => {
-                    setError(`视频播放失败: ${error}`)
-                  }}
+                  // 不再使用 onError 回调，InstantVideoPlayer 内部已有错误 UI
                 />
               )}
 
@@ -2945,6 +3071,12 @@ export default function HomePage() {
                         ? `${currentGroupIndex + 1} / ${currentGroup.length}`
                         : '随机浏览'}
                     </Typography>
+                    {/* 转码状态指示 */}
+                    {isUsingTranscode && (
+                      <Typography variant="caption" sx={{ color: '#fbbf24', display: 'block', mt: 0.5 }}>
+                        🔄 转码播放中
+                      </Typography>
+                    )}
                   </Box>
 
                   {/* 左侧边：星星等级设置 - 纵向显示，可拖动 */}
@@ -3175,6 +3307,56 @@ export default function HomePage() {
                   compact
                 />
               </Box>
+              
+              {/* 外部播放器按钮 - 仅视频文件显示 */}
+              {isVideo(currentFile.filename) && (
+                <Box sx={{ mt: 1.5 }}>
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    startIcon={<OpenInNewIcon />}
+                    onClick={handleExternalPlayerClick}
+                    sx={{ 
+                      color: '#4ade80', 
+                      borderColor: '#4ade80',
+                      '&:hover': {
+                        borderColor: '#22c55e',
+                        backgroundColor: 'rgba(74, 222, 128, 0.1)',
+                      }
+                    }}
+                  >
+                    外部播放
+                  </Button>
+                  
+                  {/* PC 端下拉菜单 */}
+                  <Menu
+                    anchorEl={externalPlayerAnchor}
+                    open={externalPlayerMenuOpen}
+                    onClose={() => setExternalPlayerAnchor(null)}
+                    anchorOrigin={{
+                      vertical: 'top',
+                      horizontal: 'left',
+                    }}
+                    transformOrigin={{
+                      vertical: 'bottom',
+                      horizontal: 'left',
+                    }}
+                  >
+                    <MenuItem onClick={() => playWithExternalPlayer('potplayer')}>
+                      <ListItemIcon>
+                        <OpenInNewIcon fontSize="small" sx={{ color: '#f59e0b' }} />
+                      </ListItemIcon>
+                      <ListItemText>PotPlayer</ListItemText>
+                    </MenuItem>
+                    <MenuItem onClick={() => playWithExternalPlayer('vlc')}>
+                      <ListItemIcon>
+                        <OpenInNewIcon fontSize="small" sx={{ color: '#f97316' }} />
+                      </ListItemIcon>
+                      <ListItemText>VLC</ListItemText>
+                    </MenuItem>
+                  </Menu>
+                </Box>
+              )}
             </CardContent>
           </Card>
         )}

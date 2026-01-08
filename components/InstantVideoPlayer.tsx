@@ -24,6 +24,9 @@ interface InstantVideoPlayerProps {
   className?: string
   autoPlay?: boolean
   playIntent?: boolean // 标记用户是否有播放意图（用于安卓浏览器自动播放）
+  // 转码降级相关
+  transcodeUrl?: string // 转码流 URL（当原始流播放失败时使用）
+  onTranscodeFallback?: () => void // 降级到转码时的回调
 }
 
 export interface InstantVideoPlayerRef {
@@ -74,7 +77,9 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   style,
   className,
   autoPlay = false,
-  playIntent = false
+  playIntent = false,
+  transcodeUrl,
+  onTranscodeFallback,
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement>(null) // 视频元素引用
   const [loading, setLoading] = useState(true) // 加载状态
@@ -86,6 +91,10 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   const [videoAspectRatio, setVideoAspectRatio] = useState<number | null>(null) // 视频宽高比
   const [isFullscreen, setIsFullscreen] = useState(false) // 全屏状态
   const containerRef = useRef<HTMLDivElement>(null) // 容器元素引用
+  
+  // 转码降级状态
+  const [isUsingTranscode, setIsUsingTranscode] = useState(false) // 是否正在使用转码流
+  const [hasTriedTranscode, setHasTriedTranscode] = useState(false) // 是否已尝试过转码
   
   // 播放意图引用 - 用于安卓浏览器自动播放
   const playIntentRef = useRef(playIntent)
@@ -157,6 +166,8 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     setDownloadSpeed(0)
     setBufferedPercent(0)
     setIsMutedForAutoplay(false) // 重置静音状态
+    setIsUsingTranscode(false) // 重置转码状态
+    setHasTriedTranscode(false) // 重置转码尝试标记
     lastBufferedEndRef.current = 0
     lastUpdateTimeRef.current = Date.now()
     
@@ -529,24 +540,34 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
 
   const handleError = (e: React.SyntheticEvent<HTMLVideoElement, Event>) => {
     const video = e.currentTarget
+    
+    // 如果 video.src 为空或与当前 props.src 不匹配，忽略错误
+    // 这通常发生在切换视频时，旧视频被清理触发的错误
+    if (!video.src || video.src === '' || (src && !video.src.includes(encodeURIComponent(src.split('?')[0].split('/').pop() || '')))) {
+      console.log('🔇 [即点即播] 视频源已变更，忽略错误事件')
+      return
+    }
+    
     const mediaError = video.error
     
     let errorMessage = '视频加载失败'
     let errorDetails = ''
     
     if (mediaError) {
+      // 如果是中止错误（MEDIA_ERR_ABORTED），通常是切换视频导致的，不显示错误
+      if (mediaError.code === MediaError.MEDIA_ERR_ABORTED) {
+        console.log('🔇 [即点即播] 视频加载被中止，忽略错误')
+        return
+      }
+      
       // 获取详细的错误码和信息
       switch (mediaError.code) {
-        case MediaError.MEDIA_ERR_ABORTED:
-          errorMessage = '视频加载被中止'
-          errorDetails = 'MEDIA_ERR_ABORTED (1)'
-          break
         case MediaError.MEDIA_ERR_NETWORK:
           errorMessage = '网络错误，无法加载视频'
           errorDetails = 'MEDIA_ERR_NETWORK (2)'
           break
         case MediaError.MEDIA_ERR_DECODE:
-          errorMessage = '视频解码失败，格式可能不支持'
+          errorMessage = '视频解码失败'
           errorDetails = 'MEDIA_ERR_DECODE (3)'
           break
         case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
@@ -565,6 +586,8 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
         networkState: video.networkState,
         readyState: video.readyState,
         currentSrc: video.currentSrc,
+        isUsingTranscode,
+        hasTriedTranscode,
       })
       
       // 网络状态说明
@@ -589,6 +612,7 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
       console.error('❌ [即点即播] 视频错误 (无 MediaError):', e)
     }
     
+    // 不再自动降级到转码流，直接显示错误，让用户选择
     setError(errorMessage)
     setLoading(false)
     onError?.(errorMessage)
@@ -784,20 +808,68 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     }
   }, [])
 
-  // 重试播放函数
+  // 重试播放函数（直接播放）
   const retryPlayback = () => {
-    console.log('🔄 [即点即播] 用户点击重试')
+    console.log('🔄 [即点即播] 用户点击重试（直接播放）')
     setError(null)
     setLoading(true)
     setHasAttemptedAutoPlay(false)
     setBufferedPercent(0)
     setDownloadSpeed(0)
+    setIsUsingTranscode(false)
     lastBufferedEndRef.current = 0
     lastUpdateTimeRef.current = Date.now()
     
     if (videoRef.current) {
-      // 重新加载视频
+      // 重新加载原始视频
+      videoRef.current.src = src
       videoRef.current.load()
+      
+      // 尝试播放
+      if (autoPlay || playIntentRef.current) {
+        videoRef.current.muted = true
+        setIsMutedForAutoplay(true)
+        videoRef.current.play().catch(err => {
+          console.log('⚠️ [即点即播] 重试播放失败:', err)
+        })
+      }
+    }
+  }
+
+  // 使用转码播放函数
+  const playWithTranscode = () => {
+    if (!transcodeUrl) {
+      console.log('⚠️ [即点即播] 没有可用的转码 URL')
+      return
+    }
+    
+    console.log('🔄 [即点即播] 用户选择转码播放')
+    setError(null)
+    setLoading(true)
+    setHasAttemptedAutoPlay(false)
+    setBufferedPercent(0)
+    setDownloadSpeed(0)
+    setIsUsingTranscode(true)
+    setHasTriedTranscode(true)
+    lastBufferedEndRef.current = 0
+    lastUpdateTimeRef.current = Date.now()
+    
+    // 通知父组件
+    onTranscodeFallback?.()
+    
+    if (videoRef.current) {
+      // 切换到转码流
+      videoRef.current.src = transcodeUrl
+      videoRef.current.load()
+      
+      // 尝试播放
+      if (autoPlay || playIntentRef.current) {
+        videoRef.current.muted = true
+        setIsMutedForAutoplay(true)
+        videoRef.current.play().catch(err => {
+          console.log('⚠️ [即点即播] 转码播放失败:', err)
+        })
+      }
     }
   }
 
@@ -824,8 +896,8 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
         ...style,
       }}
     >
-      {/* 错误覆盖层 - 点击图标重试 */}
-      {error && (
+      {/* 错误覆盖层 - 只有在非加载状态下才显示错误 */}
+      {error && !loading && (
         <Box
           sx={{
             position: 'absolute',
@@ -836,37 +908,73 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
+            backgroundColor: 'rgba(0, 0, 0, 0.75)',
+            backdropFilter: 'blur(8px)',
+            borderRadius: 3,
+            padding: '20px 24px',
+            minWidth: 200,
           }}
         >
-          <IconButton
-            onClick={retryPlayback}
-            sx={{
-              backgroundColor: 'rgba(0, 0, 0, 0.6)',
-              color: 'rgba(255, 100, 100, 0.9)',
-              width: 80,
-              height: 80,
-              '&:hover': {
-                backgroundColor: 'rgba(0, 0, 0, 0.8)',
-              },
-              '&:active': {
-                transform: 'scale(0.95)',
-              },
-            }}
-          >
-            <ReplayIcon sx={{ fontSize: '3rem' }} />
-          </IconButton>
+          {/* 错误信息 */}
           <Typography
             sx={{
-              mt: 1,
-              color: 'rgba(255, 255, 255, 0.7)',
-              fontSize: '0.75rem',
+              color: 'rgba(255, 100, 100, 0.9)',
+              fontSize: '0.85rem',
               textAlign: 'center',
-              maxWidth: 200,
-              textShadow: '0 1px 2px rgba(0,0,0,0.8)',
+              mb: 2,
             }}
           >
             {error}
           </Typography>
+          
+          {/* 按钮组 */}
+          <Box sx={{ display: 'flex', gap: 2 }}>
+            {/* 直接播放按钮 */}
+            <IconButton
+              onClick={retryPlayback}
+              sx={{
+                backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                color: '#fff',
+                width: 64,
+                height: 64,
+                flexDirection: 'column',
+                borderRadius: 2,
+                '&:hover': {
+                  backgroundColor: 'rgba(255, 255, 255, 0.2)',
+                },
+                '&:active': {
+                  transform: 'scale(0.95)',
+                },
+              }}
+            >
+              <ReplayIcon sx={{ fontSize: '1.8rem' }} />
+              <Typography sx={{ fontSize: '0.65rem', mt: 0.5 }}>重试</Typography>
+            </IconButton>
+            
+            {/* 转码播放按钮 - 仅当有转码 URL 时显示 */}
+            {transcodeUrl && (
+              <IconButton
+                onClick={playWithTranscode}
+                sx={{
+                  backgroundColor: 'rgba(233, 69, 96, 0.3)',
+                  color: '#e94560',
+                  width: 64,
+                  height: 64,
+                  flexDirection: 'column',
+                  borderRadius: 2,
+                  '&:hover': {
+                    backgroundColor: 'rgba(233, 69, 96, 0.5)',
+                  },
+                  '&:active': {
+                    transform: 'scale(0.95)',
+                  },
+                }}
+              >
+                <PlayArrowIcon sx={{ fontSize: '1.8rem' }} />
+                <Typography sx={{ fontSize: '0.65rem', mt: 0.5 }}>转码</Typography>
+              </IconButton>
+            )}
+          </Box>
         </Box>
       )}
       {/* 视频元素 */}

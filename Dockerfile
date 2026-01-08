@@ -24,8 +24,8 @@ RUN npm run build
 FROM node:20-alpine AS runner
 WORKDIR /app
 
-# 安装时区数据
-RUN apk add --no-cache tzdata
+# 安装时区数据和 FFmpeg（用于视频转码）
+RUN apk add --no-cache tzdata ffmpeg
 
 # 设置时区为上海时区
 ENV TZ=Asia/Shanghai
