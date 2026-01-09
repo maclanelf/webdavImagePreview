@@ -104,17 +104,45 @@ export async function POST(request: NextRequest) {
 
       // 获取刚保存的 cache_id，写入 scan_files 表
       const savedCache = scanCache.get(url, username, path) as any
+      let scanFilesLogDetails = ''
       if (savedCache && savedCache.id) {
+        // 记录写入前的状态
+        const beforeStats = scanFiles.getStats(savedCache.id)
+        const beforeTotal = beforeStats.total
+        const beforeViewed = beforeStats.viewed
+        
+        console.log(`📊 [数据写入] 写入前: 文件数量 ${beforeTotal}, 已看过 ${beforeViewed}`)
+        
         // 先删除旧数据
         scanFiles.deleteByCache(savedCache.id)
         // 批量插入新数据
         scanFiles.batchInsert(savedCache.id, filesData)
         // 从 media_ratings 同步已看状态
         const syncResult = scanFiles.syncViewedFromRatings(savedCache.id)
-        console.log(`已同步写入 scan_files 表: ${filesData.length} 个文件，同步 ${syncResult.synced} 个已看记录`)
+        
+        // 记录写入后的状态
+        const afterStats = scanFiles.getStats(savedCache.id)
+        const afterTotal = afterStats.total
+        const afterViewed = afterStats.viewed
+        
+        const logMessage = `写入前: 文件数量 ${beforeTotal}, 已看过 ${beforeViewed} | 写入后: 文件数量 ${afterTotal}, 同步已看过 ${afterViewed}`
+        console.log(`✅ [数据写入] ${logMessage}`)
+        
+        scanFilesLogDetails = `数据写入完成\n写入前: 文件数量 ${beforeTotal}, 已看过 ${beforeViewed}\n写入后: 文件数量 ${afterTotal}, 同步已看过 ${afterViewed}\n从 media_ratings 同步了 ${syncResult.synced} 条已看记录`
       }
 
       // 记录扫描完成日志，包含完整的进度信息
+      const logDetailLines = [
+        ...progressLogs,
+        `递归扫描完成，共找到 ${result.totalFiles} 个媒体文件 (图片: ${result.imageCount}, 视频: ${result.videoCount})，耗时 ${duration}ms`
+      ]
+      if (scanFilesLogDetails) {
+        logDetailLines.push(scanFilesLogDetails)
+      }
+      if (forceRescan) {
+        logDetailLines.push('[强制扫描] 已清除旧缓存并重新写入数据')
+      }
+      
       writeScanLog({
         webdavUrl: url,
         webdavUsername: username,
@@ -125,10 +153,7 @@ export async function POST(request: NextRequest) {
         imageCount: result.imageCount,
         videoCount: result.videoCount,
         durationMs: duration,
-        logDetails: [
-          ...progressLogs,
-          `递归扫描完成，共找到 ${result.totalFiles} 个媒体文件 (图片: ${result.imageCount}, 视频: ${result.videoCount})，耗时 ${duration}ms`
-        ].join('\n')
+        logDetails: logDetailLines.join('\n')
       })
 
       // 标记任务完成
