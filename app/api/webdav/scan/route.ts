@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getWebDAVClient, recursiveScanDirectory } from '@/lib/webdav'
+import { getWebDAVClient, recursiveScanDirectory } from '@/lib/webdav-optimized'
 import { scanCache } from '@/lib/database'
 import { writeScanLog } from '@/lib/scanLogger'
 import { scanTaskManager } from '@/lib/scanTaskManager'
@@ -15,7 +15,7 @@ export async function POST(request: NextRequest) {
       username, 
       password, 
       path = '/',
-      batchSize = 10,
+      concurrency = 10,
       forceRescan = false,
       progressId // 新增：进度ID
     } = body
@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
           images: cached.image_count,
           videos: cached.video_count,
           scanInfo: {
-            batchSize,
+            concurrency,
             actualFilesFound: cached.total_files,
             fromCache: true,
             lastScan: cached.last_scan
@@ -84,7 +84,7 @@ export async function POST(request: NextRequest) {
     try {
       // 执行递归扫描
       const result = await recursiveScanDirectory(client, path, {
-        batchSize,
+        concurrency,
         onProgress: (progress) => {
           batchCount++
           const logMessage = `批次 ${batchCount} 完成: 处理了 ${progress.scannedDirectories} 个目录，找到 ${progress.foundFiles} 个文件，总计 ${progress.foundFiles} 个文件 (${progress.percentage}%)`
@@ -104,9 +104,14 @@ export async function POST(request: NextRequest) {
 
       const duration = Date.now() - startTime
 
-      // 检查扫描结果是否有效（有文件内容且没有错误）
-      if (!result || !result.files || result.files.length === 0) {
-        throw new Error('扫描完成但未找到任何文件')
+      // 检查扫描结果是否有效
+      if (!result || !result.files) {
+        throw new Error('扫描失败')
+      }
+
+      // 0 个文件是正常结果，不应该报错
+      if (result.files.length === 0) {
+        console.log(`扫描完成，路径 ${path} 下没有找到媒体文件`)
       }
 
       // 如果强制重新扫描，在扫描成功后再清除并替换缓存
@@ -131,7 +136,7 @@ export async function POST(request: NextRequest) {
         totalFiles: result.totalFiles,
         imageCount: result.imageCount,
         videoCount: result.videoCount,
-        scanSettings: JSON.stringify({ batchSize })
+        scanSettings: JSON.stringify({ concurrency })
       })
 
       // 记录扫描完成日志
@@ -163,7 +168,7 @@ export async function POST(request: NextRequest) {
         images: result.imageCount,
         videos: result.videoCount,
         scanInfo: {
-          batchSize,
+          concurrency,
           actualFilesFound: result.totalFiles,
           fromCache: false,
           duration: duration

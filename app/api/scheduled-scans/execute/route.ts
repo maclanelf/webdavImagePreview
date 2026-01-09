@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { scheduledScans } from '@/lib/database'
-import { getWebDAVClient, recursiveScanDirectory } from '@/lib/webdav'
+import { getWebDAVClient, recursiveScanDirectory } from '@/lib/webdav-optimized'
 import { scanCache } from '@/lib/database'
 import { writeScanLog } from '@/lib/scanLogger'
 import { scanTaskManager } from '@/lib/scanTaskManager'
@@ -91,7 +91,7 @@ export async function POST(request: NextRequest) {
       
       try {
         const result = await recursiveScanDirectory(client, path, {
-          batchSize: scanSettings.batchSize || 10,
+          concurrency: scanSettings.concurrency || scanSettings.batchSize || 10,
           onProgress: (progress) => {
             batchCount++
             const logMessage = `批次 ${batchCount} 完成: 处理了 ${progress.scannedDirectories} 个目录，找到 ${progress.foundFiles} 个文件，总计 ${progress.foundFiles} 个文件 (${progress.percentage}%)`
@@ -119,7 +119,7 @@ export async function POST(request: NextRequest) {
           totalFiles: result.totalFiles,
           imageCount: result.imageCount,
           videoCount: result.videoCount,
-          scanSettings: JSON.stringify({ batchSize: scanSettings.batchSize || 10 })
+          scanSettings: JSON.stringify({ concurrency: scanSettings.concurrency || scanSettings.batchSize || 10 })
         })
 
         // 记录扫描完成日志

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getWebDAVClient, recursiveScanDirectory } from '@/lib/webdav'
+import { getWebDAVClient, recursiveScanDirectory } from '@/lib/webdav-optimized'
 import { scanCache } from '@/lib/database'
 import { writeScanLog } from '@/lib/scanLogger'
 import { scanTaskManager } from '@/lib/scanTaskManager'
@@ -13,7 +13,7 @@ export async function POST(request: NextRequest) {
       username, 
       password, 
       mediaPaths = ['/'],
-      batchSize = 10
+      concurrency = 10
     } = body
 
     if (!url || !username || !password) {
@@ -79,7 +79,7 @@ export async function POST(request: NextRequest) {
         })
 
         // 执行扫描
-        const result = await recursiveScanDirectory(client, path, batchSize)
+        const result = await recursiveScanDirectory(client, path, { concurrency })
         
         // 记录扫描完成日志
         writeScanLog({

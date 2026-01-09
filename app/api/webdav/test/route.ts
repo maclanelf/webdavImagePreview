@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getWebDAVClient } from '@/lib/webdav'
+import { getWebDAVClient } from '@/lib/webdav-optimized'
 
 export async function POST(request: NextRequest) {
   try {

@@ -58,7 +58,7 @@ interface WebDAVConfig {
   password: string
   mediaPaths: string[]
   scanSettings?: {
-    batchSize?: number | string
+    concurrency?: number | string
     preloadCount?: number | string
   }
 }
@@ -86,7 +86,7 @@ export default function ConfigPage() {
     password: '',
     mediaPaths: ['/'],
     scanSettings: {
-      batchSize: 10,
+      concurrency: 10,
       preloadCount: 10
     }
   })
@@ -169,7 +169,7 @@ export default function ConfigPage() {
               password: dbConfig.password,
               mediaPaths: dbConfig.mediaPaths || ['/'],
               scanSettings: dbConfig.scanSettings || {
-                batchSize: 10,
+                concurrency: 10,
                 preloadCount: 10
               }
             })
@@ -182,7 +182,7 @@ export default function ConfigPage() {
               password: dbConfig.password,
               mediaPaths: dbConfig.mediaPaths || ['/'],
               scanSettings: dbConfig.scanSettings || {
-                batchSize: 10,
+                concurrency: 10,
                 preloadCount: 10
               }
             })
@@ -220,7 +220,7 @@ export default function ConfigPage() {
                   password: parsed.password,
                   mediaPaths: parsed.mediaPaths || ['/'],
                   scanSettings: parsed.scanSettings || {
-                    batchSize: 10,
+                    concurrency: 10,
                     preloadCount: 10
                   },
                   isDefault: true // 迁移时设为默认配置
@@ -358,7 +358,7 @@ export default function ConfigPage() {
             password: configToSave.password,
             mediaPaths: configToSave.mediaPaths,
             scanSettings: configToSave.scanSettings || {
-              batchSize: 10,
+              concurrency: 10,
               preloadCount: 10
             },
             isDefault: true // 当前配置设为默认
@@ -517,7 +517,7 @@ export default function ConfigPage() {
           username: config.username,
           password: config.password,
           path,
-          batchSize: config.scanSettings?.batchSize || 10,
+          concurrency: config.scanSettings?.concurrency || 10,
           forceRescan
         }),
       })
@@ -752,19 +752,19 @@ export default function ConfigPage() {
             递归扫描将扫描所有子目录，无深度和文件数量限制
           </Typography>
           
-          {/* 批次大小设置 */}
+          {/* 并发数设置 */}
           <Box sx={{ display: 'flex', gap: 2, flexDirection: { xs: 'column', md: 'row' } }}>
             <TextField
-              label="批次大小"
+              label="并发数"
               type="number"
-              value={config.scanSettings?.batchSize ?? 10}
+              value={config.scanSettings?.concurrency ?? 10}
               onChange={(e) => {
                 const value = e.target.value
                 setConfig({
                   ...config,
                   scanSettings: {
                     ...config.scanSettings,
-                    batchSize: value
+                    concurrency: value
                   }
                 })
               }}
@@ -776,7 +776,7 @@ export default function ConfigPage() {
                     ...config,
                     scanSettings: {
                       ...config.scanSettings,
-                      batchSize: 10
+                      concurrency: 10
                     }
                   })
                 } else {
@@ -784,12 +784,12 @@ export default function ConfigPage() {
                     ...config,
                     scanSettings: {
                       ...config.scanSettings,
-                      batchSize: numValue
+                      concurrency: numValue
                     }
                   })
                 }
               }}
-              helperText="每次处理的文件数量，影响扫描速度和内存使用"
+              helperText="同时发起的请求数量，影响扫描速度"
               inputProps={{ min: 5, max: 50 }}
               sx={{ flex: 1 }}
             />

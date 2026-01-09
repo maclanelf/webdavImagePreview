@@ -83,7 +83,7 @@ interface WebDAVConfig {
   password: string
   mediaPaths: string[]
   scanSettings?: {
-    batchSize?: number
+    concurrency?: number
     preloadCount?: number
   }
 }
@@ -365,7 +365,7 @@ export default function HomePage() {
               password: dbConfig.password,
               mediaPaths: dbConfig.mediaPaths || ['/'],
               scanSettings: dbConfig.scanSettings || {
-                batchSize: 10,
+                concurrency: 10,
                 preloadCount: 10
               }
             }
@@ -407,7 +407,7 @@ export default function HomePage() {
                   password: parsed.password,
                   mediaPaths: parsed.mediaPaths || ['/'],
                   scanSettings: parsed.scanSettings || {
-                    batchSize: 10,
+                    concurrency: 10,
                     preloadCount: 10
                   },
                   isDefault: true // 迁移时设为默认配置

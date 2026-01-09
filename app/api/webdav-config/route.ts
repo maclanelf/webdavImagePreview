@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
       username,
       password,
       mediaPaths,
-      scanSettings: scanSettings || { batchSize: 10, preloadCount: 10 },
+      scanSettings: scanSettings || { concurrency: 10, preloadCount: 10 },
       isDefault
     })
 

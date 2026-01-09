@@ -143,7 +143,7 @@ class Scheduler {
             // 在Node.js环境中，我们需要使用不同的方式调用API
             // 这里直接调用数据库操作而不是通过HTTP API
             const { scheduledScans } = await import('./database')
-            const { getWebDAVClient, getMediaFiles } = await import('./webdav')
+            const { getWebDAVClient, getMediaFiles } = await import('./webdav-optimized')
             const { scanCache } = await import('./database')
             
             const client = getWebDAVClient({
@@ -164,9 +164,7 @@ class Scheduler {
               console.log(`执行定时扫描: ${path}`)
               
               const files = await getMediaFiles(client, path, {
-                maxDepth: scanSettings.maxDepth,
-                maxFiles: Math.floor(scanSettings.maxFiles / mediaPaths.length),
-                timeout: Math.floor(scanSettings.timeout / mediaPaths.length),
+                timeout: scanSettings.timeout || 60000,
                 onProgress: (currentPath, fileCount) => {
                   console.log(`定时扫描 ${path}: ${currentPath} (已找到 ${fileCount} 个文件)`)
                 }
