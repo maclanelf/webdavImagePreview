@@ -137,6 +137,8 @@ export default function HomePage() {
   const [mediaUrl, setMediaUrl] = useState<string | null>(null)
   // 转码流 URL（用于不支持的格式自动降级）
   const [transcodeUrl, setTranscodeUrl] = useState<string | null>(null)
+  // 原始流 URL（用于外部播放器）
+  const [originalStreamUrl, setOriginalStreamUrl] = useState<string | null>(null)
   // 是否正在使用转码流
   const [isUsingTranscode, setIsUsingTranscode] = useState(false)
   // 文件统计信息（从数据库获取）
@@ -1173,13 +1175,15 @@ export default function HomePage() {
 
   // 使用外部播放器播放当前视频
   const playWithExternalPlayer = useCallback((player?: 'potplayer' | 'vlc' | 'system') => {
-    if (!mediaUrl) {
+    // 外部播放器使用原始流URL（外部播放器能直接播放各种格式，不需要转码）
+    const urlToUse = originalStreamUrl || mediaUrl
+    if (!urlToUse) {
       console.log('⚠️ 没有可用的视频 URL')
       return
     }
     
     // 构建完整的视频 URL
-    const videoUrl = new URL(mediaUrl, window.location.origin).href
+    const videoUrl = new URL(urlToUse, window.location.origin).href
     
     console.log('🎬 调用外部播放器:', player || 'system', videoUrl)
     
@@ -1231,7 +1235,7 @@ export default function HomePage() {
     
     // 关闭菜单
     setExternalPlayerAnchor(null)
-  }, [mediaUrl])
+  }, [originalStreamUrl, mediaUrl])
 
   // 处理外部播放按钮点击
   const handleExternalPlayerClick = useCallback((event: React.MouseEvent<HTMLElement>) => {
@@ -1607,6 +1611,7 @@ export default function HomePage() {
       
       setMediaUrl(finalUrl)
       setTranscodeUrl(finalTranscodeUrl)
+      setOriginalStreamUrl(streamUrl) // 保存原始流URL，用于外部播放器
       setMediaType('stream-video') // 标记为流式视频，用于渲染 InstantVideoPlayer
       
       // 如果需要自动进入视频全屏，延迟执行以确保视频元素已渲染
