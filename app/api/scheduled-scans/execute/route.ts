@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { scheduledScans } from '@/lib/database'
-import { getWebDAVClient, recursiveScanDirectory } from '@/lib/webdav-optimized'
-import { scanCache } from '@/lib/database'
-import { writeScanLog } from '@/lib/scanLogger'
-import { scanTaskManager } from '@/lib/scanTaskManager'
+import { scanQueueManager } from '@/lib/scanQueueManager'
 
 interface ScheduledTask {
   id: number
@@ -18,9 +15,8 @@ interface ScheduledTask {
   next_run?: string
 }
 
-// 手动执行定时扫描任务
+// 手动执行定时扫描任务（只负责将任务加入队列）
 export async function POST(request: NextRequest) {
-  let scanTaskId: string | undefined
   try {
     const body = await request.json()
     const { taskId } = body
@@ -43,152 +39,48 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const client = getWebDAVClient({
-      url: task.webdav_url,
-      username: task.webdav_username,
-      password: task.webdav_password
-    })
-
     const mediaPaths = task.media_paths ? JSON.parse(task.media_paths) : []
     const scanSettings = task.scan_settings ? JSON.parse(task.scan_settings) : {}
     
-    // 检查是否有相同的扫描任务正在进行
-    if (scanTaskManager.isTaskRunning(task.webdav_url, task.webdav_username, mediaPaths)) {
-      const runningTask = scanTaskManager.getRunningTask(task.webdav_url, task.webdav_username, mediaPaths)
-      return NextResponse.json({
-        success: true,
-        message: '定时扫描任务正在进行中',
-        taskId: runningTask?.taskId,
-        taskRunning: true
-      })
-    }
-
-    // 启动扫描任务
-    scanTaskId = scanTaskManager.startTask(task.webdav_url, task.webdav_username, mediaPaths)
+    // 将所有路径加入扫描队列
+    const addedTasks: { path: string; taskId: string; position: number; isRunning: boolean }[] = []
     
-    let totalFiles = 0
-    let totalImages = 0
-    let totalVideos = 0
-
-    // 扫描所有路径
     for (const path of mediaPaths) {
-      console.log(`执行定时扫描: ${path}`)
-      
-      // 记录扫描开始日志
-      writeScanLog({
+      const result = scanQueueManager.addTask({
         webdavUrl: task.webdav_url,
         webdavUsername: task.webdav_username,
+        webdavPassword: task.webdav_password,
         path,
-        scanType: 'scheduled',
-        status: 'started'
+        concurrency: scanSettings.concurrency || scanSettings.batchSize || 10,
+        forceRescan: false
       })
-
-      const startTime = Date.now()
       
-      // 收集扫描进度信息
-      const progressLogs: string[] = []
-      let batchCount = 0
+      addedTasks.push({
+        path,
+        taskId: result.taskId,
+        position: result.position,
+        isRunning: result.isRunning
+      })
       
-      try {
-        const result = await recursiveScanDirectory(client, path, {
-          concurrency: scanSettings.concurrency || scanSettings.batchSize || 10,
-          onProgress: (progress) => {
-            batchCount++
-            const logMessage = `批次 ${batchCount} 完成: 处理了 ${progress.scannedDirectories} 个目录，找到 ${progress.foundFiles} 个文件，总计 ${progress.foundFiles} 个文件 (${progress.percentage}%)`
-            progressLogs.push(logMessage)
-            console.log(`定时扫描 ${path}: ${progress.currentPath} (已找到 ${progress.foundFiles} 个文件)`)
-          }
-        })
-
-        const duration = Date.now() - startTime
-
-        // 保存到缓存
-        const filesData = result.files.map(file => ({
-          filename: file.filename,
-          basename: file.basename,
-          size: file.size,
-          type: file.type,
-          lastmod: file.lastmod,
-        }))
-
-        scanCache.save({
-          webdavUrl: task.webdav_url,
-          webdavUsername: task.webdav_username,
-          path,
-          filesData: JSON.stringify(filesData),
-          totalFiles: result.totalFiles,
-          imageCount: result.imageCount,
-          videoCount: result.videoCount,
-          scanSettings: JSON.stringify({ concurrency: scanSettings.concurrency || scanSettings.batchSize || 10 })
-        })
-
-        // 记录扫描完成日志
-        writeScanLog({
-          webdavUrl: task.webdav_url,
-          webdavUsername: task.webdav_username,
-          path,
-          scanType: 'scheduled',
-          status: 'completed',
-          totalFiles: result.totalFiles,
-          imageCount: result.imageCount,
-          videoCount: result.videoCount,
-          durationMs: duration,
-          logDetails: [
-            ...progressLogs,
-            `定时扫描完成，共找到 ${result.totalFiles} 个媒体文件 (图片: ${result.imageCount}, 视频: ${result.videoCount})，耗时 ${duration}ms`
-          ].join('\n')
-        })
-
-        totalFiles += result.totalFiles
-        totalImages += result.imageCount
-        totalVideos += result.videoCount
-
-      } catch (error: any) {
-        const duration = Date.now() - startTime
-        
-        // 记录扫描失败日志
-        writeScanLog({
-          webdavUrl: task.webdav_url,
-          webdavUsername: task.webdav_username,
-          path,
-          scanType: 'scheduled',
-          status: 'failed',
-          durationMs: duration,
-          errorMessage: error.message,
-          logDetails: progressLogs.length > 0 ? [
-            ...progressLogs,
-            `定时扫描失败: ${error.message}`
-          ].join('\n') : `定时扫描失败: ${error.message}`
-        })
-        
-        console.error(`定时扫描 ${path} 失败:`, error)
-        throw error
-      }
+      console.log(`[定时扫描] 路径 ${path} 已加入队列，位置: ${result.position}`)
     }
 
     // 更新任务最后运行时间
     scheduledScans.updateLastRun(taskId)
 
-    // 标记扫描任务完成
-    scanTaskManager.completeTask(scanTaskId)
+    // 获取队列状态
+    const queueStatus = scanQueueManager.getQueueStatus()
 
     return NextResponse.json({
-      message: '定时扫描执行成功',
-      result: {
-        totalFiles,
-        totalImages,
-        totalVideos,
-        scannedPaths: mediaPaths.length
-      },
-      taskId,
-      scanTaskId
+      message: '扫描任务已加入队列',
+      tasks: addedTasks,
+      queueStatus: {
+        queueLength: queueStatus.queueLength,
+        isProcessing: queueStatus.isProcessing,
+        rateLimited: queueStatus.rateLimited
+      }
     })
   } catch (error: any) {
-    // 如果任务已启动，标记为失败
-    if (typeof scanTaskId !== 'undefined') {
-      scanTaskManager.failTask(scanTaskId, error.message)
-    }
-    
     console.error('执行定时扫描失败:', error)
     return NextResponse.json(
       { error: `执行定时扫描失败: ${error.message}` },

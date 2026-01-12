@@ -177,13 +177,7 @@ export default function HomePage() {
   // 智能预加载随机性（0-1，0表示优先当前目录，1表示完全随机）
   const [preloadRandomness, setPreloadRandomness] = useState(1)
   
-  // 扫描状态详细信息
-  const [scanStatus, setScanStatus] = useState<{ 
-    scannedPaths: string[], 
-    pendingPaths: string[], 
-    totalScanned: number, 
-    totalPending: number 
-  } | null>(null)
+
   
   // 评分对话框打开状态
   const [ratingDialogOpen, setRatingDialogOpen] = useState(false)
@@ -595,264 +589,33 @@ export default function HomePage() {
 
   
 
-  // 加载已看过文件列表
-  // 优化：不再需要加载全量路径列表
+  // 从数据库加载统计信息（不触发扫描，扫描请通过管理页面操作）
   const loadStatsFromCache = async (cfg: WebDAVConfig) => {
     setLoading(true)
     setError(null)
     
     try {
-      // 直接从数据库获取统计信息
       const statsResponse = await fetch(`/api/scan-files/stats?webdavUrl=${encodeURIComponent(cfg.url)}&webdavUsername=${encodeURIComponent(cfg.username)}&paths=${encodeURIComponent(cfg.mediaPaths.join(','))}`)
       
       if (statsResponse.ok) {
         const statsData = await statsResponse.json()
+        
+        setStats({
+          total: statsData.total || 0,
+          images: statsData.images || 0,
+          videos: statsData.videos || 0,
+          viewed: statsData.viewed || 0
+        })
         
         if (statsData.hasData) {
-          setStats({
-            total: statsData.total || 0,
-            images: statsData.images || 0,
-            videos: statsData.videos || 0,
-            viewed: statsData.viewed || 0
-          })
           console.log('从数据库加载统计信息:', statsData)
-          return
-        }
-      }
-      
-      // 如果数据库没有数据，尝试从缓存获取并触发迁移
-      const cacheResponse = await fetch(`/api/scan-cache?webdavUrl=${encodeURIComponent(cfg.url)}&webdavUsername=${encodeURIComponent(cfg.username)}&webdavPassword=${encodeURIComponent(cfg.password)}`)
-      
-      if (cacheResponse.ok) {
-        const data = await cacheResponse.json()
-        const pathStats = data.pathStats || {}
-        
-        // 检查是否有缓存数据
-        const hasCacheData = Object.keys(pathStats).length > 0
-        
-        if (hasCacheData) {
-          // 计算总统计
-          let totalFiles = 0
-          let totalImages = 0
-          let totalVideos = 0
-          
-          for (const path of cfg.mediaPaths) {
-            const stats = pathStats[path]
-            if (stats) {
-              totalFiles += stats.total || 0
-              totalImages += stats.images || 0
-              totalVideos += stats.videos || 0
-            }
-          }
-          
-          setStats({
-            total: totalFiles,
-            images: totalImages,
-            videos: totalVideos,
-            viewed: 0
-          })
-          
-          // 如果有缓存数据，使用增量加载（会触发数据迁移）
-          await loadStatsIncremental(cfg)
-          return
-        }
-      }
-      
-      // 如果没有缓存数据，进行首次扫描
-      await loadStats(cfg, false)
-      
-    } catch (error: any) {
-      console.error('从缓存加载失败:', error)
-      // 如果缓存加载失败，回退到正常扫描
-      await loadStats(cfg, false)
-    } finally {
-      // 确保loading状态被正确设置
-      setLoading(false)
-    }
-  }
-
-  // 增量加载统计信息（触发数据迁移后重新获取统计）
-  const loadStatsIncremental = async (cfg: WebDAVConfig) => {
-    try {
-      // 使用增量模式触发数据迁移
-      const response = await fetch('/api/webdav/files', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...cfg,
-          incremental: true, // 启用增量模式
-        }),
-      })
-
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || '获取文件列表失败')
-      }
-
-      const data = await response.json()
-      
-      // 显示缓存状态
-      if (data.fromCache) {
-        console.log('从缓存加载文件列表')
-      }
-      
-      // 如果有待扫描的路径，启动后台扫描
-      if (data.pendingPaths && data.pendingPaths.length > 0) {
-        console.log('启动后台扫描:', data.pendingPaths)
-        startBackgroundScan(cfg, data.pendingPaths)
-      }
-      
-      // 重新从数据库获取统计信息
-      const statsResponse = await fetch(`/api/scan-files/stats?webdavUrl=${encodeURIComponent(cfg.url)}&webdavUsername=${encodeURIComponent(cfg.username)}&paths=${encodeURIComponent(cfg.mediaPaths.join(','))}`)
-      
-      if (statsResponse.ok) {
-        const statsData = await statsResponse.json()
-        setStats({
-          total: statsData.total || 0,
-          images: statsData.images || 0,
-          videos: statsData.videos || 0,
-          viewed: statsData.viewed || 0
-        })
-      }
-      
-      // 预加载将在第二个useEffect中根据viewMode统一处理
-    } catch (e: any) {
-      console.error('增量加载失败:', e)
-      // 如果增量加载失败，回退到正常加载
-      await loadStats(cfg, false)
-    }
-  }
-
-  // 启动后台扫描
-  const startBackgroundScan = async (cfg: WebDAVConfig, pendingPaths: string[]) => {
-    try {
-      const response = await fetch('/api/webdav/background-scan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...cfg,
-          mediaPaths: pendingPaths,
-        }),
-      })
-
-      if (response.ok) {
-        const data = await response.json()
-        console.log('后台扫描状态:', data.message)
-        
-        // 如果任务已经在运行，显示相应提示
-        if (data.taskRunning) {
-          setSnackbarMessage(`🔄 扫描任务正在进行中：${pendingPaths.length} 个目录`)
-          setSnackbarSeverity('info')
-          setSnackbarOpen(true)
-        } else if (data.scanStarted) {
-          setSnackbarMessage(`🚀 后台扫描已启动：${pendingPaths.length} 个目录`)
-          setSnackbarSeverity('info')
-          setSnackbarOpen(true)
-        }
-        
-        // 定期检查扫描状态
-        checkScanStatus(cfg)
-      }
-    } catch (error) {
-      console.error('启动后台扫描失败:', error)
-    }
-  }
-
-  // 检查扫描状态
-  const checkScanStatus = async (cfg: WebDAVConfig) => {
-    try {
-      const response = await fetch(`/api/webdav/background-scan?url=${encodeURIComponent(cfg.url)}&username=${encodeURIComponent(cfg.username)}&password=${encodeURIComponent(cfg.password)}&mediaPaths=${cfg.mediaPaths.join(',')}`)
-      
-      if (response.ok) {
-        const data = await response.json()
-        
-        // 更新扫描状态
-        setScanStatus({
-          scannedPaths: data.scannedPaths || [],
-          pendingPaths: data.pendingPaths || [],
-          totalScanned: data.totalScanned || 0,
-          totalPending: data.totalPending || 0
-        })
-        
-        // 如果还有待扫描的路径，继续检查
-        if (data.totalPending > 0) {
-          setTimeout(() => checkScanStatus(cfg), 5000) // 5秒后再次检查
         } else {
-          // 所有扫描完成，刷新数据
-          console.log('所有扫描完成，刷新数据')
-          await loadStatsIncremental(cfg)
-          
-          setSnackbarMessage('✅ 所有目录扫描完成')
-          setSnackbarSeverity('success')
-          setSnackbarOpen(true)
-          
-          // 清除扫描状态
-          setScanStatus(null)
+          console.log('数据库中暂无数据，请通过管理页面触发扫描')
         }
       }
-    } catch (error) {
-      console.error('检查扫描状态失败:', error)
-    }
-  }
-
-  const loadStats = async (cfg: WebDAVConfig, forceRescan = false) => {
-    setLoading(true)
-    
-    // 只有在强制重新扫描时才显示扫描进度
-    if (forceRescan) {
-      setScanProgress({ currentPath: '开始扫描...', fileCount: 0 })
-    }
-    
-    try {
-      const response = await fetch('/api/webdav/files', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...cfg,
-          forceRescan,
-        }),
-      })
-
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || '获取文件列表失败')
-      }
-
-      const data = await response.json()
-      
-      // 只有在强制重新扫描时才清理扫描进度
-      if (forceRescan) {
-        setScanProgress(null)
-      }
-      
-      // 显示缓存状态
-      if (data.fromCache) {
-        console.log('从缓存加载文件列表')
-      } else {
-        console.log('重新扫描完成')
-      }
-      
-      // 从数据库获取统计信息
-      const statsResponse = await fetch(`/api/scan-files/stats?webdavUrl=${encodeURIComponent(cfg.url)}&webdavUsername=${encodeURIComponent(cfg.username)}&paths=${encodeURIComponent(cfg.mediaPaths.join(','))}`)
-      
-      if (statsResponse.ok) {
-        const statsData = await statsResponse.json()
-        setStats({
-          total: statsData.total || 0,
-          images: statsData.images || 0,
-          videos: statsData.videos || 0,
-          viewed: statsData.viewed || 0
-        })
-      }
-
-      // 预加载将在第二个useEffect中根据viewMode统一处理
-    } catch (e: any) {
-      console.error('加载统计信息失败:', e)
-      setError(`加载统计信息失败: ${e.message}`)
-      // 只有在强制重新扫描时才清理扫描进度
-      if (forceRescan) {
-        setScanProgress(null)
-      }
+    } catch (error: any) {
+      console.error('加载统计信息失败:', error)
+      setError('加载统计信息失败，请检查配置或通过管理页面重新扫描')
     } finally {
       setLoading(false)
     }
@@ -2521,11 +2284,6 @@ export default function HomePage() {
                 <FilterListIcon />
               </IconButton>
             </Tooltip>
-            <Tooltip title="即点即播">
-              <IconButton onClick={() => router.push('/instant-play')} color="secondary">
-                <VideoIcon />
-              </IconButton>
-            </Tooltip>
             <Tooltip title="评价与分类管理">
               <IconButton onClick={() => router.push('/manage')}>
                 <ManageAccountsIcon />
@@ -3630,30 +3388,6 @@ export default function HomePage() {
               <Chip label={config.mediaPaths.length} size="small" color="primary" />
             </Box>
 
-            {/* 扫描状态显示 */}
-            {scanStatus && scanStatus.totalPending > 0 && (
-              <Paper variant="outlined" sx={{ p: 1.5, mb: 2, backgroundColor: 'info.light', color: 'info.contrastText' }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                  <CircularProgress size={16} color="inherit" />
-                  <Typography variant="body2" fontWeight="medium">
-                    后台扫描进行中
-                  </Typography>
-                </Box>
-                <Typography variant="caption" display="block">
-                  已完成: {scanStatus.totalScanned} 个目录
-                </Typography>
-                <Typography variant="caption" display="block">
-                  待扫描: {scanStatus.totalPending} 个目录
-                </Typography>
-                {scanStatus.pendingPaths.length > 0 && (
-                  <Typography variant="caption" display="block" sx={{ mt: 0.5 }}>
-                    待扫描: {scanStatus.pendingPaths.slice(0, 2).join(', ')}
-                    {scanStatus.pendingPaths.length > 2 && ` 等${scanStatus.pendingPaths.length}个`}
-                  </Typography>
-                )}
-              </Paper>
-            )}
-
             <List dense>
               {config.mediaPaths.map((path, index) => (
                 <ListItem key={index} sx={{ px: 0 }}>
@@ -3671,17 +3405,17 @@ export default function HomePage() {
               ))}
             </List>
 
-            {/* 重新扫描按钮 */}
+            {/* 重新扫描按钮 - 跳转到管理页面 */}
             <Box sx={{ mt: 2 }}>
               <Button
                 variant="outlined"
                 size="small"
                 fullWidth
-                onClick={() => loadStats(config, true)}
+                onClick={() => router.push('/manage')}
                 disabled={loading || isSwitching}
                 startIcon={<RefreshIcon />}
               >
-                强制重新扫描
+                前往管理页面扫描
               </Button>
             </Box>
           </Box>

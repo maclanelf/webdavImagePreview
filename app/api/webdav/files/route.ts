@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getWebDAVClient, recursiveScanDirectory } from '@/lib/webdav-optimized'
-import { scanCache, scanFiles } from '@/lib/database'
-import { writeScanLog } from '@/lib/scanLogger'
-import { scanTaskManager } from '@/lib/scanTaskManager'
+import { scanCache } from '@/lib/database'
 
+/**
+ * 文件列表接口 - 仅从缓存/数据库读取
+ * 扫描功能已迁移到 ScanQueueManager，请通过管理页面触发扫描
+ */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
@@ -12,9 +13,6 @@ export async function POST(request: NextRequest) {
       username, 
       password, 
       mediaPaths = ['/'],
-      concurrency = 10,
-      forceRescan = false,
-      incremental = false // 新增：是否支持增量返回
     } = body
 
     if (!url || !username || !password) {
@@ -24,203 +22,48 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // 尝试从缓存加载所有路径的文件
+    // 从缓存加载所有路径的文件
     const allFiles: any[] = []
-    const uncachedPaths: string[] = []
     const cachedPaths: string[] = []
+    const uncachedPaths: string[] = []
     
     for (const path of mediaPaths) {
-      if (!forceRescan) {
-        const cached = scanCache.get(url, username, path) as any
-        if (cached) {
-          console.log(`从缓存加载路径: ${path}`)
-          const filesData = cached.files_data ? JSON.parse(cached.files_data) : []
-          allFiles.push(...filesData)
-          cachedPaths.push(path)
-          continue
-        }
+      const cached = scanCache.get(url, username, path) as any
+      if (cached) {
+        console.log(`从缓存加载路径: ${path}`)
+        const filesData = cached.files_data ? JSON.parse(cached.files_data) : []
+        allFiles.push(...filesData)
+        cachedPaths.push(path)
+      } else {
+        uncachedPaths.push(path)
       }
-      uncachedPaths.push(path)
     }
 
-    // 如果支持增量返回且有缓存数据，先返回缓存的结果
-    if (incremental && cachedPaths.length > 0) {
-      const imageCount = allFiles.filter(f => 
-        /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(f.basename)
-      ).length
-      
-      const videoCount = allFiles.filter(f => 
-        /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(f.basename)
-      ).length
-
-      return NextResponse.json({
-        files: allFiles,
-        fromCache: true,
-        incremental: true,
-        cachedPaths,
-        pendingPaths: uncachedPaths,
-        stats: {
-          total: allFiles.length,
-          images: imageCount,
-          videos: videoCount
-        }
-      })
-    }
-
-    // 如果有未缓存的路径，进行递归扫描
-    if (uncachedPaths.length > 0) {
-      const client = getWebDAVClient({ url, username, password })
-      
-      // 检查是否有相同的扫描任务正在进行
-      const pathsToScan = scanTaskManager.getPathsToScan(url, username, uncachedPaths)
-      
-      // 如果没有需要扫描的路径，直接返回缓存的结果
-      if (pathsToScan.length === 0) {
-        const runningTask = scanTaskManager.getRunningTask(url, username, uncachedPaths)
-        if (runningTask) {
-          return NextResponse.json({
-            files: allFiles,
-            fromCache: true,
-            taskRunning: true,
-            taskId: runningTask.taskId,
-            message: '扫描任务正在进行中，返回缓存数据'
-          })
-        }
-      }
-      
-      // 启动扫描任务
-      const taskId = scanTaskManager.startTask(url, username, pathsToScan)
-      
-      for (const path of pathsToScan) {
-        console.log(`开始递归扫描路径: ${path}`)
-        
-        // 记录扫描开始日志
-        writeScanLog({
-          webdavUrl: url,
-          webdavUsername: username,
-          path,
-          scanType: 'recursive',
-          status: 'started'
-        })
-
-        const startTime = Date.now()
-        
-        // 收集扫描进度信息
-        const progressLogs: string[] = []
-        let batchCount = 0
-        
-        try {
-          // 执行递归扫描
-          const result = await recursiveScanDirectory(client, path, {
-            concurrency,
-            onProgress: (progress) => {
-              batchCount++
-              const logMessage = `批次 ${batchCount} 完成: 处理了 ${progress.scannedDirectories} 个目录，找到 ${progress.foundFiles} 个文件，总计 ${progress.foundFiles} 个文件 (${progress.percentage}%)`
-              progressLogs.push(logMessage)
-              console.log(`扫描路径 ${path}: ${progress.currentPath} (已找到 ${progress.foundFiles} 个文件)`)
-            }
-          })
-
-          const duration = Date.now() - startTime
-
-          // 检查扫描结果是否有效
-          if (!result || !result.files) {
-            throw new Error(`路径 ${path} 扫描失败`)
-          }
-
-          // 0 个文件是正常结果，不应该报错
-          if (result.files.length === 0) {
-            console.log(`扫描完成，路径 ${path} 下没有找到媒体文件`)
-          }
-
-          // 如果强制重新扫描，在扫描成功后再清除并替换缓存
-          if (forceRescan) {
-            scanCache.delete(url, username, path)
-          }
-
-          // 保存到缓存（扫描成功且确认有文件内容）
-          const filesData = result.files.map(file => ({
-            filename: file.filename,
-            basename: file.basename,
-            size: file.size,
-            type: file.type,
-            lastmod: file.lastmod,
-          }))
-
-          scanCache.save({
-            webdavUrl: url,
-            webdavUsername: username,
-            path,
-            filesData: JSON.stringify(filesData),
-            totalFiles: result.totalFiles,
-            imageCount: result.imageCount,
-            videoCount: result.videoCount,
-            scanSettings: JSON.stringify({ concurrency })
-          })
-
-          // 获取刚保存的 cache_id，写入 scan_files 表
-          const savedCache = scanCache.get(url, username, path) as any
-          if (savedCache && savedCache.id) {
-            // 先删除旧数据
-            scanFiles.deleteByCache(savedCache.id)
-            // 批量插入新数据
-            scanFiles.batchInsert(savedCache.id, filesData)
-            // 从 media_ratings 同步已看状态
-            const syncResult = scanFiles.syncViewedFromRatings(savedCache.id)
-            console.log(`已同步写入 scan_files 表: ${filesData.length} 个文件，同步 ${syncResult.synced} 个已看记录`)
-          }
-
-          // 记录扫描完成日志
-          writeScanLog({
-            webdavUrl: url,
-            webdavUsername: username,
-            path,
-            scanType: 'recursive',
-            status: 'completed',
-            totalFiles: result.totalFiles,
-            imageCount: result.imageCount,
-            videoCount: result.videoCount,
-            durationMs: duration,
-            logDetails: [
-              ...progressLogs,
-              `递归扫描完成，共找到 ${result.totalFiles} 个媒体文件 (图片: ${result.imageCount}, 视频: ${result.videoCount})，耗时 ${duration}ms`
-            ].join('\n')
-          })
-          
-          allFiles.push(...filesData)
-          console.log(`路径 ${path} 递归扫描完成，找到 ${result.totalFiles} 个文件`)
-          
-        } catch (error: any) {
-          const duration = Date.now() - startTime
-          
-          // 记录扫描失败日志
-          writeScanLog({
-            webdavUrl: url,
-            webdavUsername: username,
-            path,
-            scanType: 'recursive',
-            status: 'failed',
-            durationMs: duration,
-            errorMessage: error.message,
-            logDetails: progressLogs.length > 0 ? [
-              ...progressLogs,
-              `扫描失败: ${error.message}`
-            ].join('\n') : `扫描失败: ${error.message}`
-          })
-          
-          console.error(`路径 ${path} 递归扫描失败:`, error)
-          // 标记任务失败
-          scanTaskManager.failTask(taskId, `路径 ${path} 扫描失败: ${error.message}`)
-          throw error
-        }
-      }
-      
-      // 所有路径扫描完成，标记任务完成
-      scanTaskManager.completeTask(taskId)
-    }
+    // 计算统计信息
+    const imageCount = allFiles.filter(f => 
+      /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(f.basename)
+    ).length
     
-    console.log(`所有路径扫描完成，总共找到 ${allFiles.length} 个文件`)
-    return NextResponse.json({ files: allFiles })
+    const videoCount = allFiles.filter(f => 
+      /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(f.basename)
+    ).length
+
+    // 如果有未缓存的路径，提示用户去管理页面扫描
+    if (uncachedPaths.length > 0) {
+      console.log(`以下路径未缓存，请通过管理页面触发扫描: ${uncachedPaths.join(', ')}`)
+    }
+
+    return NextResponse.json({
+      files: allFiles,
+      fromCache: true,
+      cachedPaths,
+      uncachedPaths,
+      stats: {
+        total: allFiles.length,
+        images: imageCount,
+        videos: videoCount
+      }
+    })
   } catch (error: any) {
     console.error('获取文件列表失败:', error)
     return NextResponse.json(

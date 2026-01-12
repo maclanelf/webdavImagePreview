@@ -466,41 +466,33 @@ export default function ConfigPage() {
       // 保存到 localStorage（向后兼容）
       localStorage.setItem('webdav_config', JSON.stringify(configToSave))
       
-      // 保存成功后，启动后台扫描
+      // 保存成功后，将扫描任务加入队列
       try {
-        const response = await fetch('/api/webdav/background-scan', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...configToSave,
-            mediaPaths: Array.from(selectedPaths),
-          }),
-        })
-
-        if (response.ok) {
-          const data = await response.json()
-          if (data.taskRunning) {
-            setSaveResult({
-              type: 'success',
-              message: '配置已保存！扫描任务正在进行中...',
-            })
-          } else if (data.scanStarted) {
-            setSaveResult({
-              type: 'success',
-              message: '配置已保存！后台扫描已启动...',
-            })
-          } else {
-            setSaveResult({
-              type: 'success',
-              message: '配置已保存！所有目录已扫描完成。',
-            })
-          }
-        } else {
-          setSaveResult({
-            type: 'success',
-            message: '配置已保存！',
+        // 为每个路径添加扫描任务到队列
+        const selectedPathsArray = Array.from(selectedPaths)
+        for (const path of selectedPathsArray) {
+          const response = await fetch('/api/webdav/recursive-scan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              url: configToSave.url,
+              username: configToSave.username,
+              password: configToSave.password,
+              path,
+              concurrency: configToSave.scanSettings?.concurrency || 10,
+            }),
           })
+
+          if (response.ok) {
+            const data = await response.json()
+            console.log(`路径 ${path} 扫描任务状态:`, data.message)
+          }
         }
+
+        setSaveResult({
+          type: 'success',
+          message: '配置已保存！扫描任务已加入队列。',
+        })
       } catch (scanError) {
         console.error('启动扫描失败:', scanError)
         setSaveResult({
