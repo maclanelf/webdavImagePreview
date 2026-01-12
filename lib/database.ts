@@ -189,12 +189,37 @@ export function initDatabase() {
         pending_directories TEXT,
         completed_directories TEXT,
         error_message TEXT,
+        retry_count INTEGER DEFAULT 0,
+        next_retry_at DATETIME,
+        rate_limited_until DATETIME,
+        delay_until DATETIME,
         created_at DATETIME DEFAULT (datetime(\'now\', \'localtime\')),
         updated_at DATETIME DEFAULT (datetime(\'now\', \'localtime\')),
         started_at DATETIME,
         completed_at DATETIME
       )
     `)
+    /*
+     * 字段说明：
+     * - retry_count: 任务重试次数
+     * - next_retry_at: 下次重试时间
+     * - rate_limited_until: 风控限制解除时间
+     * - delay_until: 任务延迟执行时间（队列间隔）
+     */
+
+    // 添加新字段（如果表已存在）
+    try {
+      db.exec(`ALTER TABLE recursive_scan_tasks ADD COLUMN retry_count INTEGER DEFAULT 0`)
+    } catch (e) { /* 字段已存在 */ }
+    try {
+      db.exec(`ALTER TABLE recursive_scan_tasks ADD COLUMN next_retry_at DATETIME`)
+    } catch (e) { /* 字段已存在 */ }
+    try {
+      db.exec(`ALTER TABLE recursive_scan_tasks ADD COLUMN rate_limited_until DATETIME`)
+    } catch (e) { /* 字段已存在 */ }
+    try {
+      db.exec(`ALTER TABLE recursive_scan_tasks ADD COLUMN delay_until DATETIME`)
+    } catch (e) { /* 字段已存在 */ }
 
     // 创建递归扫描进度表
     db.exec(`
@@ -837,9 +862,13 @@ export const recursiveScanTasks = {
     pendingDirectories?: string[]
     completedDirectories?: string[]
     errorMessage?: string
+    retryCount?: number
+    nextRetryAt?: string
+    rateLimitedUntil?: string
+    delayUntil?: string
   }) => {
     const updates = ['status = ?', 'updated_at = datetime(\'now\', \'localtime\')']
-    const values = [status]
+    const values: any[] = [status]
     
     if (data) {
       if (data.currentPath !== undefined) {
@@ -848,15 +877,15 @@ export const recursiveScanTasks = {
       }
       if (data.scannedDirectories !== undefined) {
         updates.push('scanned_directories = ?')
-        values.push(data.scannedDirectories.toString())
+        values.push(data.scannedDirectories)
       }
       if (data.totalDirectories !== undefined) {
         updates.push('total_directories = ?')
-        values.push(data.totalDirectories.toString())
+        values.push(data.totalDirectories)
       }
       if (data.foundFiles !== undefined) {
         updates.push('found_files = ?')
-        values.push(data.foundFiles.toString())
+        values.push(data.foundFiles)
       }
       if (data.pendingDirectories !== undefined) {
         updates.push('pending_directories = ?')
@@ -869,6 +898,22 @@ export const recursiveScanTasks = {
       if (data.errorMessage !== undefined) {
         updates.push('error_message = ?')
         values.push(data.errorMessage)
+      }
+      if (data.retryCount !== undefined) {
+        updates.push('retry_count = ?')
+        values.push(data.retryCount)
+      }
+      if (data.nextRetryAt !== undefined) {
+        updates.push('next_retry_at = ?')
+        values.push(data.nextRetryAt)
+      }
+      if (data.rateLimitedUntil !== undefined) {
+        updates.push('rate_limited_until = ?')
+        values.push(data.rateLimitedUntil)
+      }
+      if (data.delayUntil !== undefined) {
+        updates.push('delay_until = ?')
+        values.push(data.delayUntil)
       }
     }
     
@@ -891,9 +936,9 @@ export const recursiveScanTasks = {
     return stmt.all()
   },
 
-  // 获取活跃任务
+  // 获取活跃任务（包含所有未完成状态）
   getActive: () => {
-    const stmt = db.prepare("SELECT * FROM recursive_scan_tasks WHERE status IN ('pending', 'running', 'paused') ORDER BY created_at DESC")
+    const stmt = db.prepare("SELECT * FROM recursive_scan_tasks WHERE status IN ('pending', 'running', 'paused', 'rate_limited', 'waiting') ORDER BY created_at ASC")
     return stmt.all()
   },
 

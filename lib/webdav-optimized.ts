@@ -43,6 +43,8 @@ export interface ScanResult {
   files: FileStat[]
   method: 'propfind' | 'webdav-client'
   duration: number
+  failedDirectories?: number      // 重试失败的目录数量
+  rateLimitTriggered?: boolean    // 是否触发风控（提前中断扫描）
 }
 
 export interface OptimizedScanOptions {
@@ -333,6 +335,7 @@ async function recursiveScanWithPropfind(
   let totalResponseTime = 0
   let responseCount = 0
   let lastProgressTime = 0
+  let rateLimitTriggered = false  // 风控触发标记
 
   const auth = { username: config.username, password: config.password }
 
@@ -359,6 +362,11 @@ async function recursiveScanWithPropfind(
   }
 
   const scanDirectory = async (path: string): Promise<void> => {
+    // 如果已经触发风控，直接返回不执行
+    if (rateLimitTriggered) {
+      return
+    }
+    
     // 规范化路径：移除尾部斜杠（用于 scannedPaths 检查）
     const normalizedPath = path.endsWith('/') ? path.slice(0, -1) : path
     
@@ -374,6 +382,11 @@ async function recursiveScanWithPropfind(
 
     try {
       const { files, directories } = await propfindDepth1(config.url, path, auth, timeout)
+
+      // 请求成功后再次检查风控状态（可能其他并发任务已触发风控）
+      if (rateLimitTriggered) {
+        return
+      }
 
       totalResponseTime += Date.now() - reqStartTime
       responseCount++
@@ -404,6 +417,11 @@ async function recursiveScanWithPropfind(
       reportProgress(path)
 
     } catch (error: any) {
+      // 如果已经触发风控，不再处理
+      if (rateLimitTriggered) {
+        return
+      }
+      
       // 重试机制
       const failures = (failedPaths.get(normalizedPath) || 0) + 1
       failedPaths.set(normalizedPath, failures)
@@ -413,7 +431,11 @@ async function recursiveScanWithPropfind(
         scannedPaths.delete(normalizedPath) // 允许重试
         queue.push(normalizedPath)
       } else {
-        console.warn(`[PROPFIND] 扫描目录失败 (已放弃): ${path}`, error.message)
+        // 重试次数用尽，标记为风控触发，立即停止扫描
+        console.error(`🚨 [PROPFIND] 扫描目录失败 (已放弃，触发风控): ${path}`, error.message)
+        rateLimitTriggered = true
+        // 清空队列，防止继续添加新任务
+        queue.length = 0
       }
     }
   }
@@ -424,9 +446,15 @@ async function recursiveScanWithPropfind(
   // 滑动窗口并发控制（带限速）
   while (queue.length > 0 || scanning.size > 0) {
     if (signal?.aborted) break
+    
+    // 检查是否触发风控，立即停止
+    if (rateLimitTriggered) {
+      console.warn(`[PROPFIND] 检测到风控触发，停止扫描，取消剩余 ${scanning.size} 个并发任务`)
+      break
+    }
 
     // 填充并发窗口
-    while (scanning.size < maxConcurrency && queue.length > 0) {
+    while (scanning.size < maxConcurrency && queue.length > 0 && !rateLimitTriggered) {
       const path = queue.shift()!
       
       // 规范化路径
@@ -449,6 +477,9 @@ async function recursiveScanWithPropfind(
       scanning.set(normalizedPath, promise)
     }
 
+    // 如果触发风控，不再等待
+    if (rateLimitTriggered) break
+
     // 等待任意一个完成
     if (scanning.size > 0) {
       await Promise.race(scanning.values())
@@ -462,8 +493,8 @@ async function recursiveScanWithPropfind(
     }
   }
 
-  // 等待所有剩余任务完成
-  if (scanning.size > 0) {
+  // 等待所有剩余任务完成（如果没有触发风控）
+  if (scanning.size > 0 && !rateLimitTriggered) {
     await Promise.all(scanning.values())
   }
 
@@ -471,9 +502,26 @@ async function recursiveScanWithPropfind(
   const imageCount = allFiles.filter(f => isImageFile(f.filename)).length
   const videoCount = allFiles.filter(f => isVideoFile(f.filename)).length
 
-  console.log(`[PROPFIND] 扫描完成: ${allFiles.length} 个文件，${scannedDirectories} 个目录，耗时 ${duration}ms，平均响应 ${Math.round(totalResponseTime / responseCount)}ms`)
+  // 统计重试失败的目录数量（超过重试次数的目录）
+  const failedDirectories = Array.from(failedPaths.entries()).filter(([_, count]) => count > retryCount).length
 
-  return { taskId, totalFiles: allFiles.length, imageCount, videoCount, files: allFiles, method: 'propfind', duration }
+  if (rateLimitTriggered) {
+    console.warn(`[PROPFIND] 扫描被风控中断: ${allFiles.length} 个文件，${scannedDirectories} 个目录，失败 ${failedDirectories} 个，耗时 ${duration}ms`)
+  } else {
+    console.log(`[PROPFIND] 扫描完成: ${allFiles.length} 个文件，${scannedDirectories} 个目录，失败 ${failedDirectories} 个，耗时 ${duration}ms，平均响应 ${Math.round(totalResponseTime / responseCount)}ms`)
+  }
+
+  return { 
+    taskId, 
+    totalFiles: allFiles.length, 
+    imageCount, 
+    videoCount, 
+    files: allFiles, 
+    method: 'propfind', 
+    duration,
+    failedDirectories,
+    rateLimitTriggered  // 是否触发风控
+  }
 }
 
 // ============== webdav-client 递归扫描（备用） ==============
@@ -514,6 +562,7 @@ async function recursiveScanWithClient(
   let lastProgressTime = 0
   let batchCounter = 0  // 批次计数器
   let lastRequestTime = 0  // 上次请求时间
+  let rateLimitTriggered = false  // 风控触发标记
 
   // 节流进度回调
   const reportProgress = (currentPath: string) => {
@@ -537,6 +586,11 @@ async function recursiveScanWithClient(
   }
 
   const processDirectory = async (path: string): Promise<void> => {
+    // 如果已经触发风控，直接返回不执行
+    if (rateLimitTriggered) {
+      return
+    }
+    
     // 规范化路径：移除尾部斜杠
     const normalizedPath = path.endsWith('/') ? path.slice(0, -1) : path
     
@@ -550,6 +604,12 @@ async function recursiveScanWithClient(
 
     try {
       const contents = await client.getDirectoryContents(path) as FileStat[]
+      
+      // 请求成功后再次检查风控状态（可能其他并发任务已触发风控）
+      if (rateLimitTriggered) {
+        return
+      }
+      
       scannedDirectories++
 
       let filesInDir = 0
@@ -577,6 +637,11 @@ async function recursiveScanWithClient(
       reportProgress(path)
 
     } catch (error: any) {
+      // 如果已经触发风控，不再处理
+      if (rateLimitTriggered) {
+        return
+      }
+      
       // 重试机制
       const failures = (failedPaths.get(normalizedPath) || 0) + 1
       failedPaths.set(normalizedPath, failures)
@@ -586,7 +651,11 @@ async function recursiveScanWithClient(
         scannedPaths.delete(normalizedPath)
         queue.push(normalizedPath)
       } else {
-        console.warn(`[webdav-client] 处理目录失败 (已放弃): ${path}`, error.message)
+        // 重试次数用尽，标记为风控触发，立即停止扫描
+        console.error(`🚨 [webdav-client] 处理目录失败 (已放弃，触发风控): ${path}`, error.message)
+        rateLimitTriggered = true
+        // 清空队列，防止继续添加新任务
+        queue.length = 0
       }
     }
   }
@@ -597,9 +666,15 @@ async function recursiveScanWithClient(
   // 滑动窗口并发控制（带限速）
   while (queue.length > 0 || scanning.size > 0) {
     if (signal?.aborted) break
+    
+    // 检查是否触发风控，立即停止
+    if (rateLimitTriggered) {
+      console.warn(`[webdav-client] 检测到风控触发，停止扫描，取消剩余 ${scanning.size} 个并发任务`)
+      break
+    }
 
     // 填充并发窗口
-    while (scanning.size < maxConcurrency && queue.length > 0) {
+    while (scanning.size < maxConcurrency && queue.length > 0 && !rateLimitTriggered) {
       const path = queue.shift()!
       
       // 规范化路径
@@ -623,6 +698,9 @@ async function recursiveScanWithClient(
       scanning.set(normalizedPath, promise)
     }
 
+    // 如果触发风控，不再等待
+    if (rateLimitTriggered) break
+
     // 等待至少一个任务完成，释放并发槽位
     if (scanning.size > 0) {
       await Promise.race(scanning.values())
@@ -636,8 +714,8 @@ async function recursiveScanWithClient(
     }
   }
 
-  // 确保所有任务都完成
-  if (scanning.size > 0) {
+  // 确保所有任务都完成（如果没有触发风控）
+  if (scanning.size > 0 && !rateLimitTriggered) {
     await Promise.all(scanning.values())
   }
 
@@ -645,9 +723,26 @@ async function recursiveScanWithClient(
   const imageCount = allFiles.filter(f => isImageFile(f.filename)).length
   const videoCount = allFiles.filter(f => isVideoFile(f.filename)).length
 
-  console.log(`[webdav-client] 扫描完成: ${allFiles.length} 个文件，${scannedDirectories} 个目录，耗时 ${duration}ms`)
+  // 统计重试失败的目录数量
+  const failedDirectories = Array.from(failedPaths.entries()).filter(([_, count]) => count > retryCount).length
 
-  return { taskId, totalFiles: allFiles.length, imageCount, videoCount, files: allFiles, method: 'webdav-client', duration }
+  if (rateLimitTriggered) {
+    console.warn(`[webdav-client] 扫描被风控中断: ${allFiles.length} 个文件，${scannedDirectories} 个目录，失败 ${failedDirectories} 个，耗时 ${duration}ms`)
+  } else {
+    console.log(`[webdav-client] 扫描完成: ${allFiles.length} 个文件，${scannedDirectories} 个目录，失败 ${failedDirectories} 个，耗时 ${duration}ms`)
+  }
+
+  return { 
+    taskId, 
+    totalFiles: allFiles.length, 
+    imageCount, 
+    videoCount, 
+    files: allFiles, 
+    method: 'webdav-client', 
+    duration,
+    failedDirectories,
+    rateLimitTriggered  // 是否触发风控
+  }
 }
 
 
@@ -725,6 +820,8 @@ export async function recursiveScanDirectory(
   imageCount: number
   videoCount: number
   files: FileStat[]
+  failedDirectories?: number      // 重试失败的目录数量
+  rateLimitTriggered?: boolean    // 是否触发风控
 }> {
   const { concurrency = 10, onProgress } = options  // 默认并发数 10
 
@@ -750,6 +847,8 @@ export async function recursiveScanDirectory(
     imageCount: result.imageCount,
     videoCount: result.videoCount,
     files: result.files,
+    failedDirectories: result.failedDirectories,
+    rateLimitTriggered: result.rateLimitTriggered,
   }
 }
 

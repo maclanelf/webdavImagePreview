@@ -110,8 +110,13 @@ export default function ConfigPage() {
     startTime?: number,
     scannedDirectories?: number,
     totalDirectories?: number,
-    percentage?: number
+    percentage?: number,
+    delayUntil?: string
   }>>(new Map())
+  
+  // 风控状态
+  const [rateLimited, setRateLimited] = useState(false)
+  const [rateLimitedUntil, setRateLimitedUntil] = useState<string | null>(null)
   
   // 递归扫描相关状态
   
@@ -154,6 +159,78 @@ export default function ConfigPage() {
     }
   }
 
+  // 加载当前正在执行的扫描任务（页面刷新后恢复状态）
+  const loadRunningScanTasks = async (config: WebDAVConfig) => {
+    try {
+      const response = await fetch('/api/webdav/recursive-scan')
+      if (response.ok) {
+        const data = await response.json()
+        
+        // 恢复风控状态
+        if (data.rateLimited) {
+          setRateLimited(true)
+          setRateLimitedUntil(data.rateLimitedUntil)
+          console.log('恢复风控状态:', data.rateLimitedUntil)
+        }
+        
+        // 恢复正在执行的任务状态
+        if (data.currentTask) {
+          const path = data.currentTask.path
+          const progress = data.currentTask.progress
+          setScanning(prev => new Set(prev).add(path))
+          setScanProgress(prev => new Map(prev).set(path, {
+            currentPath: progress?.currentPath || '扫描中...',
+            fileCount: progress?.foundFiles || 0,
+            scannedDirectories: progress?.scannedDirectories || 0,
+            totalDirectories: progress?.totalDirectories || 0,
+            percentage: progress?.totalDirectories > 0 
+              ? Math.round((progress.scannedDirectories / progress.totalDirectories) * 100) 
+              : 0
+          }))
+          // 开始轮询状态
+          pollScanStatus(path, data.currentTask.taskId)
+        }
+        
+        // 恢复队列中等待的任务状态
+        if (data.pendingTasks && data.pendingTasks.length > 0) {
+          data.pendingTasks.forEach((task: any, index: number) => {
+            const path = task.path
+            setScanning(prev => new Set(prev).add(path))
+            
+            // 计算等待信息
+            let waitInfo = `队列等待中 (位置: ${index + (data.currentTask ? 2 : 1)})`
+            if (task.delayUntil) {
+              const delayDate = new Date(task.delayUntil)
+              const now = new Date()
+              if (delayDate > now) {
+                const waitSeconds = Math.ceil((delayDate.getTime() - now.getTime()) / 1000)
+                waitInfo = `等待中 (${Math.floor(waitSeconds / 60)}分${waitSeconds % 60}秒后开始)`
+              }
+            }
+            
+            setScanProgress(prev => new Map(prev).set(path, {
+              currentPath: waitInfo,
+              fileCount: 0,
+              delayUntil: task.delayUntil
+            }))
+            // 开始轮询状态
+            pollScanStatus(path, task.taskId)
+          })
+        }
+        
+        if (data.currentTask || (data.pendingTasks && data.pendingTasks.length > 0)) {
+          console.log('恢复扫描任务状态:', {
+            current: data.currentTask?.path,
+            pending: data.pendingTasks?.map((t: any) => t.path),
+            rateLimited: data.rateLimited
+          })
+        }
+      }
+    } catch (error) {
+      console.error('加载扫描任务状态失败:', error)
+    }
+  }
+
   useEffect(() => {
     // 优先从数据库加载配置，如果没有则从 localStorage 加载（向后兼容）
     const loadConfig = async () => {
@@ -186,6 +263,17 @@ export default function ConfigPage() {
                 preloadCount: 10
               }
             })
+            // 加载正在执行的扫描任务状态
+            loadRunningScanTasks({
+              url: dbConfig.url,
+              username: dbConfig.username,
+              password: dbConfig.password,
+              mediaPaths: dbConfig.mediaPaths || ['/'],
+              scanSettings: dbConfig.scanSettings || {
+                concurrency: 10,
+                preloadCount: 10
+              }
+            })
             return
           }
         }
@@ -207,6 +295,8 @@ export default function ConfigPage() {
           
           // 加载扫描缓存数据
           loadScanCache(parsed)
+          // 加载正在执行的扫描任务状态
+          loadRunningScanTasks(parsed)
           
           // 如果 localStorage 中有配置，尝试将其保存到数据库（迁移）
           if (parsed.url && parsed.username) {
@@ -543,28 +633,65 @@ export default function ConfigPage() {
             type: 'info',
             message: `路径 ${path} 的扫描任务正在进行中，请等待完成`
           })
-          // 保持 scanning 状态，因为任务确实在运行
+          // 开始轮询任务状态
+          pollScanStatus(path, data.taskId)
           return
         }
         
-        // 更新统计信息
-        setPathStats(prev => new Map(prev).set(path, {
-          path,
-          total: data.result.totalFiles,
-          images: data.result.imageCount,
-          videos: data.result.videoCount,
-          lastScan: new Date().toISOString()
-        }))
+        // 检查是否是任务在队列中等待
+        if (data.taskQueued) {
+          setTestResult({
+            type: 'info',
+            message: `任务已加入队列，当前位置: ${data.position}，请等待前面的任务完成`
+          })
+          // 开始轮询任务状态
+          pollScanStatus(path, data.taskId)
+          return
+        }
         
-        setTestResult({
-          type: 'success',
-          message: `递归扫描完成: ${path} - 找到 ${data.result.totalFiles} 个文件`
-        })
+        // 任务已启动，开始轮询状态
+        if (data.scanStarted) {
+          setTestResult({
+            type: 'info',
+            message: `扫描任务已启动: ${path}`
+          })
+          pollScanStatus(path, data.taskId)
+          return
+        }
+        
+        // 兼容旧的同步响应格式
+        if (data.result) {
+          setPathStats(prev => new Map(prev).set(path, {
+            path,
+            total: data.result.totalFiles,
+            images: data.result.imageCount,
+            videos: data.result.videoCount,
+            lastScan: new Date().toISOString()
+          }))
+          
+          setTestResult({
+            type: 'success',
+            message: `递归扫描完成: ${path} - 找到 ${data.result.totalFiles} 个文件`
+          })
+          
+          // 扫描完成，移除扫描状态
+          setScanning(prev => {
+            const newSet = new Set(prev)
+            newSet.delete(path)
+            return newSet
+          })
+        }
       } else {
         const error = await response.json()
         setTestResult({
           type: 'error',
           message: `递归扫描失败: ${error.error}`
+        })
+        // 失败时移除扫描状态
+        setScanning(prev => {
+          const newSet = new Set(prev)
+          newSet.delete(path)
+          return newSet
         })
       }
     } catch (error: any) {
@@ -572,13 +699,136 @@ export default function ConfigPage() {
         type: 'error',
         message: `递归扫描失败: ${error.message}`
       })
-    } finally {
-      // 扫描完成或失败后，移除扫描状态
+      // 异常时移除扫描状态
       setScanning(prev => {
         const newSet = new Set(prev)
         newSet.delete(path)
         return newSet
       })
+    }
+  }
+
+  // 轮询扫描任务状态
+  const pollScanStatus = async (path: string, taskId: string) => {
+    const checkStatus = async () => {
+      try {
+        const response = await fetch('/api/webdav/recursive-scan')
+        if (response.ok) {
+          const data = await response.json()
+          
+          // 更新风控状态
+          setRateLimited(data.rateLimited || false)
+          setRateLimitedUntil(data.rateLimitedUntil || null)
+          
+          // 检查当前任务是否完成
+          const currentTask = data.currentTask
+          const pendingTask = data.pendingTasks?.find((t: any) => t.taskId === taskId)
+          
+          // 如果任务在队列中等待
+          if (pendingTask) {
+            const position = data.pendingTasks.indexOf(pendingTask) + 1
+            
+            // 计算等待信息
+            let waitInfo = `队列等待中 (位置: ${position + (data.currentTask ? 1 : 0)})`
+            if (pendingTask.delayUntil) {
+              const delayDate = new Date(pendingTask.delayUntil)
+              const now = new Date()
+              if (delayDate > now) {
+                const waitSeconds = Math.ceil((delayDate.getTime() - now.getTime()) / 1000)
+                waitInfo = `等待中 (${Math.floor(waitSeconds / 60)}分${waitSeconds % 60}秒后开始)`
+              }
+            }
+            
+            // 如果触发风控
+            if (data.rateLimited && data.rateLimitedUntil) {
+              const rateLimitDate = new Date(data.rateLimitedUntil)
+              const now = new Date()
+              if (rateLimitDate > now) {
+                const waitMinutes = Math.ceil((rateLimitDate.getTime() - now.getTime()) / 60000)
+                waitInfo = `⚠️ 风控等待中 (${waitMinutes}分钟后恢复)`
+              }
+            }
+            
+            setScanProgress(prev => new Map(prev).set(path, {
+              currentPath: waitInfo,
+              fileCount: 0,
+              delayUntil: pendingTask.delayUntil
+            }))
+            // 继续轮询
+            setTimeout(checkStatus, 3000)
+            return
+          }
+          
+          // 如果是当前正在执行的任务
+          if (currentTask && currentTask.taskId === taskId) {
+            // 更新进度信息
+            const progress = currentTask.progress
+            if (progress) {
+              setScanProgress(prev => new Map(prev).set(path, {
+                currentPath: progress.currentPath || '扫描中...',
+                fileCount: progress.foundFiles || 0,
+                scannedDirectories: progress.scannedDirectories || 0,
+                totalDirectories: progress.totalDirectories || 0,
+                percentage: progress.totalDirectories > 0 
+                  ? Math.round((progress.scannedDirectories / progress.totalDirectories) * 100) 
+                  : 0
+              }))
+            }
+            // 任务正在执行，继续轮询
+            setTimeout(checkStatus, 2000)
+            return
+          }
+          
+          // 任务不在队列中也不是当前任务，说明已完成或失败
+          // 刷新缓存数据
+          await refreshPathStats(path)
+          
+          setTestResult({
+            type: 'success',
+            message: `扫描完成: ${path}`
+          })
+          
+          // 移除扫描状态
+          setScanning(prev => {
+            const newSet = new Set(prev)
+            newSet.delete(path)
+            return newSet
+          })
+          setScanProgress(prev => {
+            const newMap = new Map(prev)
+            newMap.delete(path)
+            return newMap
+          })
+        }
+      } catch (error) {
+        console.error('轮询扫描状态失败:', error)
+        // 出错时继续轮询
+        setTimeout(checkStatus, 5000)
+      }
+    }
+    
+    // 开始轮询
+    checkStatus()
+  }
+
+  // 刷新路径统计信息
+  const refreshPathStats = async (path: string) => {
+    try {
+      const response = await fetch(`/api/scan-files/stats?webdavUrl=${encodeURIComponent(config.url)}&webdavUsername=${encodeURIComponent(config.username)}&paths=${encodeURIComponent(path)}`)
+      if (response.ok) {
+        const data = await response.json()
+        if (data.hasData) {
+          setPathStats(prev => new Map(prev).set(path, {
+            path,
+            total: data.total || 0,
+            images: data.images || 0,
+            videos: data.videos || 0,
+            lastScan: new Date().toISOString()
+          }))
+        }
+      }
+    } catch (error) {
+      console.error('刷新路径统计失败:', error)
     }
   }
 
@@ -976,6 +1226,35 @@ export default function ConfigPage() {
               浏览并选择目录
             </Button>
           </Box>
+
+          {/* 风控状态提示 */}
+          {rateLimited && rateLimitedUntil && (
+            <Alert 
+              severity="warning" 
+              sx={{ mb: 2 }}
+              action={
+                <Button 
+                  color="inherit" 
+                  size="small"
+                  onClick={async () => {
+                    try {
+                      await fetch('/api/webdav/recursive-scan', { method: 'DELETE' })
+                      setRateLimited(false)
+                      setRateLimitedUntil(null)
+                      setTestResult({ type: 'success', message: '风控状态已重置' })
+                    } catch (error) {
+                      setTestResult({ type: 'error', message: '重置风控状态失败' })
+                    }
+                  }}
+                >
+                  手动恢复
+                </Button>
+              }
+            >
+              ⚠️ 检测到风控限制！扫描任务暂停至 {new Date(rateLimitedUntil).toLocaleString()}
+              （连续多次扫描失败，系统自动退避等待）
+            </Alert>
+          )}
 
           {/* 批量操作 */}
           {selectedPaths.size > 0 && (

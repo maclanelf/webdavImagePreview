@@ -1,8 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getWebDAVClient, recursiveScanDirectory } from '@/lib/webdav-optimized'
-import { scanCache, scanFiles } from '@/lib/database'
-import { writeScanLog } from '@/lib/scanLogger'
-import { scanTaskManager } from '@/lib/scanTaskManager'
+import { scanQueueManager } from '@/lib/scanQueueManager'
 
 export async function POST(request: NextRequest) {
   try {
@@ -23,186 +20,130 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const client = getWebDAVClient({ url, username, password })
+    // 使用队列管理器添加任务
+    const result = scanQueueManager.addTask({
+      webdavUrl: url,
+      webdavUsername: username,
+      webdavPassword: password,
+      path,
+      concurrency,
+      forceRescan
+    })
 
-    // 检查是否有相同的扫描任务正在进行
-    if (scanTaskManager.isTaskRunning(url, username, [path])) {
-      const runningTask = scanTaskManager.getRunningTask(url, username, [path])
+    // 获取队列状态
+    const queueStatus = scanQueueManager.getQueueStatus()
+
+    // 如果任务已在运行
+    if (result.isRunning) {
       return NextResponse.json({
         success: true,
         message: '扫描任务正在进行中',
-        taskId: runningTask?.taskId,
-        taskRunning: true
+        taskId: result.taskId,
+        taskRunning: true,
+        position: 0,
+        rateLimited: queueStatus.rateLimited,
+        rateLimitedUntil: queueStatus.rateLimitedUntil?.toISOString()
       })
     }
 
-    // 启动扫描任务
-    const taskId = scanTaskManager.startTask(url, username, [path])
-
-    // 记录扫描开始日志
-    writeScanLog({
-      webdavUrl: url,
-      webdavUsername: username,
-      path,
-      scanType: 'recursive',
-      status: 'started'
-    })
-
-    const startTime = Date.now()
-    
-    // 收集扫描进度信息
-    const progressLogs: string[] = []
-    let batchCount = 0
-
-    try {
-      // 执行递归扫描
-      const result = await recursiveScanDirectory(client, path, {
-        concurrency,
-        onProgress: (progress) => {
-          batchCount++
-          const logMessage = `批次 ${batchCount} 完成: 处理了 ${progress.scannedDirectories} 个目录，找到 ${progress.foundFiles} 个文件，总计 ${progress.foundFiles} 个文件 (${progress.percentage}%)`
-          progressLogs.push(logMessage)
-        }
-      })
-
-      const duration = Date.now() - startTime
-
-      // 检查扫描结果是否有效
-      if (!result || !result.files) {
-        throw new Error('扫描失败')
-      }
-
-      // 0 个文件是正常结果，不应该报错
-      if (result.files.length === 0) {
-        console.log(`扫描完成，路径 ${path} 下没有找到媒体文件`)
-      }
-
-      // 如果强制重新扫描，在扫描成功后再清除并替换缓存
-      if (forceRescan) {
-        scanCache.delete(url, username, path)
-      }
-
-      // 保存到缓存（扫描成功且确认有文件内容）
-      const filesData = result.files.map(file => ({
-        filename: file.filename,
-        basename: file.basename,
-        size: file.size,
-        type: file.type,
-        lastmod: file.lastmod,
-      }))
-
-      scanCache.save({
-        webdavUrl: url,
-        webdavUsername: username,
-        path,
-        filesData: JSON.stringify(filesData),
-        totalFiles: result.totalFiles,
-        imageCount: result.imageCount,
-        videoCount: result.videoCount,
-        scanSettings: JSON.stringify({ concurrency })
-      })
-
-      // 获取刚保存的 cache_id，写入 scan_files 表
-      const savedCache = scanCache.get(url, username, path) as any
-      let scanFilesLogDetails = ''
-      if (savedCache && savedCache.id) {
-        // 记录写入前的状态
-        const beforeStats = scanFiles.getStats(savedCache.id)
-        const beforeTotal = beforeStats.total
-        const beforeViewed = beforeStats.viewed
-        
-        console.log(`📊 [数据写入] 写入前: 文件数量 ${beforeTotal}, 已看过 ${beforeViewed}`)
-        
-        // 先删除旧数据
-        scanFiles.deleteByCache(savedCache.id)
-        // 批量插入新数据
-        scanFiles.batchInsert(savedCache.id, filesData)
-        // 从 media_ratings 同步已看状态
-        const syncResult = scanFiles.syncViewedFromRatings(savedCache.id)
-        
-        // 记录写入后的状态
-        const afterStats = scanFiles.getStats(savedCache.id)
-        const afterTotal = afterStats.total
-        const afterViewed = afterStats.viewed
-        
-        const logMessage = `写入前: 文件数量 ${beforeTotal}, 已看过 ${beforeViewed} | 写入后: 文件数量 ${afterTotal}, 同步已看过 ${afterViewed}`
-        console.log(`✅ [数据写入] ${logMessage}`)
-        
-        scanFilesLogDetails = `数据写入完成\n写入前: 文件数量 ${beforeTotal}, 已看过 ${beforeViewed}\n写入后: 文件数量 ${afterTotal}, 同步已看过 ${afterViewed}\n从 media_ratings 同步了 ${syncResult.synced} 条已看记录`
-      }
-
-      // 记录扫描完成日志，包含完整的进度信息
-      const logDetailLines = [
-        ...progressLogs,
-        `递归扫描完成，共找到 ${result.totalFiles} 个媒体文件 (图片: ${result.imageCount}, 视频: ${result.videoCount})，耗时 ${duration}ms`
-      ]
-      if (scanFilesLogDetails) {
-        logDetailLines.push(scanFilesLogDetails)
-      }
-      if (forceRescan) {
-        logDetailLines.push('[强制扫描] 已清除旧缓存并重新写入数据')
-      }
-      
-      writeScanLog({
-        webdavUrl: url,
-        webdavUsername: username,
-        path,
-        scanType: 'recursive',
-        status: 'completed',
-        totalFiles: result.totalFiles,
-        imageCount: result.imageCount,
-        videoCount: result.videoCount,
-        durationMs: duration,
-        logDetails: logDetailLines.join('\n')
-      })
-
-      // 标记任务完成
-      scanTaskManager.completeTask(taskId)
-
+    // 如果任务在队列中等待
+    if (result.position > 1) {
       return NextResponse.json({
         success: true,
-        message: '递归扫描完成',
-        result: {
-          totalFiles: result.totalFiles,
-          imageCount: result.imageCount,
-          videoCount: result.videoCount,
-          duration: duration
-        },
-        taskId
+        message: `任务已加入队列，当前位置: ${result.position}`,
+        taskId: result.taskId,
+        taskQueued: true,
+        position: result.position,
+        delayUntil: result.delayUntil?.toISOString(),
+        rateLimited: queueStatus.rateLimited,
+        rateLimitedUntil: queueStatus.rateLimitedUntil?.toISOString()
       })
-
-    } catch (error: any) {
-      const duration = Date.now() - startTime
-      
-      // 记录扫描失败日志，包含已收集的进度信息
-      writeScanLog({
-        webdavUrl: url,
-        webdavUsername: username,
-        path,
-        scanType: 'recursive',
-        status: 'failed',
-        durationMs: duration,
-        errorMessage: error.message,
-        logDetails: progressLogs.length > 0 ? [
-          ...progressLogs,
-          `扫描失败: ${error.message}`
-        ].join('\n') : `扫描失败: ${error.message}`
-      })
-
-      // 标记任务失败
-      scanTaskManager.failTask(taskId, error.message)
-      
-      console.error('递归扫描失败:', error)
-      return NextResponse.json(
-        { error: `递归扫描失败: ${error.message}` },
-        { status: 500 }
-      )
     }
+
+    // 任务刚加入队列并开始执行
+    return NextResponse.json({
+      success: true,
+      message: '扫描任务已启动',
+      taskId: result.taskId,
+      scanStarted: true,
+      position: result.position,
+      delayUntil: result.delayUntil?.toISOString(),
+      rateLimited: queueStatus.rateLimited,
+      rateLimitedUntil: queueStatus.rateLimitedUntil?.toISOString()
+    })
 
   } catch (error: any) {
     console.error('递归扫描API错误:', error)
     return NextResponse.json(
       { error: `递归扫描API错误: ${error.message}` },
+      { status: 500 }
+    )
+  }
+}
+
+// 获取队列状态
+export async function GET(request: NextRequest) {
+  try {
+    const status = scanQueueManager.getQueueStatus()
+    
+    // 从数据库获取当前任务的详细进度
+    let currentTaskProgress = null
+    if (status.currentTask) {
+      const { recursiveScanTasks } = await import('@/lib/database')
+      const dbTask = recursiveScanTasks.get(status.currentTask.taskId) as any
+      if (dbTask) {
+        currentTaskProgress = {
+          scannedDirectories: dbTask.scanned_directories || 0,
+          totalDirectories: dbTask.total_directories || 0,
+          foundFiles: dbTask.found_files || 0,
+          currentPath: dbTask.current_path || status.currentTask.path
+        }
+      }
+    }
+    
+    return NextResponse.json({
+      success: true,
+      isProcessing: status.isProcessing,
+      currentTask: status.currentTask ? {
+        taskId: status.currentTask.taskId,
+        path: status.currentTask.path,
+        status: status.currentTask.status,
+        progress: currentTaskProgress
+      } : null,
+      queueLength: status.queueLength,
+      pendingTasks: status.pendingTasks.map(t => ({
+        taskId: t.taskId,
+        path: t.path,
+        status: t.status,
+        delayUntil: t.delayUntil?.toISOString()
+      })),
+      // 风控状态
+      rateLimited: status.rateLimited,
+      rateLimitedUntil: status.rateLimitedUntil?.toISOString(),
+      // 下一个任务的等待时间
+      nextTaskDelay: status.nextTaskDelay
+    })
+  } catch (error: any) {
+    console.error('获取队列状态失败:', error)
+    return NextResponse.json(
+      { error: `获取队列状态失败: ${error.message}` },
+      { status: 500 }
+    )
+  }
+}
+
+// 重置风控状态
+export async function DELETE(request: NextRequest) {
+  try {
+    scanQueueManager.resetRateLimit()
+    return NextResponse.json({
+      success: true,
+      message: '风控状态已重置'
+    })
+  } catch (error: any) {
+    console.error('重置风控状态失败:', error)
+    return NextResponse.json(
+      { error: `重置风控状态失败: ${error.message}` },
       { status: 500 }
     )
   }
