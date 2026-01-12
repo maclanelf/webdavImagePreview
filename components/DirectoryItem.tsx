@@ -419,16 +419,8 @@ export default function DirectoryItem({
                 <Button
                   size="small"
                   variant="outlined"
-                  startIcon={<RefreshIcon />}
-                  onClick={() => onRecursiveScan?.(path, false)}
-                  disabled={isScanning}
-                >
-                  递归扫描
-                </Button>
-                <Button
-                  size="small"
-                  variant="outlined"
                   color="warning"
+                  startIcon={<RefreshIcon />}
                   onClick={() => onRecursiveScan?.(path, true)}
                   disabled={isScanning}
                 >

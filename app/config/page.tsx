@@ -986,13 +986,13 @@ export default function ConfigPage() {
                 onClick={() => {
                   Array.from(selectedPaths).forEach(path => {
                     if (!pathStats.has(path)) {
-                      startRecursiveScan(path)
+                      startRecursiveScan(path, true)
                     }
                   })
                 }}
                 disabled={Array.from(selectedPaths).some(path => scanning.has(path))}
               >
-                批量递归扫描
+                扫描未缓存目录
               </Button>
               <Button
                 size="small"
@@ -1005,7 +1005,7 @@ export default function ConfigPage() {
                 }}
                 disabled={Array.from(selectedPaths).some(path => scanning.has(path))}
               >
-                强制递归扫描
+                强制扫描全部
               </Button>
               <Button
                 size="small"
