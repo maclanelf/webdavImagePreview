@@ -93,7 +93,7 @@ export default function ConfigPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [testing, setTesting] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [testResult, setTestResult] = useState<{ type: 'success' | 'error', message: string } | null>(null)
+  const [testResult, setTestResult] = useState<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
   const [saveResult, setSaveResult] = useState<{ type: 'success' | 'error', message: string } | null>(null)
   
   // 目录浏览相关
@@ -508,6 +508,18 @@ export default function ConfigPage() {
 
   // 递归扫描相关函数
   const startRecursiveScan = async (path: string, forceRescan = false) => {
+    // 检查是否已经在扫描中，防止重复启动
+    if (scanning.has(path)) {
+      setTestResult({
+        type: 'info',
+        message: `路径 ${path} 正在扫描中，请等待完成`
+      })
+      return
+    }
+
+    // 标记为扫描中
+    setScanning(prev => new Set(prev).add(path))
+
     try {
       const response = await fetch('/api/webdav/recursive-scan', {
         method: 'POST',
@@ -524,6 +536,16 @@ export default function ConfigPage() {
 
       if (response.ok) {
         const data = await response.json()
+        
+        // 检查是否是任务已在运行的响应
+        if (data.taskRunning) {
+          setTestResult({
+            type: 'info',
+            message: `路径 ${path} 的扫描任务正在进行中，请等待完成`
+          })
+          // 保持 scanning 状态，因为任务确实在运行
+          return
+        }
         
         // 更新统计信息
         setPathStats(prev => new Map(prev).set(path, {
@@ -549,6 +571,13 @@ export default function ConfigPage() {
       setTestResult({
         type: 'error',
         message: `递归扫描失败: ${error.message}`
+      })
+    } finally {
+      // 扫描完成或失败后，移除扫描状态
+      setScanning(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(path)
+        return newSet
       })
     }
   }
