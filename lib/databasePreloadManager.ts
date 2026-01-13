@@ -750,7 +750,15 @@ class DatabasePreloadManager {
     }
     
     try {
+      // 构建排除列表：缓存中的文件 + 已看过模式下的本地已看过文件
       const cachedPaths = this.getCachedFilepaths()
+      let excludeList = [...cachedPaths]
+      
+      // 已看过模式下，需要额外排除本地已看过的文件，避免短期内重复
+      if (viewedFilter === 'viewed') {
+        const localViewed = Array.from(this.localViewedFiles)
+        excludeList = [...new Set([...excludeList, ...localViewed])]
+      }
       
       // 使用 POST 请求避免 URL 过长导致 431 错误
       const response = await fetch('/api/scan-files/random', {
@@ -762,7 +770,7 @@ class DatabasePreloadManager {
           paths: config.mediaPaths,
           count: count,
           isViewed: viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined,
-          excludeFilenames: cachedPaths.length > 0 ? cachedPaths : undefined
+          excludeFilenames: excludeList.length > 0 ? excludeList : undefined
         })
       })
       if (!response.ok) {
@@ -1093,7 +1101,15 @@ class DatabasePreloadManager {
     }
     
     try {
+      // 构建排除列表：缓存中的文件 + 已看过模式下的本地已看过文件
       const cachedPaths = this.getCachedFilepaths()
+      let excludeList = [...cachedPaths]
+      
+      // 已看过模式下，需要额外排除本地已看过的文件，避免短期内重复
+      if (viewedFilter === 'viewed') {
+        const localViewed = Array.from(this.localViewedFiles)
+        excludeList = [...new Set([...excludeList, ...localViewed])]
+      }
       
       // 使用 POST 请求避免 URL 过长导致 431 错误
       const response = await fetch('/api/scan-files/random', {
@@ -1108,7 +1124,7 @@ class DatabasePreloadManager {
           isViewed: viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined,
           fileType: mediaFilter === 'images' ? 'image' : mediaFilter === 'videos' ? 'video' : undefined,
           currentParentPath: currentParentPath || undefined,
-          excludeFilenames: cachedPaths.length > 0 ? cachedPaths : undefined
+          excludeFilenames: excludeList.length > 0 ? excludeList : undefined
         })
       })
       if (!response.ok) {
@@ -1408,11 +1424,17 @@ class DatabasePreloadManager {
       : undefined
     
     try {
-      // 排除当前文件和已缓存的文件
+      // 构建排除列表：当前文件 + 缓存中的文件
       const cachedPaths = this.getCachedFilepaths()
-      const excludeList = [...cachedPaths]
+      let excludeList = [...cachedPaths]
       if (currentFile?.filename && !excludeList.includes(currentFile.filename)) {
         excludeList.push(currentFile.filename)
+      }
+      
+      // 已看过模式下，需要额外排除本地已看过的文件，避免短期内重复
+      if (viewedFilter === 'viewed') {
+        const localViewed = Array.from(this.localViewedFiles)
+        excludeList = [...new Set([...excludeList, ...localViewed])]
       }
       
       // 使用 POST 请求避免 URL 过长导致 431 错误
