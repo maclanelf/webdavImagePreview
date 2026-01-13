@@ -1,21 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { scanFiles, scanCache } from '@/lib/database'
 
-// GET: 随机获取文件（支持批量）
-export async function GET(request: NextRequest) {
+// POST: 随机获取文件（支持批量）- 使用 POST 避免 URL 过长导致 431 错误
+export async function POST(request: NextRequest) {
   const startTime = Date.now()
   try {
-    const { searchParams } = new URL(request.url)
-    const webdavUrl = searchParams.get('webdavUrl')
-    const webdavUsername = searchParams.get('webdavUsername')
-    const paths = searchParams.get('paths') // 逗号分隔的路径列表
-    const count = parseInt(searchParams.get('count') || '1')
-    const fileType = searchParams.get('fileType') as 'image' | 'video' | null
-    const isViewed = searchParams.get('isViewed')
-    const excludeFilenames = searchParams.get('excludeFilenames') // 逗号分隔的排除文件名
-    const minFileSize = searchParams.get('minFileSize') // 最小文件大小（字节）
-    const currentParentPath = searchParams.get('currentParentPath') // 当前目录路径（用于随机性控制）
-    const randomness = parseFloat(searchParams.get('randomness') || '1') // 随机性：0=优先当前目录，1=完全随机
+    const body = await request.json()
+    const webdavUrl = body.webdavUrl
+    const webdavUsername = body.webdavUsername
+    const paths = body.paths // 逗号分隔的路径列表或数组
+    const count = parseInt(body.count || '1')
+    const fileType = body.fileType as 'image' | 'video' | null
+    const isViewed = body.isViewed
+    const excludeFilenames = body.excludeFilenames // 逗号分隔的排除文件名或数组
+    const minFileSize = body.minFileSize // 最小文件大小（字节）
+    const currentParentPath = body.currentParentPath // 当前目录路径（用于随机性控制）
+    const randomness = parseFloat(body.randomness || '1') // 随机性：0=优先当前目录，1=完全随机
 
     console.log(`⏱️ [random] 开始处理请求`)
 
@@ -26,8 +26,11 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    const pathList = paths.split(',').filter(p => p.trim())
-    const excludeList = excludeFilenames?.split(',').filter(f => f.trim()) || []
+    // 支持数组或逗号分隔的字符串
+    const pathList = Array.isArray(paths) ? paths : paths.split(',').filter((p: string) => p.trim())
+    const excludeList = excludeFilenames 
+      ? (Array.isArray(excludeFilenames) ? excludeFilenames : excludeFilenames.split(',').filter((f: string) => f.trim()))
+      : []
     console.log(`⏱️ [random] 解析参数完成: ${Date.now() - startTime}ms, paths=${pathList.length}, excludeList=${excludeList.length}`)
 
     // 批量获取所有相关 cache 的 ID（一次查询代替循环）
@@ -60,9 +63,9 @@ export async function GET(request: NextRequest) {
     const randomStartTime = Date.now()
     const files = scanFiles.getRandomBatchMultiple(cacheIds, count, {
       fileType: fileType || undefined,
-      isViewed: isViewed !== null ? isViewed === 'true' : undefined,
+      isViewed: isViewed !== null && isViewed !== undefined ? isViewed === true || isViewed === 'true' : undefined,
       excludeFilenames: excludeList,
-      minFileSize: minFileSize ? parseInt(minFileSize) : undefined,
+      minFileSize: minFileSize ? parseInt(String(minFileSize)) : undefined,
       currentParentPath: currentParentPath || undefined,
       randomness: randomness
     })

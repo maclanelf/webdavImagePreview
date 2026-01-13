@@ -1087,18 +1087,21 @@ export default function HomePage() {
       // 如果缓存中没有可用文件，从数据库随机获取一个文件
       try {
         const fileTypeParam = mediaFilter === 'images' ? 'image' : mediaFilter === 'videos' ? 'video' : ''
-        const isViewedParam = viewedFilter === 'viewed' ? 'true' : viewedFilter === 'unviewed' ? 'false' : ''
+        const isViewedParam = viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined
         
-        const params = new URLSearchParams({
-          webdavUrl: config.url,
-          webdavUsername: config.username,
-          paths: config.mediaPaths.join(','),
-          count: '1'
+        // 使用 POST 请求避免 URL 过长导致 431 错误
+        const response = await fetch('/api/scan-files/random', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            webdavUrl: config.url,
+            webdavUsername: config.username,
+            paths: config.mediaPaths,
+            count: 1,
+            fileType: fileTypeParam || undefined,
+            isViewed: isViewedParam
+          })
         })
-        if (fileTypeParam) params.append('fileType', fileTypeParam)
-        if (isViewedParam) params.append('isViewed', isViewedParam)
-        
-        const response = await fetch(`/api/scan-files/random?${params.toString()}`)
         if (response.ok) {
           const data = await response.json()
           if (data.files && data.files.length > 0) {
@@ -1261,28 +1264,29 @@ export default function HomePage() {
     const minVideoSize = 100 * 1024 * 1024 // 100MB
     
     try {
-      const isViewedParam = viewedFilter === 'viewed' ? 'true' : viewedFilter === 'unviewed' ? 'false' : ''
+      const isViewedParam = viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined
       const currentParentPath = currentFile ? currentFile.filename.substring(0, currentFile.filename.lastIndexOf('/')) : ''
-      
-      const params = new URLSearchParams({
-        webdavUrl: config.url,
-        webdavUsername: config.username,
-        paths: config.mediaPaths.join(','),
-        count: '1',
-        fileType: 'video',
-        minFileSize: minVideoSize.toString(),
-        randomness: preloadRandomness.toString()
-      })
-      if (isViewedParam) params.append('isViewed', isViewedParam)
-      if (currentParentPath && preloadRandomness < 1) params.append('currentParentPath', currentParentPath)
       
       // 排除本地已看过的文件
       const localViewedFiles = Array.from(databasePreloadManager.getLocalViewedFilenames())
-      if (localViewedFiles.length > 0) {
-        params.append('excludeFilenames', localViewedFiles.join(','))
-      }
       
-      const response = await fetch(`/api/scan-files/random?${params.toString()}`)
+      // 使用 POST 请求避免 URL 过长导致 431 错误
+      const response = await fetch('/api/scan-files/random', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          webdavUrl: config.url,
+          webdavUsername: config.username,
+          paths: config.mediaPaths,
+          count: 1,
+          fileType: 'video',
+          minFileSize: minVideoSize,
+          randomness: preloadRandomness,
+          isViewed: isViewedParam,
+          currentParentPath: (currentParentPath && preloadRandomness < 1) ? currentParentPath : undefined,
+          excludeFilenames: localViewedFiles.length > 0 ? localViewedFiles : undefined
+        })
+      })
       
       if (!response.ok) {
         throw new Error('获取大视频文件失败')

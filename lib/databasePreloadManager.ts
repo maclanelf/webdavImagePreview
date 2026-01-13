@@ -750,25 +750,21 @@ class DatabasePreloadManager {
     }
     
     try {
-      const params = new URLSearchParams({
-        webdavUrl: config.url,
-        webdavUsername: config.username,
-        paths: config.mediaPaths.join(','),
-        count: count.toString()
-      })
-      
-      if (viewedFilter === 'viewed') {
-        params.set('isViewed', 'true')
-      } else if (viewedFilter === 'unviewed') {
-        params.set('isViewed', 'false')
-      }
-      
       const cachedPaths = this.getCachedFilepaths()
-      if (cachedPaths.length > 0) {
-        params.set('excludeFilenames', cachedPaths.join(','))
-      }
       
-      const response = await fetch(`/api/scan-files/random?${params.toString()}`)
+      // 使用 POST 请求避免 URL 过长导致 431 错误
+      const response = await fetch('/api/scan-files/random', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          webdavUrl: config.url,
+          webdavUsername: config.username,
+          paths: config.mediaPaths,
+          count: count,
+          isViewed: viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined,
+          excludeFilenames: cachedPaths.length > 0 ? cachedPaths : undefined
+        })
+      })
       if (!response.ok) {
         throw new Error('从数据库获取文件失败')
       }
@@ -1097,38 +1093,24 @@ class DatabasePreloadManager {
     }
     
     try {
-      const params = new URLSearchParams({
-        webdavUrl: config.url,
-        webdavUsername: config.username,
-        paths: config.mediaPaths.join(','),
-        count: needCount.toString(),
-        randomness: randomness.toString()
-      })
-      
-      if (viewedFilter === 'viewed') {
-        params.set('isViewed', 'true')
-      } else if (viewedFilter === 'unviewed') {
-        params.set('isViewed', 'false')
-      }
-      
-      // 媒体类型筛选
-      if (mediaFilter === 'images') {
-        params.set('fileType', 'image')
-      } else if (mediaFilter === 'videos') {
-        params.set('fileType', 'video')
-      }
-      
-      // 传递当前目录路径（用于随机性控制）
-      if (currentParentPath) {
-        params.set('currentParentPath', currentParentPath)
-      }
-      
       const cachedPaths = this.getCachedFilepaths()
-      if (cachedPaths.length > 0) {
-        params.set('excludeFilenames', cachedPaths.join(','))
-      }
       
-      const response = await fetch(`/api/scan-files/random?${params.toString()}`)
+      // 使用 POST 请求避免 URL 过长导致 431 错误
+      const response = await fetch('/api/scan-files/random', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          webdavUrl: config.url,
+          webdavUsername: config.username,
+          paths: config.mediaPaths,
+          count: needCount,
+          randomness: randomness,
+          isViewed: viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined,
+          fileType: mediaFilter === 'images' ? 'image' : mediaFilter === 'videos' ? 'video' : undefined,
+          currentParentPath: currentParentPath || undefined,
+          excludeFilenames: cachedPaths.length > 0 ? cachedPaths : undefined
+        })
+      })
       if (!response.ok) {
         throw new Error('从数据库获取文件失败')
       }
@@ -1194,26 +1176,21 @@ class DatabasePreloadManager {
     message: string
   }> {
     try {
-      const params = new URLSearchParams({
-        webdavUrl: config.url,
-        webdavUsername: config.username,
-        paths: config.mediaPaths.join(','),
-        count: '1',
-        fileType: 'video',
-        minFileSize: minFileSize.toString()
+      // 使用 POST 请求避免 URL 过长导致 431 错误
+      const response = await fetch('/api/scan-files/random', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          webdavUrl: config.url,
+          webdavUsername: config.username,
+          paths: config.mediaPaths,
+          count: 1,
+          fileType: 'video',
+          minFileSize: minFileSize,
+          isViewed: viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined,
+          excludeFilenames: excludeFilenames.length > 0 ? excludeFilenames : undefined
+        })
       })
-      
-      if (viewedFilter === 'viewed') {
-        params.set('isViewed', 'true')
-      } else if (viewedFilter === 'unviewed') {
-        params.set('isViewed', 'false')
-      }
-      
-      if (excludeFilenames.length > 0) {
-        params.set('excludeFilenames', excludeFilenames.join(','))
-      }
-      
-      const response = await fetch(`/api/scan-files/random?${params.toString()}`)
       if (!response.ok) {
         throw new Error('从数据库获取大视频失败')
       }
@@ -1431,43 +1408,29 @@ class DatabasePreloadManager {
       : undefined
     
     try {
-      const params = new URLSearchParams({
-        webdavUrl: config.url,
-        webdavUsername: config.username,
-        paths: config.mediaPaths.join(','),
-        count: needCount.toString(),
-        randomness: randomness.toString()
-      })
-      
-      if (viewedFilter === 'viewed') {
-        params.set('isViewed', 'true')
-      } else if (viewedFilter === 'unviewed') {
-        params.set('isViewed', 'false')
-      }
-      
-      // 媒体类型筛选
-      if (mediaFilter === 'images') {
-        params.set('fileType', 'image')
-      } else if (mediaFilter === 'videos') {
-        params.set('fileType', 'video')
-      }
-      
-      // 传递当前目录路径（用于随机性控制）
-      if (currentParentPath) {
-        params.set('currentParentPath', currentParentPath)
-      }
-      
       // 排除当前文件和已缓存的文件
       const cachedPaths = this.getCachedFilepaths()
       const excludeList = [...cachedPaths]
       if (currentFile?.filename && !excludeList.includes(currentFile.filename)) {
         excludeList.push(currentFile.filename)
       }
-      if (excludeList.length > 0) {
-        params.set('excludeFilenames', excludeList.join(','))
-      }
       
-      const response = await fetch(`/api/scan-files/random?${params.toString()}`)
+      // 使用 POST 请求避免 URL 过长导致 431 错误
+      const response = await fetch('/api/scan-files/random', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          webdavUrl: config.url,
+          webdavUsername: config.username,
+          paths: config.mediaPaths,
+          count: needCount,
+          randomness: randomness,
+          isViewed: viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined,
+          fileType: mediaFilter === 'images' ? 'image' : mediaFilter === 'videos' ? 'video' : undefined,
+          currentParentPath: currentParentPath || undefined,
+          excludeFilenames: excludeList.length > 0 ? excludeList : undefined
+        })
+      })
       if (!response.ok) {
         throw new Error('从数据库获取文件失败')
       }
