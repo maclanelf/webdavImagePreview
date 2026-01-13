@@ -159,16 +159,6 @@ class DatabasePreloadManager {
     }
   }
 
-  // 统一的文件过滤方法
-  private isFileEligibleForPreload(file: any): boolean {
-    const isImage = /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(file.basename)
-    const isVideo = /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(file.basename)
-    
-    if (isImage) return true
-    if (isVideo && file.size <= this.maxVideoSize) return true
-    return false
-  }
-
   // 预加载单个文件（带并发控制）
   private async preloadFile(config: any, file: any): Promise<void> {
     const filepath = file.filename
@@ -770,7 +760,8 @@ class DatabasePreloadManager {
           paths: config.mediaPaths,
           count: count,
           isViewed: viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined,
-          excludeFilenames: excludeList.length > 0 ? excludeList : undefined
+          excludeFilenames: excludeList.length > 0 ? excludeList : undefined,
+          maxFileSize: this.maxVideoSize // 过滤大于100MB的视频
         })
       })
       if (!response.ok) {
@@ -883,7 +874,8 @@ class DatabasePreloadManager {
       const params = new URLSearchParams({
         webdavUrl: config.url,
         webdavUsername: config.username,
-        paths: config.mediaPaths.join(',')
+        paths: config.mediaPaths.join(','),
+        maxFileSize: String(this.maxVideoSize) // 过滤大于100MB的视频
       })
       
       if (viewedFilter === 'viewed') {
@@ -1008,7 +1000,8 @@ class DatabasePreloadManager {
       const params = new URLSearchParams({
         webdavUrl: config.url,
         webdavUsername: config.username,
-        paths: config.mediaPaths.join(',')
+        paths: config.mediaPaths.join(','),
+        maxFileSize: String(this.maxVideoSize) // 过滤大于100MB的视频
       })
       
       if (viewedFilter === 'viewed') {
@@ -1124,7 +1117,8 @@ class DatabasePreloadManager {
           isViewed: viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined,
           fileType: mediaFilter === 'images' ? 'image' : mediaFilter === 'videos' ? 'video' : undefined,
           currentParentPath: currentParentPath || undefined,
-          excludeFilenames: excludeList.length > 0 ? excludeList : undefined
+          excludeFilenames: excludeList.length > 0 ? excludeList : undefined,
+          maxFileSize: this.maxVideoSize // 过滤大于100MB的视频
         })
       })
       if (!response.ok) {
@@ -1450,7 +1444,8 @@ class DatabasePreloadManager {
           isViewed: viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined,
           fileType: mediaFilter === 'images' ? 'image' : mediaFilter === 'videos' ? 'video' : undefined,
           currentParentPath: currentParentPath || undefined,
-          excludeFilenames: excludeList.length > 0 ? excludeList : undefined
+          excludeFilenames: excludeList.length > 0 ? excludeList : undefined,
+          maxFileSize: this.maxVideoSize // 过滤大于100MB的视频
         })
       })
       if (!response.ok) {

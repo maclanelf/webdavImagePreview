@@ -14,6 +14,7 @@ export async function POST(request: NextRequest) {
     const isViewed = body.isViewed
     const excludeFilenames = body.excludeFilenames // 逗号分隔的排除文件名或数组
     const minFileSize = body.minFileSize // 最小文件大小（字节）
+    const maxFileSize = body.maxFileSize // 最大文件大小（字节）
     const currentParentPath = body.currentParentPath // 当前目录路径（用于随机性控制）
     const randomness = parseFloat(body.randomness || '1') // 随机性：0=优先当前目录，1=完全随机
 
@@ -66,6 +67,7 @@ export async function POST(request: NextRequest) {
       isViewed: isViewed !== null && isViewed !== undefined ? isViewed === true || isViewed === 'true' : undefined,
       excludeFilenames: excludeList,
       minFileSize: minFileSize ? parseInt(String(minFileSize)) : undefined,
+      maxFileSize: maxFileSize ? parseInt(String(maxFileSize)) : undefined,
       currentParentPath: currentParentPath || undefined,
       randomness: randomness
     })

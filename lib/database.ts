@@ -1638,13 +1638,14 @@ export const scanFiles = {
     fileType?: 'image' | 'video'
     isViewed?: boolean
     excludeParentPath?: string
+    maxFileSize?: number  // 最大文件大小（字节），用于过滤大视频
   }) => {
     try {
       ensureInitialized()
       
       if (cacheIds.length === 0) return { files: [], parentPath: null }
       
-      const { fileType, isViewed, excludeParentPath } = options || {}
+      const { fileType, isViewed, excludeParentPath, maxFileSize } = options || {}
       const placeholders = cacheIds.map(() => '?').join(',')
       
       // 构建查询条件
@@ -1662,6 +1663,10 @@ export const scanFiles = {
       if (excludeParentPath) {
         whereClause += ` AND parent_path != ?`
         params.push(excludeParentPath)
+      }
+      if (maxFileSize !== undefined && maxFileSize > 0) {
+        whereClause += ` AND file_size <= ?`
+        params.push(maxFileSize)
       }
       
       // 获取所有符合条件的目录
@@ -1693,6 +1698,10 @@ export const scanFiles = {
       if (isViewed !== undefined) {
         filesSql += ` AND is_viewed = ?`
         filesParams.push(isViewed ? 1 : 0)
+      }
+      if (maxFileSize !== undefined && maxFileSize > 0) {
+        filesSql += ` AND file_size <= ?`
+        filesParams.push(maxFileSize)
       }
       
       filesSql += ` ORDER BY basename`
@@ -1734,6 +1743,7 @@ export const scanFiles = {
     isViewed?: boolean
     excludeFilenames?: string[]
     minFileSize?: number
+    maxFileSize?: number        // 最大文件大小（字节），用于过滤大视频
     currentParentPath?: string  // 当前目录路径
     randomness?: number         // 随机性：0=优先当前目录，1=完全随机
   }) => {
@@ -1743,7 +1753,7 @@ export const scanFiles = {
       
       if (cacheIds.length === 0) return []
       
-      const { fileType, isViewed, excludeFilenames = [], minFileSize, currentParentPath, randomness = 1 } = options || {}
+      const { fileType, isViewed, excludeFilenames = [], minFileSize, maxFileSize, currentParentPath, randomness = 1 } = options || {}
       const placeholders = cacheIds.map(() => '?').join(',')
       
       // 构建基础 WHERE 条件（不包含 excludeFilenames，因为会在内存中过滤）
@@ -1770,6 +1780,10 @@ export const scanFiles = {
         if (minFileSize !== undefined && minFileSize > 0) {
           where += ` AND file_size >= ?`
           params.push(minFileSize)
+        }
+        if (maxFileSize !== undefined && maxFileSize > 0) {
+          where += ` AND file_size <= ?`
+          params.push(maxFileSize)
         }
         return { where, params }
       }

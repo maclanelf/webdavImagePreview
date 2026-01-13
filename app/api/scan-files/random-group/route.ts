@@ -11,6 +11,7 @@ export async function GET(request: NextRequest) {
     const fileType = searchParams.get('fileType') as 'image' | 'video' | null
     const isViewed = searchParams.get('isViewed')
     const excludeParentPath = searchParams.get('excludeParentPath') // 排除的目录路径
+    const maxFileSize = searchParams.get('maxFileSize') // 最大文件大小（字节）
 
     if (!webdavUrl || !webdavUsername || !paths) {
       return NextResponse.json(
@@ -48,7 +49,8 @@ export async function GET(request: NextRequest) {
     const result = scanFiles.getRandomGroupMultiple(cacheIds, {
       fileType: fileType || undefined,
       isViewed: isViewed !== null ? isViewed === 'true' : undefined,
-      excludeParentPath: excludeParentPath || undefined
+      excludeParentPath: excludeParentPath || undefined,
+      maxFileSize: maxFileSize ? parseInt(maxFileSize) : undefined
     })
 
     return NextResponse.json({
