@@ -873,7 +873,7 @@ export default function HomePage() {
       // 保存当前文件的引用，避免在 switchCallback 后丢失
       const fileToMark = currentFile
       
-      if (fileToMark && viewMode === 'random') {
+      if (fileToMark && (viewMode === 'random' || viewMode === 'large-video')) {
         // 无论什么模式，都添加到本地已看过记录（用于当前会话管理）
         databasePreloadManager.addLocalViewedFile(fileToMark.filename)
         
@@ -1297,7 +1297,7 @@ export default function HomePage() {
       if (!data.files || data.files.length === 0) {
         const filterMsg = viewedFilter === 'viewed' ? '已看过' : 
                          viewedFilter === 'unviewed' ? '未看过' : '全部'
-        setError(`没有找到符合条件的大视频文件（${filterMsg}，>100MB）`)
+          setError(`没有找到符合条件的大视频文件（${filterMsg}，>100MB）`)
         return
       }
       

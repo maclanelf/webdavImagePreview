@@ -1805,8 +1805,11 @@ export const scanFiles = {
         
         if (stats.count === 0) return null
         
-        // 最多尝试 5 次随机获取
-        for (let attempt = 0; attempt < 5; attempt++) {
+        // 根据排除列表大小动态调整尝试次数
+        // 如果排除的文件很多，需要更多尝试次数
+        const maxAttempts = Math.min(100, stats.count)
+        
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
           // 在 ID 范围内随机选择一个 ID
           const randomId = stats.minId + Math.floor(Math.random() * (stats.maxId - stats.minId + 1))
           
@@ -1825,6 +1828,8 @@ export const scanFiles = {
             }
           }
         }
+        
+        console.log(`[getRandomFile] 尝试了 ${maxAttempts} 次仍未找到可用文件，排除数量: ${excludeSet.size}`)
         return null
       }
       
