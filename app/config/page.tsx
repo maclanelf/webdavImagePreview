@@ -466,40 +466,11 @@ export default function ConfigPage() {
       // 保存到 localStorage（向后兼容）
       localStorage.setItem('webdav_config', JSON.stringify(configToSave))
       
-      // 保存成功后，将扫描任务加入队列
-      try {
-        // 为每个路径添加扫描任务到队列
-        const selectedPathsArray = Array.from(selectedPaths)
-        for (const path of selectedPathsArray) {
-          const response = await fetch('/api/webdav/recursive-scan', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              url: configToSave.url,
-              username: configToSave.username,
-              password: configToSave.password,
-              path,
-              concurrency: configToSave.scanSettings?.concurrency || 10,
-            }),
-          })
-
-          if (response.ok) {
-            const data = await response.json()
-            console.log(`路径 ${path} 扫描任务状态:`, data.message)
-          }
-        }
-
-        setSaveResult({
-          type: 'success',
-          message: '配置已保存！扫描任务已加入队列。',
-        })
-      } catch (scanError) {
-        console.error('启动扫描失败:', scanError)
-        setSaveResult({
-          type: 'success',
-          message: '配置已保存！',
-        })
-      }
+      // 保存成功提示（不再自动触发扫描）
+      setSaveResult({
+        type: 'success',
+        message: '配置已保存！如需扫描媒体文件，请前往管理页面手动触发扫描。',
+      })
     } catch (error: any) {
       setSaveResult({
         type: 'error',
