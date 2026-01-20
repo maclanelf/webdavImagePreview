@@ -98,7 +98,7 @@ export function getPlaybackStrategy(filename: string): 'native' | 'try-native' |
  * @param transcodeOptions 转码选项
  */
 export function buildVideoStreamUrl(
-  config: { url: string; username: string; password: string },
+  config: { url: string; username: string; password: string; sourceType?: string },
   filepath: string,
   useTranscode: boolean = false,
   transcodeOptions?: { format?: 'mp4' | 'webm'; quality?: 'low' | 'medium' | 'high' }
@@ -110,6 +110,7 @@ export function buildVideoStreamUrl(
     username: config.username,
     password: config.password,
     filepath: filepath,
+    sourceType: config.sourceType || 'clouddrive2',
   })
   
   if (useTranscode && transcodeOptions) {

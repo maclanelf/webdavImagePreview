@@ -235,11 +235,42 @@ export function initDatabase() {
         media_paths TEXT NOT NULL,
         scan_settings TEXT NOT NULL,
         is_default BOOLEAN DEFAULT FALSE,
+        source_type TEXT DEFAULT 'clouddrive2',
         created_at DATETIME DEFAULT (datetime('now', 'localtime')),
         updated_at DATETIME DEFAULT (datetime('now', 'localtime')),
         UNIQUE(url, username)
       )
     `)
+    
+    // 添加 source_type 字段（如果表已存在）
+    try {
+      db.exec(`ALTER TABLE webdav_configs ADD COLUMN source_type TEXT DEFAULT 'clouddrive2'`)
+      console.log('✅ 添加 source_type 字段成功')
+    } catch (e: any) {
+      if (!e.message?.includes('duplicate column name')) {
+        console.warn('⚠️ 添加 source_type 字段失败:', e.message)
+      }
+    }
+    
+    // 添加 direct_link_url 字段（直链源 URL）
+    try {
+      db.exec(`ALTER TABLE webdav_configs ADD COLUMN direct_link_url TEXT`)
+      console.log('✅ 添加 direct_link_url 字段成功')
+    } catch (e: any) {
+      if (!e.message?.includes('duplicate column name')) {
+        console.warn('⚠️ 添加 direct_link_url 字段失败:', e.message)
+      }
+    }
+    
+    // 添加 enable_direct_link 字段（是否启用直链播放）
+    try {
+      db.exec(`ALTER TABLE webdav_configs ADD COLUMN enable_direct_link BOOLEAN DEFAULT FALSE`)
+      console.log('✅ 添加 enable_direct_link 字段成功')
+    } catch (e: any) {
+      if (!e.message?.includes('duplicate column name')) {
+        console.warn('⚠️ 添加 enable_direct_link 字段失败:', e.message)
+      }
+    }
 
     // 创建扫描文件表（核心表，支持亿级数据）
     db.exec(`
@@ -963,12 +994,15 @@ export const webdavConfigs = {
       ensureInitialized()
       const stmt = db.prepare('SELECT * FROM webdav_configs ORDER BY is_default DESC, created_at DESC')
       const rows = stmt.all()
-      // 解析 JSON 字段
+      // 解析 JSON 字段并映射字段名
       return rows.map((row: any) => ({
         ...row,
         mediaPaths: JSON.parse(row.media_paths || '[]'),
         scanSettings: JSON.parse(row.scan_settings || '{}'),
-        isDefault: row.is_default === 1
+        isDefault: row.is_default === 1,
+        sourceType: row.source_type || 'clouddrive2', // 映射 source_type 为 sourceType
+        directLinkUrl: row.direct_link_url || null, // 映射 direct_link_url 为 directLinkUrl
+        enableDirectLink: row.enable_direct_link === 1, // 映射 enable_direct_link 为 enableDirectLink
       }))
     } catch (error) {
       console.error('获取 WebDAV 配置失败:', error)
@@ -988,7 +1022,10 @@ export const webdavConfigs = {
         ...row,
         mediaPaths: JSON.parse(row.media_paths || '[]'),
         scanSettings: JSON.parse(row.scan_settings || '{}'),
-        isDefault: true
+        isDefault: true,
+        sourceType: row.source_type || 'clouddrive2', // 映射 source_type 为 sourceType
+        directLinkUrl: row.direct_link_url || null, // 映射 direct_link_url 为 directLinkUrl
+        enableDirectLink: row.enable_direct_link === 1, // 映射 enable_direct_link 为 enableDirectLink
       }
     } catch (error) {
       console.error('获取默认配置失败:', error)
@@ -1008,7 +1045,10 @@ export const webdavConfigs = {
         ...row,
         mediaPaths: JSON.parse(row.media_paths || '[]'),
         scanSettings: JSON.parse(row.scan_settings || '{}'),
-        isDefault: row.is_default === 1
+        isDefault: row.is_default === 1,
+        sourceType: row.source_type || 'clouddrive2', // 映射 source_type 为 sourceType
+        directLinkUrl: row.direct_link_url || null, // 映射 direct_link_url 为 directLinkUrl
+        enableDirectLink: row.enable_direct_link === 1, // 映射 enable_direct_link 为 enableDirectLink
       }
     } catch (error) {
       console.error('获取 WebDAV 配置失败:', error)
@@ -1024,6 +1064,9 @@ export const webdavConfigs = {
     mediaPaths: string[]
     scanSettings?: any
     isDefault?: boolean
+    sourceType?: string
+    directLinkUrl?: string
+    enableDirectLink?: boolean
   }) => {
     try {
       ensureInitialized()
@@ -1037,13 +1080,18 @@ export const webdavConfigs = {
       
       const mediaPathsStr = JSON.stringify(data.mediaPaths || [])
       const scanSettingsStr = JSON.stringify(data.scanSettings || {})
+      const sourceType = data.sourceType || 'clouddrive2'
+      const directLinkUrl = data.directLinkUrl || null
+      const enableDirectLink = data.enableDirectLink ? 1 : 0
       
       if (existing) {
-        // 更新
+        // 更新现有配置
+        console.log('更新现有配置:', data.url, data.username)
         const stmt = db.prepare(`
           UPDATE webdav_configs 
           SET password = ?, media_paths = ?, scan_settings = ?, 
-              is_default = ?, updated_at = datetime('now', 'localtime')
+              is_default = ?, source_type = ?, direct_link_url = ?, enable_direct_link = ?,
+              updated_at = datetime('now', 'localtime')
           WHERE url = ? AND username = ?
         `)
         return stmt.run(
@@ -1051,19 +1099,23 @@ export const webdavConfigs = {
           mediaPathsStr,
           scanSettingsStr,
           data.isDefault ? 1 : 0,
+          sourceType,
+          directLinkUrl,
+          enableDirectLink,
           data.url,
           data.username
         )
       } else {
-        // 插入
+        // 插入新配置
         // 如果没有其他配置，第一个配置自动设为默认
         const allConfigs = webdavConfigs.getAll()
         const shouldBeDefault = data.isDefault !== false && allConfigs.length === 0
         
+        console.log('插入新配置:', data.url, data.username)
         const stmt = db.prepare(`
           INSERT INTO webdav_configs 
-          (url, username, password, media_paths, scan_settings, is_default)
-          VALUES (?, ?, ?, ?, ?, ?)
+          (url, username, password, media_paths, scan_settings, is_default, source_type, direct_link_url, enable_direct_link)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         return stmt.run(
           data.url,
@@ -1071,7 +1123,10 @@ export const webdavConfigs = {
           data.password,
           mediaPathsStr,
           scanSettingsStr,
-          shouldBeDefault ? 1 : (data.isDefault ? 1 : 0)
+          shouldBeDefault ? 1 : (data.isDefault ? 1 : 0),
+          sourceType,
+          directLinkUrl,
+          enableDirectLink
         )
       }
     } catch (error) {

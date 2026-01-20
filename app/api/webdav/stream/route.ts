@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getWebDAVClient } from '@/lib/webdav-optimized'
 import { Readable } from 'stream'
+import { buildFileUrl, normalizeFilePath, type SourceType } from '@/lib/urlBuilder'
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { url, username, password, filepath } = body
+    const { url, username, password, filepath, sourceType = 'clouddrive2' } = body
+    console.log('请求参数:', { url, username, filepath, sourceType })
 
     if (!url || !username || !password || !filepath) {
       return NextResponse.json(
@@ -14,8 +16,12 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // 规范化文件路径（OpenList 需要替换全角斜杠为竖线）
+    const normalizedPath = normalizeFilePath(filepath, sourceType as SourceType)
+    console.log('规范化路径:', normalizedPath)
+
     const client = getWebDAVClient({ url, username, password })
-    const stream = client.createReadStream(filepath)
+    const stream = client.createReadStream(normalizedPath)
     
     // 获取文件扩展名以确定MIME类型
     const ext = filepath.toLowerCase().split('.').pop()
@@ -54,6 +60,10 @@ export async function POST(request: NextRequest) {
     // 将Node.js stream转换为Web ReadableStream
     const webStream = Readable.toWeb(stream as any) as ReadableStream
 
+    // 构建完整的文件 URL（用于日志）
+    const fullFileUrl = buildFileUrl(url, filepath, sourceType as SourceType)
+    console.log('完整文件 URL:', fullFileUrl)
+
     return new NextResponse(webStream, {
       headers: {
         'Content-Type': contentType,
@@ -68,4 +78,3 @@ export async function POST(request: NextRequest) {
     )
   }
 }
-

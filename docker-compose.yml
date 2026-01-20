@@ -7,7 +7,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "3000:3000"
+      - "3001:3001"
     environment:
       - NODE_ENV=production
       - PORT=3000
@@ -19,20 +19,23 @@ services:
       - WEBDAV_PASSWORD=${WEBDAV_PASSWORD:-}
       - WEBDAV_MEDIA_PATH=${WEBDAV_MEDIA_PATH:-}
     volumes:
-      # 数据持久化 - SQLite 数据库和评分数据
-      - webdav_data:/app/data
-      # 日志文件持久化
-      - webdav_logs:/app/logs
+      # 数据持久化 - SQLite 数据库和评分数据（映射到宿主机）
+      - ./vol1/1000/webdavimagepreview/app-data:/app/data
+      # 应用日志文件（映射到宿主机）
+      - ./vol1/1000/webdavimagepreview/app-logs:/app/logs
+      # Nginx 日志文件（映射到宿主机）
+      - ./vol1/1000/webdavimagepreview/nginx-logs:/var/log/nginx
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/test-db"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
 
-volumes:
-  webdav_data:
-    driver: local
-  webdav_logs:
-    driver: local
+# 注释掉 volumes 定义，因为现在使用宿主机目录映射
+# volumes:
+#   webdav_data:
+#     driver: local
+#   webdav_logs:
+#     driver: local

@@ -24,8 +24,8 @@ RUN npm run build
 FROM node:20-alpine AS runner
 WORKDIR /app
 
-# 安装时区数据和 FFmpeg（用于视频转码）
-RUN apk add --no-cache tzdata ffmpeg
+# 安装时区数据、FFmpeg 和 Nginx
+RUN apk add --no-cache tzdata ffmpeg nginx wget
 
 # 设置时区为上海时区
 ENV TZ=Asia/Shanghai
@@ -39,19 +39,25 @@ RUN adduser --system --uid 1001 nextjs
 COPY --from=base /app/.next/standalone ./
 COPY --from=base /app/.next/static ./.next/static
 
-# 创建数据目录和日志目录并设置权限
-RUN mkdir -p /app/data /app/logs && chown -R nextjs:nodejs /app/data /app/logs
+# 复制 Nginx 配置
+COPY nginx.conf /etc/nginx/nginx.conf
 
-# 切换到非root用户
-USER nextjs
+# 复制启动脚本
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
 
-# 暴露端口
-EXPOSE 3000
+# 创建数据目录、日志目录和 Nginx 日志目录
+RUN mkdir -p /app/data /app/logs /var/log/nginx /var/lib/nginx/tmp && \
+    chown -R nextjs:nodejs /app/data /app/logs && \
+    chown -R nginx:nginx /var/log/nginx /var/lib/nginx
+
+# 暴露 Nginx 端口
+EXPOSE 3001
 
 # 设置环境变量
 ENV PORT 3000
 ENV HOSTNAME "0.0.0.0"
 ENV TZ=Asia/Shanghai
 
-# 启动应用
-CMD ["node", "server.js"]
+# 使用启动脚本启动 Nginx 和 Next.js
+CMD ["/app/start.sh"]

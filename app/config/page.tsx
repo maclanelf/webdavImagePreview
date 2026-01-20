@@ -28,6 +28,9 @@ import {
   Card,
   CardContent,
   IconButton,
+  MenuItem,
+  Switch,
+  FormControlLabel,
 } from '@mui/material'
 import {
   Save as SaveIcon,
@@ -46,6 +49,7 @@ import {
   Home as HomeIcon,
   ManageAccounts as ManageAccountsIcon,
   Refresh as RefreshIcon,
+  ContentCopy as ContentCopyIcon,
 } from '@mui/icons-material'
 import { ListItemButton, ListItemSecondaryAction } from '@mui/material'
 import { useRouter } from 'next/navigation'
@@ -57,6 +61,9 @@ interface WebDAVConfig {
   username: string
   password: string
   mediaPaths: string[]
+  sourceType?: 'clouddrive2' | 'openlist'
+  directLinkUrl?: string
+  enableDirectLink?: boolean
   scanSettings?: {
     concurrency?: number | string
     preloadCount?: number | string
@@ -85,6 +92,9 @@ export default function ConfigPage() {
     username: '',
     password: '',
     mediaPaths: ['/'],
+    sourceType: 'clouddrive2',
+    directLinkUrl: '',
+    enableDirectLink: false,
     scanSettings: {
       concurrency: 10,
       preloadCount: 10
@@ -94,7 +104,7 @@ export default function ConfigPage() {
   const [testing, setTesting] = useState(false)
   const [saving, setSaving] = useState(false)
   const [testResult, setTestResult] = useState<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
-  const [saveResult, setSaveResult] = useState<{ type: 'success' | 'error', message: string } | null>(null)
+  const [saveResult, setSaveResult] = useState<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
   
   // 目录浏览相关
   const [browseDialogOpen, setBrowseDialogOpen] = useState(false)
@@ -126,6 +136,13 @@ export default function ConfigPage() {
   const [editingScan, setEditingScan] = useState<any>(null)
   const [loadingScans, setLoadingScans] = useState(false)
   const [schedulerStatus, setSchedulerStatus] = useState<any>(null)
+  
+  // 多配置管理相关状态
+  const [allConfigs, setAllConfigs] = useState<any[]>([])
+  const [loadingConfigs, setLoadingConfigs] = useState(false)
+  const [configListDialogOpen, setConfigListDialogOpen] = useState(false)
+  const [editingConfigId, setEditingConfigId] = useState<number | null>(null)
+  const [isNewConfig, setIsNewConfig] = useState(false)
 
   // 安全解析JSON的辅助函数
   const safeJsonParse = (jsonString: string | null | undefined, fallback: any = null) => {
@@ -135,6 +152,25 @@ export default function ConfigPage() {
     } catch (error) {
       console.error('JSON解析失败:', error, jsonString)
       return fallback
+    }
+  }
+
+  // 加载所有 WebDAV 配置
+  const loadAllConfigs = async () => {
+    setLoadingConfigs(true)
+    try {
+      const response = await fetch('/api/webdav-config')
+      if (response.ok) {
+        const data = await response.json()
+        setAllConfigs(data.configs || [])
+        console.log('✅ 加载所有配置成功:', data.configs?.length || 0, '个配置')
+      } else {
+        console.error('❌ 加载所有配置失败: HTTP', response.status)
+      }
+    } catch (error) {
+      console.error('❌ 加载所有配置失败:', error)
+    } finally {
+      setLoadingConfigs(false)
     }
   }
 
@@ -245,6 +281,9 @@ export default function ConfigPage() {
               username: dbConfig.username,
               password: dbConfig.password,
               mediaPaths: dbConfig.mediaPaths || ['/'],
+              sourceType: dbConfig.sourceType || 'clouddrive2',
+              directLinkUrl: dbConfig.directLinkUrl || '',
+              enableDirectLink: dbConfig.enableDirectLink || false,
               scanSettings: dbConfig.scanSettings || {
                 concurrency: 10,
                 preloadCount: 10
@@ -327,6 +366,9 @@ export default function ConfigPage() {
     }
     
     loadConfig()
+    
+    // 加载所有配置
+    loadAllConfigs()
     
     // 加载定时扫描任务
     loadScheduledScans()
@@ -434,6 +476,12 @@ export default function ConfigPage() {
       const configToSave = {
         ...config,
         mediaPaths: Array.from(selectedPaths),
+        // 如果没有填写直链源，使用 WebDAV URL
+        directLinkUrl: config.directLinkUrl || config.url,
+        // OpenList 源默认开启直链播放（如果用户没有明确设置）
+        enableDirectLink: config.sourceType === 'openlist' 
+          ? (config.enableDirectLink !== false) 
+          : (config.enableDirectLink || false),
       }
       
       // 同时保存到数据库和 localStorage（向后兼容）
@@ -447,6 +495,9 @@ export default function ConfigPage() {
             username: configToSave.username,
             password: configToSave.password,
             mediaPaths: configToSave.mediaPaths,
+            sourceType: configToSave.sourceType || 'clouddrive2',
+            directLinkUrl: configToSave.directLinkUrl,
+            enableDirectLink: configToSave.enableDirectLink,
             scanSettings: configToSave.scanSettings || {
               concurrency: 10,
               preloadCount: 10
@@ -456,21 +507,32 @@ export default function ConfigPage() {
         })
         
         if (!dbResponse.ok) {
-          console.error('保存到数据库失败:', await dbResponse.text())
+          const errorData = await dbResponse.json()
+          throw new Error(errorData.error || '保存到数据库失败')
         }
-      } catch (dbError) {
+        
+        // 数据库保存成功后，也保存到 localStorage（向后兼容）
+        localStorage.setItem('webdav_config', JSON.stringify(configToSave))
+        
+        console.log('✅ 配置保存成功，开始刷新配置列表...')
+        
+        // 重新加载所有配置列表
+        await loadAllConfigs()
+        
+        console.log('✅ 配置列表刷新完成')
+        
+        // 保存成功提示（不再自动触发扫描）
+        setSaveResult({
+          type: 'success',
+          message: '配置已保存！如需扫描媒体文件，请前往管理页面手动触发扫描。',
+        })
+      } catch (dbError: any) {
         console.error('保存到数据库失败:', dbError)
-        // 数据库保存失败不影响继续保存到 localStorage
+        setSaveResult({
+          type: 'error',
+          message: `保存失败: ${dbError.message}`,
+        })
       }
-      
-      // 保存到 localStorage（向后兼容）
-      localStorage.setItem('webdav_config', JSON.stringify(configToSave))
-      
-      // 保存成功提示（不再自动触发扫描）
-      setSaveResult({
-        type: 'success',
-        message: '配置已保存！如需扫描媒体文件，请前往管理页面手动触发扫描。',
-      })
     } catch (error: any) {
       setSaveResult({
         type: 'error',
@@ -907,6 +969,204 @@ export default function ConfigPage() {
     }
   }
 
+  // 设置默认配置
+  const setDefaultConfig = async (url: string, username: string) => {
+    try {
+      const response = await fetch('/api/webdav-config/default', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, username })
+      })
+
+      if (response.ok) {
+        setSaveResult({
+          type: 'success',
+          message: '默认配置设置成功'
+        })
+        // 重新加载所有配置
+        loadAllConfigs()
+        // 重新加载默认配置到表单
+        const defaultResponse = await fetch('/api/webdav-config/default')
+        if (defaultResponse.ok) {
+          const dbConfig = await defaultResponse.json()
+          if (dbConfig.url && dbConfig.username) {
+            setConfig({
+              url: dbConfig.url,
+              username: dbConfig.username,
+              password: dbConfig.password,
+              mediaPaths: dbConfig.mediaPaths || ['/'],
+              sourceType: dbConfig.sourceType || 'clouddrive2',
+              directLinkUrl: dbConfig.directLinkUrl || '',
+              enableDirectLink: dbConfig.enableDirectLink || false,
+              scanSettings: dbConfig.scanSettings || {
+                concurrency: 10,
+                preloadCount: 10
+              }
+            })
+            setSelectedPaths(new Set(dbConfig.mediaPaths || []))
+            loadScanCache({
+              url: dbConfig.url,
+              username: dbConfig.username,
+              password: dbConfig.password,
+              mediaPaths: dbConfig.mediaPaths || ['/'],
+              scanSettings: dbConfig.scanSettings || {
+                concurrency: 10,
+                preloadCount: 10
+              }
+            })
+          }
+        }
+      } else {
+        const error = await response.json()
+        setSaveResult({
+          type: 'error',
+          message: error.error || '设置默认配置失败'
+        })
+      }
+    } catch (error: any) {
+      setSaveResult({
+        type: 'error',
+        message: `设置默认配置失败: ${error.message}`
+      })
+    }
+  }
+
+  // 删除配置
+  const deleteConfig = async (url: string, username: string) => {
+    if (!confirm(`确定要删除配置 ${url} (${username}) 吗？`)) return
+
+    try {
+      const response = await fetch(`/api/webdav-config?url=${encodeURIComponent(url)}&username=${encodeURIComponent(username)}`, {
+        method: 'DELETE'
+      })
+
+      if (response.ok) {
+        setSaveResult({
+          type: 'success',
+          message: '配置删除成功'
+        })
+        // 重新加载所有配置
+        loadAllConfigs()
+        // 如果删除的是当前配置，清空表单
+        if (config.url === url && config.username === username) {
+          setConfig({
+            url: '',
+            username: '',
+            password: '',
+            mediaPaths: ['/'],
+            sourceType: 'clouddrive2',
+            directLinkUrl: '',
+            enableDirectLink: false,
+            scanSettings: {
+              concurrency: 10,
+              preloadCount: 10
+            }
+          })
+          setSelectedPaths(new Set())
+        }
+      } else {
+        const error = await response.json()
+        setSaveResult({
+          type: 'error',
+          message: error.error || '删除配置失败'
+        })
+      }
+    } catch (error: any) {
+      setSaveResult({
+        type: 'error',
+        message: `删除配置失败: ${error.message}`
+      })
+    }
+  }
+
+  // 加载指定配置到表单
+  const loadConfigToForm = (configData: any) => {
+    setConfig({
+      url: configData.url,
+      username: configData.username,
+      password: configData.password,
+      mediaPaths: configData.mediaPaths || ['/'],
+      sourceType: configData.sourceType || 'clouddrive2',
+      directLinkUrl: configData.directLinkUrl || '',
+      enableDirectLink: configData.enableDirectLink || false,
+      scanSettings: configData.scanSettings || {
+        concurrency: 10,
+        preloadCount: 10
+      }
+    })
+    setSelectedPaths(new Set(configData.mediaPaths || []))
+    setConfigListDialogOpen(false)
+    
+    // 加载扫描缓存
+    loadScanCache({
+      url: configData.url,
+      username: configData.username,
+      password: configData.password,
+      mediaPaths: configData.mediaPaths || ['/'],
+      scanSettings: configData.scanSettings || {
+        concurrency: 10,
+        preloadCount: 10
+      }
+    })
+  }
+
+  // 新建配置
+  const createNewConfig = () => {
+    setConfig({
+      url: '',
+      username: '',
+      password: '',
+      mediaPaths: ['/'],
+      sourceType: 'clouddrive2',
+      directLinkUrl: '',
+      enableDirectLink: false,
+      scanSettings: {
+        concurrency: 10,
+        preloadCount: 10
+      }
+    })
+    setSelectedPaths(new Set())
+    setIsNewConfig(true)
+    setConfigListDialogOpen(false)
+  }
+
+  // 复制配置
+  const copyConfig = (configData: any) => {
+    setConfig({
+      url: configData.url,
+      username: configData.username,
+      password: configData.password,
+      mediaPaths: configData.mediaPaths || ['/'],
+      sourceType: configData.sourceType || 'clouddrive2',
+      directLinkUrl: configData.directLinkUrl || '',
+      enableDirectLink: configData.enableDirectLink || false,
+      scanSettings: configData.scanSettings || {
+        concurrency: 10,
+        preloadCount: 10
+      }
+    })
+    setSelectedPaths(new Set(configData.mediaPaths || []))
+    setIsNewConfig(true)
+    setConfigListDialogOpen(false)
+    
+    // 加载扫描缓存（如果有的话）
+    loadScanCache({
+      url: configData.url,
+      username: configData.username,
+      password: configData.password,
+      mediaPaths: configData.mediaPaths || ['/'],
+      scanSettings: configData.scanSettings || {
+        concurrency: 10,
+        preloadCount: 10
+      }
+    })
+    
+    setSaveResult({
+      type: 'info',
+      message: '配置已复制，请修改后保存为新配置'
+    })
+  }
+
   return (
     <Container maxWidth="md" sx={{ py: 4 }}>
       <Box sx={{ mb: 4, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -918,24 +1178,50 @@ export default function ConfigPage() {
             WebDAV 配置
           </Typography>
         </Box>
-        <Button
-          variant="outlined"
-          startIcon={<ManageAccountsIcon />}
-          onClick={() => router.push('/manage')}
-        >
-          评价与分类管理
-        </Button>
+        <Box sx={{ display: 'flex', gap: 2 }}>
+          <Button
+            variant="outlined"
+            startIcon={<SettingsIcon />}
+            onClick={async () => {
+              console.log('🔄 打开配置管理对话框，刷新配置列表...')
+              await loadAllConfigs()
+              console.log('✅ 配置列表刷新完成，打开对话框')
+              setConfigListDialogOpen(true)
+            }}
+          >
+            配置管理 ({allConfigs.length})
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={<ManageAccountsIcon />}
+            onClick={() => router.push('/manage')}
+          >
+            评价与分类管理
+          </Button>
+        </Box>
       </Box>
 
       <Paper elevation={3} sx={{ p: 4, borderRadius: 3 }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 3 }}>
-          <SettingsIcon color="primary" sx={{ fontSize: 32 }} />
-          <Box>
-            <Typography variant="h6">连接设置</Typography>
-            <Typography variant="body2" color="text.secondary">
-              配置您的 WebDAV 服务器连接信息
-            </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <SettingsIcon color="primary" sx={{ fontSize: 32 }} />
+            <Box>
+              <Typography variant="h6">连接设置</Typography>
+              <Typography variant="body2" color="text.secondary">
+                配置您的 WebDAV 服务器连接信息
+              </Typography>
+            </Box>
           </Box>
+          {allConfigs.length > 0 && (
+            <Button
+              variant="contained"
+              size="small"
+              startIcon={<AddIcon />}
+              onClick={createNewConfig}
+            >
+              新建配置
+            </Button>
+          )}
         </Box>
 
         <Divider sx={{ mb: 3 }} />
@@ -950,6 +1236,23 @@ export default function ConfigPage() {
             helperText="WebDAV 服务器的完整 URL 地址"
             required
           />
+
+          <TextField
+            select
+            label="源类型"
+            fullWidth
+            value={config.sourceType || 'clouddrive2'}
+            onChange={(e) => {
+              setConfig({ ...config, sourceType: e.target.value as 'clouddrive2' | 'openlist' })
+              setTestResult(null)
+              setSaveResult(null)
+            }}
+            helperText="选择 WebDAV 服务的源类型，不同源的 URL 构建方式不同"
+            required
+          >
+            <MenuItem value="clouddrive2">CloudDrive2</MenuItem>
+            <MenuItem value="openlist">OpenList</MenuItem>
+          </TextField>
 
           <TextField
             label="用户名"
@@ -981,6 +1284,46 @@ export default function ConfigPage() {
               ),
             }}
           />
+
+          {/* 直链源 URL */}
+          <TextField
+            label="直链源 URL"
+            placeholder="http://192.168.133.131:5244"
+            fullWidth
+            value={config.directLinkUrl || ''}
+            onChange={(e) => {
+              setConfig({ ...config, directLinkUrl: e.target.value })
+            }}
+            helperText="用于直链播放的服务器地址。OpenList 的直链播放免费，推荐使用 OpenList 作为直链源。如果不填写，默认使用当前 WebDAV URL"
+            sx={{ mt: 2 }}
+          />
+
+          {/* 启用直链播放开关 */}
+          <Box sx={{ mt: 2 }}>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={config.enableDirectLink || false}
+                  onChange={(e) => {
+                    setConfig({ ...config, enableDirectLink: e.target.checked })
+                  }}
+                  disabled={!config.directLinkUrl}
+                />
+              }
+              label={
+                <Box>
+                  <Typography variant="body2" fontWeight="medium">
+                    启用直链播放
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    直链播放暂时只支持 OpenList，使用前需要配置直链源和 Nginx 反向代理
+                    {!config.directLinkUrl && ' (请先配置直链源 URL)'}
+                    {config.sourceType === 'openlist' && config.directLinkUrl && ' (OpenList 源推荐开启)'}
+                  </Typography>
+                </Box>
+              }
+            />
+          </Box>
         </Box>
 
         <Divider sx={{ my: 3 }} />
@@ -1567,6 +1910,139 @@ export default function ConfigPage() {
         initialData={editingScan}
         config={config}
       />
+
+      {/* 配置管理对话框 */}
+      <Dialog
+        open={configListDialogOpen}
+        onClose={() => setConfigListDialogOpen(false)}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <SettingsIcon color="primary" />
+              WebDAV 配置管理
+            </Box>
+            <Button
+              variant="contained"
+              size="small"
+              startIcon={<AddIcon />}
+              onClick={createNewConfig}
+            >
+              新建配置
+            </Button>
+          </Box>
+        </DialogTitle>
+        <DialogContent dividers>
+          {loadingConfigs ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+              <CircularProgress />
+            </Box>
+          ) : allConfigs.length === 0 ? (
+            <Alert severity="info">
+              暂无配置，点击"新建配置"创建第一个配置
+            </Alert>
+          ) : (
+            <Stack spacing={2}>
+              {allConfigs.map((cfg: any) => (
+                <Card 
+                  key={`${cfg.url}-${cfg.username}`}
+                  variant="outlined"
+                  sx={{
+                    borderColor: cfg.isDefault ? 'primary.main' : 'divider',
+                    borderWidth: cfg.isDefault ? 2 : 1,
+                    backgroundColor: cfg.isDefault ? 'primary.50' : 'transparent',
+                  }}
+                >
+                  <CardContent>
+                    <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+                      <Box sx={{ flex: 1 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                          <Typography variant="h6" component="div">
+                            {cfg.url}
+                          </Typography>
+                          {cfg.isDefault && (
+                            <Chip 
+                              label="默认" 
+                              color="primary" 
+                              size="small"
+                              icon={<CheckCircleIcon />}
+                            />
+                          )}
+                        </Box>
+                        <Typography variant="body2" color="text.secondary" gutterBottom>
+                          用户名: {cfg.username}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary" gutterBottom>
+                          源类型: {cfg.sourceType === 'openlist' ? 'OpenList' : 'CloudDrive2'}
+                        </Typography>
+                        {cfg.directLinkUrl && (
+                          <Typography variant="body2" color="text.secondary" gutterBottom>
+                            直链源: {cfg.directLinkUrl}
+                            {cfg.enableDirectLink && (
+                              <Chip 
+                                label="直链已启用" 
+                                color="success" 
+                                size="small" 
+                                sx={{ ml: 1 }}
+                              />
+                            )}
+                          </Typography>
+                        )}
+                        <Typography variant="caption" color="text.secondary">
+                          媒体路径: {cfg.mediaPaths?.join(', ') || '未设置'} ({cfg.mediaPaths?.length || 0} 个)
+                        </Typography>
+                      </Box>
+                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, ml: 2 }}>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          onClick={() => loadConfigToForm(cfg)}
+                        >
+                          编辑
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          color="info"
+                          startIcon={<ContentCopyIcon />}
+                          onClick={() => copyConfig(cfg)}
+                        >
+                          复制
+                        </Button>
+                        {!cfg.isDefault && (
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            color="primary"
+                            onClick={() => setDefaultConfig(cfg.url, cfg.username)}
+                          >
+                            设为默认
+                          </Button>
+                        )}
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          color="error"
+                          onClick={() => deleteConfig(cfg.url, cfg.username)}
+                        >
+                          删除
+                        </Button>
+                      </Box>
+                    </Box>
+                  </CardContent>
+                </Card>
+              ))}
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfigListDialogOpen(false)}>
+            关闭
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Container>
   )
 }

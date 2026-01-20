@@ -82,6 +82,9 @@ interface WebDAVConfig {
   username: string
   password: string
   mediaPaths: string[]
+  sourceType?: 'clouddrive2' | 'openlist'
+  directLinkUrl?: string
+  enableDirectLink?: boolean
   scanSettings?: {
     concurrency?: number
     preloadCount?: number
@@ -360,6 +363,9 @@ export default function HomePage() {
               username: dbConfig.username,
               password: dbConfig.password,
               mediaPaths: dbConfig.mediaPaths || ['/'],
+              sourceType: dbConfig.sourceType || 'clouddrive2',
+              directLinkUrl: dbConfig.directLinkUrl || '',
+              enableDirectLink: dbConfig.enableDirectLink || false,
               scanSettings: dbConfig.scanSettings || {
                 concurrency: 10,
                 preloadCount: 10
@@ -1326,6 +1332,45 @@ export default function HomePage() {
       
       setCurrentFile(fileToLoad)
       
+      // 检查是否启用直链播放
+      if (config.enableDirectLink && config.directLinkUrl) {
+        // 使用 /d/ 直链播放（通过 Nginx 代理）
+        // 直链播放目前只支持 OpenList，需要将路径中的全角斜杠 ／ 替换为竖线 |
+        let processedPath = fileToLoad.filename
+        
+        // OpenList 特殊处理：将文件名中的全角斜杠替换为竖线
+        // 因为 OpenList 不允许文件名中包含斜杠
+        processedPath = processedPath
+          .split('/')
+          .map(segment => segment.replace(/／/g, '|'))
+          .join('/')
+        
+        const directLinkUrl = `/d${processedPath}`
+        
+        console.log(`🎯 [直链播放] 使用直链: ${fileToLoad.basename}`)
+        console.log(`🔗 [直链播放] 直链源: ${config.directLinkUrl}`)
+        console.log(`🔗 [直链播放] 原始路径: ${fileToLoad.filename}`)
+        console.log(`🔗 [直链播放] 处理后路径: ${processedPath}`)
+        console.log(`🔗 [直链播放] 直链 URL: ${directLinkUrl}`)
+        
+        // 设置直链 URL
+        setMediaUrl(directLinkUrl)
+        setMediaType('stream-video')
+        setLoading(false)
+        
+        // 如果需要自动进入全屏，延迟执行
+        if (shouldEnterVideoFullscreen) {
+          setTimeout(() => {
+            enterVideoFullscreen()
+          }, 100)
+        }
+        
+        return
+      }
+      
+      // 如果未启用直链，继续使用 WebDAV 流式传输
+      console.log(`📡 [流式播放] 使用 WebDAV 流式传输: ${fileToLoad.basename}`)
+      
       // 构建即点即播URL（使用 instant-stream API）
       // 根据视频格式决定播放策略
       const playbackStrategy = getPlaybackStrategy(fileToLoad.filename)
@@ -1337,6 +1382,7 @@ export default function HomePage() {
         username: config.username,
         password: config.password,
         filepath: fileToLoad.filename,
+        sourceType: config.sourceType || 'clouddrive2',
       })
       // 将 + 替换为 %20，确保 WebDAV 服务器能正确解析路径中的空格
       const streamUrl = `/api/webdav/instant-stream?${streamParams.toString().replace(/\+/g, '%20')}`
@@ -1347,6 +1393,7 @@ export default function HomePage() {
         username: config.username,
         password: config.password,
         filepath: fileToLoad.filename,
+        sourceType: config.sourceType || 'clouddrive2',
         format: 'mp4',
         quality: 'high',
       })

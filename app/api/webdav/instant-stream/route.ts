@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getWebDAVClient } from '@/lib/webdav-optimized'
+import { normalizeFilePath, type SourceType } from '@/lib/urlBuilder'
 import { Readable, PassThrough } from 'stream'
 import {
   cleanupStream,
@@ -9,6 +10,7 @@ import {
   getActiveStreamCount,
   updateStreamActivity
 } from '@/lib/streamManager'
+import { webdavConfigs } from '@/lib/database'
 
 export async function OPTIONS(request: NextRequest) {
   return new NextResponse(null, {
@@ -44,12 +46,39 @@ export async function GET(request: NextRequest) {
     const username = searchParams.get('username')
     const password = searchParams.get('password')
     const filepath = searchParams.get('filepath')
+    const sourceType = searchParams.get('sourceType') || 'clouddrive2'
 
     if (!url || !username || !password || !filepath) {
       return NextResponse.json(
         { error: '请提供完整的配置信息和文件路径' },
         { status: 400 }
       )
+    }
+    
+    // 从数据库获取配置，检查是否启用直链播放
+    try {
+      const config = webdavConfigs.get(url, username)
+      
+      // 如果启用了直链播放且配置了直链源
+      if (config?.enableDirectLink && config?.directLinkUrl) {
+        console.log(`🎯 [即点即播] 使用直链播放: ${filepath}`)
+        console.log(`🔗 [即点即播] 直链源: ${config.directLinkUrl}`)
+        
+        // 构建 /d/ 直链 URL（通过 Nginx 代理访问）
+        const directLinkPath = `/d${filepath}`
+        
+        console.log(`✅ [即点即播] 返回直链 URL: ${directLinkPath}`)
+        
+        // 返回 302 重定向到 /d/ URL
+        // 浏览器会自动跟随重定向，Nginx 会将请求代理到 OpenList
+        return NextResponse.redirect(new URL(directLinkPath, request.url), 302)
+      }
+      
+      // 如果未启用直链或未配置直链源，继续使用 WebDAV 流式传输
+      console.log(`📡 [即点即播] 使用 WebDAV 流式传输: ${filepath}`)
+    } catch (dbError) {
+      // 如果数据库查询失败，继续使用 WebDAV 流式传输（降级策略）
+      console.warn(`⚠️ [即点即播] 数据库查询失败，降级到 WebDAV 流式传输:`, dbError)
     }
     
     // 如果请求已被取消，直接返回
@@ -65,6 +94,12 @@ export async function GET(request: NextRequest) {
     cleanupOtherStreams(requestId)
 
     const client = getWebDAVClient({ url, username, password })
+    
+    // 规范化文件路径（OpenList 需要去掉虚拟路径前缀并替换全角斜杠）
+    const normalizedPath = normalizeFilePath(filepath, sourceType as SourceType)
+    console.log(`📂 [即点即播] 原始路径: ${filepath}`)
+    console.log(`📂 [即点即播] 规范化路径: ${normalizedPath}`)
+    console.log(`📂 [即点即播] 源类型: ${sourceType}`)
     
     // 获取文件扩展名以确定MIME类型
     const ext = filepath.toLowerCase().split('.').pop()
@@ -95,15 +130,9 @@ export async function GET(request: NextRequest) {
     try {
       console.log(`📂 [即点即播] 尝试获取文件信息...`)
       console.log(`📂 [即点即播] WebDAV URL: ${url}`)
-      console.log(`📂 [即点即播] 文件路径: ${filepath}`)
-      console.log(`📂 [即点即播] 文件路径长度: ${filepath.length}`)
-      console.log(`📂 [即点即播] 文件路径编码检查:`, {
-        hasPlus: filepath.includes('+'),
-        hasSpace: filepath.includes(' '),
-        hasSpecialChars: /[～／＋]/.test(filepath),
-      })
+      console.log(`📂 [即点即播] 使用规范化路径获取文件信息`)
       
-      const stat = await client.stat(filepath)
+      const stat = await client.stat(normalizedPath)
       fileSize = getFileSizeFromStat(stat)
       if (!fileSize) {
         throw new Error('无法获取文件大小')
@@ -113,7 +142,9 @@ export async function GET(request: NextRequest) {
       console.error('❌ [即点即播] 错误详情:', {
         message: error.message,
         status: error.status,
-        filepath: filepath,
+        originalPath: filepath,
+        normalizedPath: normalizedPath,
+        sourceType: sourceType,
       })
       
       // 返回更详细的错误信息
@@ -123,12 +154,17 @@ export async function GET(request: NextRequest) {
         : `获取文件信息失败: ${error.message}`
       
       return NextResponse.json(
-        { error: errorMessage, filepath, status: statusCode },
+        { error: errorMessage, filepath, normalizedPath, sourceType, status: statusCode },
         { status: statusCode }
       )
     }
 
     console.log(`📊 [即点即播] 文件大小: ${formatFileSize(fileSize)}`)
+
+    // 注意：OpenList 的 CDN 直链无法在浏览器中使用，因为：
+    // 1. CORS 限制 - CDN 不返回 Access-Control-Allow-Origin 头
+    // 2. Referer 检查 - CDN 有防盗链保护
+    // 因此 OpenList 和 CloudDrive2 都使用 WebDAV 流式传输
 
     // 检查是否为 Range 请求
     const rangeHeader = request.headers.get('range')
@@ -177,7 +213,7 @@ export async function GET(request: NextRequest) {
         
         // 创建范围流 - 直接让WebDAV客户端处理Range请求
         // ⭐ 关键：传入 signal 以便能够取消底层的 fetch 请求
-        const sourceStream = client.createReadStream(filepath, {
+        const sourceStream = client.createReadStream(normalizedPath, {
           range: { start, end },
           signal: abortController.signal
         })
@@ -252,7 +288,7 @@ export async function GET(request: NextRequest) {
     
     try {
       // ⭐ 关键：传入 signal 以便能够取消底层的 fetch 请求
-      const sourceStream = client.createReadStream(filepath, {
+      const sourceStream = client.createReadStream(normalizedPath, {
         signal: abortController.signal
       })
       

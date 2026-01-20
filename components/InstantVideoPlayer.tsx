@@ -178,9 +178,10 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
       })
       setPlayPromise(null)
     }
-  }, [src])
+  }, [src, playPromise])
 
   // 模仿主页面的自动播放逻辑：先静音播放，成功后取消静音
+  // ⭐ 修复：移除 load() 调用，避免双重请求
   useEffect(() => {
     if (!src || !videoRef.current || !(autoPlay || playIntentRef.current)) return
     
@@ -192,59 +193,38 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     video.muted = true
     setIsMutedForAutoplay(true)
     
-    // 使用 load() 方法重新加载视频
-    video.load()
+    // ⭐ 移除 video.load() 调用，因为 React 更新 src 属性时浏览器会自动加载
+    // 这样可以避免双重网络请求
     
-    console.log('🎬 [即点即播] 调用 load() 后立即尝试播放')
+    console.log('🎬 [即点即播] 等待视频加载完成后尝试播放')
     
-    // 立即尝试播放
-    const attemptPlayImmediately = () => {
-      video.play().then(() => {
-        console.log('✅ [即点即播] 播放成功')
-        // 播放成功后延迟取消静音
-        setTimeout(() => {
-          if (video.muted && !video.paused) {
-            video.muted = false
-            setIsMutedForAutoplay(false)
-            console.log('🔊 [即点即播] 已取消静音')
-          }
-        }, 500)
-      }).catch(error => {
-        console.log('⚠️ [即点即播] 立即播放失败，等待事件:', error)
-      })
-    }
-    
-    // 立即尝试
-    attemptPlayImmediately()
-    
-    // 同时设置多个事件监听作为备用
+    // 设置事件监听，等待视频准备好后再播放
     const handleAutoPlay = () => {
       if (video.paused && (autoPlay || playIntentRef.current)) {
-        console.log('🎬 [即点即播] 事件触发，再次尝试播放')
+        console.log('🎬 [即点即播] 视频准备就绪，尝试播放')
         video.muted = true
         setIsMutedForAutoplay(true)
         video.play().then(() => {
+          console.log('✅ [即点即播] 播放成功')
           // 播放成功后延迟取消静音
           setTimeout(() => {
             if (video.muted && !video.paused) {
               video.muted = false
               setIsMutedForAutoplay(false)
-              console.log('🔊 [即点即播] 事件播放后已取消静音')
+              console.log('🔊 [即点即播] 已取消静音')
             }
           }, 500)
         }).catch(err => {
-          console.error('❌ [即点即播] 事件播放失败:', err)
+          console.error('❌ [即点即播] 播放失败:', err)
         })
       }
     }
     
-    // 添加多个事件监听
+    // 添加事件监听（优先使用 loadeddata，它比 canplay 更早触发）
     video.addEventListener('loadeddata', handleAutoPlay, { once: true })
-    video.addEventListener('canplay', handleAutoPlay, { once: true })
     
     return () => {
       video.removeEventListener('loadeddata', handleAutoPlay)
-      video.removeEventListener('canplay', handleAutoPlay)
     }
   }, [src, autoPlay])
 
@@ -978,7 +958,9 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
         </Box>
       )}
       {/* 视频元素 */}
+      {/* ⭐ 修复：使用 key 属性强制 React 在 src 变化时重新创建元素，避免双重请求 */}
       <video
+        key={src} // 添加 key，确保 src 变化时完全重新创建元素
         ref={videoRef}
         src={src}
         controls={false} // 使用自定义控件

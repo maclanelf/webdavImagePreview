@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { url, username, password, mediaPaths, scanSettings, isDefault } = body
+    const { url, username, password, mediaPaths, scanSettings, isDefault, sourceType, directLinkUrl, enableDirectLink } = body
 
     if (!url || !username || !password) {
       return NextResponse.json(
@@ -35,19 +35,33 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const result = webdavConfigs.save({
-      url,
-      username,
-      password,
-      mediaPaths,
-      scanSettings: scanSettings || { concurrency: 10, preloadCount: 10 },
-      isDefault
-    })
+    try {
+      const result = webdavConfigs.save({
+        url,
+        username,
+        password,
+        mediaPaths,
+        scanSettings: scanSettings || { concurrency: 10, preloadCount: 10 },
+        isDefault,
+        sourceType: sourceType || 'clouddrive2',
+        directLinkUrl,
+        enableDirectLink
+      })
 
-    return NextResponse.json({
-      id: result.lastInsertRowid,
-      message: 'WebDAV 配置保存成功'
-    })
+      return NextResponse.json({
+        id: result.lastInsertRowid,
+        message: 'WebDAV 配置保存成功'
+      })
+    } catch (saveError: any) {
+      // 检查是否是重复配置的错误
+      if (saveError.message && saveError.message.includes('该配置已存在')) {
+        return NextResponse.json(
+          { error: saveError.message, isDuplicate: true },
+          { status: 409 } // 409 Conflict
+        )
+      }
+      throw saveError
+    }
   } catch (error: any) {
     console.error('保存 WebDAV 配置失败:', error)
     return NextResponse.json(

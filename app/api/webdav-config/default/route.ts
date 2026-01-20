@@ -12,13 +12,16 @@ export async function GET() {
       )
     }
     
-    // 返回格式化的配置，不包含 id 等数据库字段
+    // 返回格式化的配置，包含所有必要字段
     return NextResponse.json({
       url: config.url,
       username: config.username,
       password: config.password,
       mediaPaths: config.mediaPaths,
-      scanSettings: config.scanSettings
+      scanSettings: config.scanSettings,
+      sourceType: config.sourceType || 'clouddrive2',
+      directLinkUrl: config.directLinkUrl || '',
+      enableDirectLink: config.enableDirectLink || false
     })
   } catch (error: any) {
     console.error('获取默认配置失败:', error)

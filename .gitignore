@@ -41,3 +41,7 @@ next-env.d.ts
 
 # 日志文件
 logs/
+
+# Docker 数据目录（映射到宿主机的数据和日志）
+docker-data/
+/vol1/1000/webdavimagepreview/
