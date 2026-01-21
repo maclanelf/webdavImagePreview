@@ -1260,9 +1260,13 @@ export default function HomePage() {
         }, 100)
       }
       
+      // 确保评分类型为媒体（随机模式始终是单个媒体文件）
+      setRatingType('media')
+      
       // 加载当前文件的评分（未看过模式下跳过，因为未看过的文件肯定没有评分）
       if (viewedFilter !== 'unviewed') {
-        await loadCurrentRating(fileToLoad)
+        // 强制使用 media 类型加载评分，避免依赖状态更新
+        await loadCurrentRating(fileToLoad, 'media')
       } else {
         // 未看过模式下清空评分状态
         setCurrentRating(null)
@@ -1424,6 +1428,21 @@ export default function HomePage() {
           }, 100)
         }
         
+        // 确保评分类型为媒体（大视频模式始终是单个媒体文件）
+        setRatingType('media')
+        
+        // 加载当前文件的评分（未看过模式下跳过，因为未看过的文件肯定没有评分）
+        if (viewedFilter !== 'unviewed') {
+          // 强制使用 media 类型加载评分，避免依赖状态更新
+          await loadCurrentRating(fileToLoad, 'media')
+        } else {
+          // 未看过模式下清空评分状态
+          setCurrentRating(null)
+        }
+        
+        // 启动自动标记已看过的定时器
+        startAutoMarkTimer(fileToLoad)
+        
         return
       }
       
@@ -1494,9 +1513,13 @@ export default function HomePage() {
         }, 100)
       }
       
+      // 确保评分类型为媒体（大视频模式始终是单个媒体文件）
+      setRatingType('media')
+      
       // 加载当前文件的评分（未看过模式下跳过，因为未看过的文件肯定没有评分）
       if (viewedFilter !== 'unviewed') {
-        await loadCurrentRating(fileToLoad)
+        // 强制使用 media 类型加载评分，避免依赖状态更新
+        await loadCurrentRating(fileToLoad, 'media')
       } else {
         // 未看过模式下清空评分状态
         setCurrentRating(null)
@@ -1900,39 +1923,61 @@ export default function HomePage() {
     }
   }, [])
 
-  const loadCurrentRating = useCallback(async (file?: MediaFile) => {
+  const loadCurrentRating = useCallback(async (file?: MediaFile, forceType?: 'media' | 'group') => {
     const targetFile = file || currentFile
+    const effectiveRatingType = forceType || ratingType
+    
+    console.log(`[评分加载] 开始加载评分, 文件: ${targetFile?.basename}, 类型: ${effectiveRatingType}`)
+    
     if (!targetFile && currentGroup.length === 0) return
 
     try {
-      if (ratingType === 'media' && targetFile) {
+      if (effectiveRatingType === 'media' && targetFile) {
         const response = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(targetFile.filename)}`)
+        console.log(`[评分加载] API 响应状态: ${response.status}`)
+        
         if (response.ok) {
           // 安全解析 JSON，处理空响应
           const text = await response.text()
           if (text) {
             const data = JSON.parse(text)
+            console.log(`[评分加载] 成功加载评分:`, data.rating)
             setCurrentRating(data.rating || null)
           } else {
+            console.log(`[评分加载] 响应为空，清空评分`)
             setCurrentRating(null)
           }
+        } else {
+          // 如果响应不成功（如 404 表示没有评分），清空评分状态
+          console.log(`[评分加载] 响应失败 (${response.status})，清空评分`)
+          setCurrentRating(null)
         }
-      } else if (ratingType === 'group' && currentGroup.length > 0) {
+      } else if (effectiveRatingType === 'group' && currentGroup.length > 0) {
         const groupPath = getGroupPath(currentGroup[0].filename)
         const response = await fetch(`/api/ratings/group?groupPath=${encodeURIComponent(groupPath)}`)
+        console.log(`[评分加载] 图组 API 响应状态: ${response.status}`)
+        
         if (response.ok) {
           // 安全解析 JSON，处理空响应
           const text = await response.text()
           if (text) {
             const data = JSON.parse(text)
+            console.log(`[评分加载] 成功加载图组评分:`, data.rating)
             setCurrentRating(data.rating || null)
           } else {
+            console.log(`[评分加载] 图组响应为空，清空评分`)
             setCurrentRating(null)
           }
+        } else {
+          // 如果响应不成功（如 404 表示没有评分），清空评分状态
+          console.log(`[评分加载] 图组响应失败 (${response.status})，清空评分`)
+          setCurrentRating(null)
         }
       }
     } catch (error) {
-      console.error('加载评分失败:', error)
+      console.error('[评分加载] 加载评分失败:', error)
+      // 发生错误时也清空评分状态，避免显示旧数据
+      setCurrentRating(null)
     }
   }, [currentFile, ratingType, currentGroup])
 
