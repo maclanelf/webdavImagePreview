@@ -808,8 +808,36 @@ export default function HomePage() {
       const isVideoFile = isVideo(file.filename)
       if (isVideoFile) {
         setMediaType('small-video')
+        
+        // 为小视频也设置 originalStreamUrl，用于外部播放器
+        if (config && config.enableDirectLink && config.directLinkUrl) {
+          // 使用直链模式
+          let processedPath = file.filename
+          processedPath = processedPath
+            .split('/')
+            .map(segment => segment.replace(/／/g, '|'))
+            .join('/')
+          const directLinkUrl = `/d${processedPath}`
+          const fullDirectLinkUrl = new URL(directLinkUrl, window.location.origin).href
+          setOriginalStreamUrl(fullDirectLinkUrl)
+        } else if (config) {
+          // 使用 WebDAV 流式 URL
+          const streamParams = new URLSearchParams({
+            url: config.url,
+            username: config.username,
+            password: config.password,
+            filepath: file.filename,
+            sourceType: config.sourceType || 'clouddrive2',
+          })
+          const streamUrl = `/api/webdav/instant-stream?${streamParams.toString().replace(/\+/g, '%20')}`
+          const fullStreamUrl = new URL(streamUrl, window.location.origin).href
+          setOriginalStreamUrl(fullStreamUrl)
+        } else {
+          setOriginalStreamUrl(null)
+        }
       } else {
         setMediaType('image')
+        setOriginalStreamUrl(null) // 图片不需要外部播放
       }
       
       // 如果需要自动进入视频全屏，延迟执行以确保视频元素已渲染
@@ -1193,8 +1221,36 @@ export default function HomePage() {
       const isVideoFile = isVideo(fileToLoad.filename)
       if (isVideoFile) {
         setMediaType('small-video')
+        
+        // 为小视频也设置 originalStreamUrl，用于外部播放器
+        if (config && config.enableDirectLink && config.directLinkUrl) {
+          // 使用直链模式
+          let processedPath = fileToLoad.filename
+          processedPath = processedPath
+            .split('/')
+            .map(segment => segment.replace(/／/g, '|'))
+            .join('/')
+          const directLinkUrl = `/d${processedPath}`
+          const fullDirectLinkUrl = new URL(directLinkUrl, window.location.origin).href
+          setOriginalStreamUrl(fullDirectLinkUrl)
+        } else if (config) {
+          // 使用 WebDAV 流式 URL
+          const streamParams = new URLSearchParams({
+            url: config.url,
+            username: config.username,
+            password: config.password,
+            filepath: fileToLoad.filename,
+            sourceType: config.sourceType || 'clouddrive2',
+          })
+          const streamUrl = `/api/webdav/instant-stream?${streamParams.toString().replace(/\+/g, '%20')}`
+          const fullStreamUrl = new URL(streamUrl, window.location.origin).href
+          setOriginalStreamUrl(fullStreamUrl)
+        } else {
+          setOriginalStreamUrl(null)
+        }
       } else {
         setMediaType('image')
+        setOriginalStreamUrl(null) // 图片不需要外部播放
       }
       
       // 如果需要自动进入视频全屏，延迟执行以确保视频元素已渲染
@@ -1355,6 +1411,9 @@ export default function HomePage() {
         
         // 设置直链 URL
         setMediaUrl(directLinkUrl)
+        // 设置外部播放器 URL（通过服务器代理）
+        const fullDirectLinkUrl = new URL(directLinkUrl, window.location.origin).href
+        setOriginalStreamUrl(fullDirectLinkUrl)
         setMediaType('stream-video')
         setLoading(false)
         
