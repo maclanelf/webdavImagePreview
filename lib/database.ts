@@ -1844,25 +1844,35 @@ export const scanFiles = {
       }
       
       // 缓存 COUNT 和 ROWID 范围结果，避免重复查询
-      const statsCache = new Map<string, { count: number, minId: number, maxId: number }>()
+      const statsCache = new Map<string, { count: number, minId: number, maxId: number, allIds?: number[] }>()
       
-      // 使用 ROWID 范围随机获取单个文件（比 OFFSET 快得多）
-      const getRandomFile = (whereClause: string, params: any[], excludeSet: Set<string>): any => {
-        const cacheKey = whereClause + JSON.stringify(params)
-        let stats = statsCache.get(cacheKey)
+      // 小数据集：直接获取所有 ID 并随机选择（< 1000 条记录）
+      const getRandomFileSmall = (whereClause: string, params: any[], excludeSet: Set<string>, allIds: number[]): any => {
+        if (allIds.length === 0) return null
         
-        if (!stats) {
-          // 获取符合条件的记录的 ID 范围和数量
-          const result = db.prepare(`SELECT COUNT(*) as count, MIN(id) as minId, MAX(id) as maxId FROM scan_files WHERE ${whereClause}`).get(...params) as any
-          stats = { count: result.count || 0, minId: result.minId || 0, maxId: result.maxId || 0 }
-          statsCache.set(cacheKey, stats)
-        }
+        // 过滤掉已排除的 ID
+        const availableIds = allIds.filter(id => {
+          const file = db.prepare(`SELECT filename FROM scan_files WHERE ${whereClause} AND id = ?`).get(...params, id) as any
+          return file && !excludeSet.has(file.filename)
+        })
         
+        if (availableIds.length === 0) return null
+        
+        // 随机选择一个可用 ID
+        const randomIndex = Math.floor(Math.random() * availableIds.length)
+        const selectedId = availableIds[randomIndex]
+        
+        // 获取完整记录
+        const file = db.prepare(`SELECT * FROM scan_files WHERE ${whereClause} AND id = ?`).get(...params, selectedId) as any
+        return file
+      }
+      
+      // 大数据集：使用 ROWID 范围随机获取（>= 1000 条记录）
+      const getRandomFileLarge = (whereClause: string, params: any[], excludeSet: Set<string>, stats: { count: number, minId: number, maxId: number }): any => {
         if (stats.count === 0) return null
         
         // 根据排除列表大小动态调整尝试次数
-        // 如果排除的文件很多，需要更多尝试次数
-        const maxAttempts = Math.min(100, stats.count)
+        const maxAttempts = Math.min(50, stats.count)
         
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
           // 在 ID 范围内随机选择一个 ID
@@ -1884,8 +1894,40 @@ export const scanFiles = {
           }
         }
         
-        console.log(`[getRandomFile] 尝试了 ${maxAttempts} 次仍未找到可用文件，排除数量: ${excludeSet.size}`)
+        console.log(`[getRandomFileLarge] 尝试了 ${maxAttempts} 次仍未找到可用文件，排除数量: ${excludeSet.size}`)
         return null
+      }
+      
+      // 统一的随机文件获取接口
+      const getRandomFile = (whereClause: string, params: any[], excludeSet: Set<string>): any => {
+        const cacheKey = whereClause + JSON.stringify(params)
+        let stats = statsCache.get(cacheKey)
+        
+        if (!stats) {
+          // 获取符合条件的记录的 ID 范围和数量
+          const result = db.prepare(`SELECT COUNT(*) as count, MIN(id) as minId, MAX(id) as maxId FROM scan_files WHERE ${whereClause}`).get(...params) as any
+          stats = { count: result.count || 0, minId: result.minId || 0, maxId: result.maxId || 0 }
+          
+          // 小数据集：预加载所有 ID
+          if (stats.count > 0 && stats.count < 1000) {
+            const allIdsResult = db.prepare(`SELECT id FROM scan_files WHERE ${whereClause} ORDER BY id`).all(...params) as any[]
+            stats.allIds = allIdsResult.map(row => row.id)
+            console.log(`📊 [getRandomFile] 小数据集模式: 预加载 ${stats.allIds.length} 个 ID`)
+          } else {
+            console.log(`📊 [getRandomFile] 大数据集模式: count=${stats.count}, ID范围=${stats.minId}-${stats.maxId}`)
+          }
+          
+          statsCache.set(cacheKey, stats)
+        }
+        
+        if (stats.count === 0) return null
+        
+        // 根据数据量选择策略
+        if (stats.count < 1000 && stats.allIds) {
+          return getRandomFileSmall(whereClause, params, excludeSet, stats.allIds)
+        } else {
+          return getRandomFileLarge(whereClause, params, excludeSet, stats)
+        }
       }
       
       // 将 excludeFilenames 转为 Set 以提高查找效率
