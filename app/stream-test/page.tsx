@@ -10,7 +10,6 @@ import {
   Card,
   CardContent,
   Alert,
-  Paper,
   IconButton,
   Chip,
   Stack,
@@ -29,8 +28,6 @@ import {
   PlayArrow as PlayArrowIcon,
   Pause as PauseIcon,
   ArrowBack as ArrowBackIcon,
-  ContentCopy as CopyIcon,
-  Refresh as RefreshIcon,
   BugReport as BugIcon,
   Transform as TransformIcon,
 } from '@mui/icons-material'
@@ -39,8 +36,8 @@ import { useRouter } from 'next/navigation'
 // 从日志中提取的测试URL（原始流）
 const DEFAULT_TEST_URL = '/api/webdav/instant-stream?url=http%3A%2F%2F192.168.133.131%3A19798%2Fdav&username=1341511873%40qq.com&password=ELF101711149&filepath=%2F115open%2F115%2F700%2B%E7%BD%91%E7%BA%A2%E5%A4%A7%E5%90%88%E9%9B%86%EF%BD%9E%EF%BD%9E%E5%BE%AE%E5%AF%86%E5%9C%88%EF%BC%8F%E8%A7%85%E5%9C%88%EF%BC%8F%E9%93%81%E7%B2%89%E7%A9%BA%E9%97%B4%E7%AD%89%E6%9C%BA%E6%9E%84%2F401-500%2F490%2F001%2F001%2F001%20%E9%87%91%E7%86%99%E5%AA%9B%20-%20%E4%BC%9A%E5%91%98%E4%B8%93%E5%B1%9E%20%E5%A4%A7%E9%95%BF%E8%85%BF%E7%B4%A7%E8%BA%AB%E8%A3%A4%20%5B15V%20757.6%20MB%5D%2F1%20%2815%29.avi'
 
-// 转码流URL（将 instant-stream 替换为 transcode-stream）
-const DEFAULT_TRANSCODE_URL = '/api/webdav/transcode-stream?url=http%3A%2F%2F192.168.133.131%3A19798%2Fdav&username=1341511873%40qq.com&password=ELF101711149&filepath=%2F115open%2F115%2F700%2B%E7%BD%91%E7%BA%A2%E5%A4%A7%E5%90%88%E9%9B%86%EF%BD%9E%EF%BD%9E%E5%BE%AE%E5%AF%86%E5%9C%88%EF%BC%8F%E8%A7%85%E5%9C%88%EF%BC%8F%E9%93%81%E7%B2%89%E7%A9%BA%E9%97%B4%E7%AD%89%E6%9C%BA%E6%9E%84%2F401-500%2F490%2F001%2F001%2F001%20%E9%87%91%E7%86%99%E5%AA%9B%20-%20%E4%BC%9A%E5%91%98%E4%B8%93%E5%B1%9E%20%E5%A4%A7%E9%95%BF%E8%85%BF%E7%B4%A7%E8%BA%AB%E8%A3%A4%20%5B15V%20757.6%20MB%5D%2F1%20%2815%29.avi&format=mp4&quality=medium'
+// OpenList 直链测试 URL 示例
+const DEFAULT_DIRECT_LINK_URL = '/d/115open/115/test/video.mp4'
 
 interface VideoState {
   networkState: number
@@ -80,6 +77,7 @@ export default function StreamTestPage() {
   const router = useRouter()
   const videoRef = useRef<HTMLVideoElement>(null)
   const [testUrl, setTestUrl] = useState(DEFAULT_TEST_URL)
+  const [testMode, setTestMode] = useState<'webdav' | 'direct'>('webdav') // 测试模式：webdav 或 direct
   const [useTranscode, setUseTranscode] = useState(false)
   const [transcodeFormat, setTranscodeFormat] = useState<'mp4' | 'webm'>('mp4')
   const [transcodeQuality, setTranscodeQuality] = useState<'low' | 'medium' | 'high'>('medium')
@@ -107,8 +105,14 @@ export default function StreamTestPage() {
       })
   }, [])
 
-  // 获取实际播放URL（根据是否启用转码）
+  // 获取实际播放URL（根据测试模式和是否启用转码）
   const getPlayUrl = () => {
+    // 直链模式：直接返回 /d/ URL，不支持转码
+    if (testMode === 'direct') {
+      return testUrl
+    }
+    
+    // WebDAV 模式
     if (!useTranscode) return testUrl
     
     // 将 instant-stream 替换为 transcode-stream，并添加转码参数
@@ -249,8 +253,14 @@ export default function StreamTestPage() {
     const playUrl = getPlayUrl()
     
     addLog('🎬 开始播放测试...')
-    addLog(`📹 模式: ${useTranscode ? `转码流 (${transcodeFormat}/${transcodeQuality})` : '原始流'}`)
-    addLog(`📹 视频源: ${playUrl.substring(0, 100)}...`)
+    
+    if (testMode === 'direct') {
+      addLog(`📹 模式: OpenList 直链播放`)
+      addLog(`📹 视频源: ${playUrl}`)
+    } else {
+      addLog(`📹 模式: WebDAV ${useTranscode ? `转码流 (${transcodeFormat}/${transcodeQuality})` : '原始流'}`)
+      addLog(`📹 视频源: ${playUrl.substring(0, 100)}...`)
+    }
     
     video.src = playUrl
     video.load()
@@ -323,9 +333,26 @@ export default function StreamTestPage() {
 
   // 解析URL参数
   const parseUrlParams = () => {
+    // 直链模式：解析 /d/ 路径
+    if (testMode === 'direct') {
+      if (testUrl.startsWith('/d/')) {
+        const path = testUrl.substring(2) // 去掉 /d
+        const segments = path.split('/')
+        return {
+          type: 'direct',
+          virtualPath: segments[0] || '',
+          filepath: path,
+          filename: segments[segments.length - 1] || '',
+        }
+      }
+      return null
+    }
+    
+    // WebDAV 模式：解析查询参数
     try {
       const url = new URL(testUrl, window.location.origin)
       return {
+        type: 'webdav',
         webdavUrl: url.searchParams.get('url'),
         username: url.searchParams.get('username'),
         password: url.searchParams.get('password') ? '***' : null,
@@ -369,13 +396,57 @@ export default function StreamTestPage() {
               <Typography variant="subtitle1" sx={{ color: '#e94560', mb: 2, fontWeight: 'bold' }}>
                 🔗 测试 URL
               </Typography>
+              
+              {/* 测试模式切换 */}
+              <Box sx={{ mb: 2 }}>
+                <ToggleButtonGroup
+                  value={testMode}
+                  exclusive
+                  onChange={(_, v) => {
+                    if (v) {
+                      setTestMode(v)
+                      // 切换模式时更新默认 URL
+                      if (v === 'direct') {
+                        setTestUrl(DEFAULT_DIRECT_LINK_URL)
+                      } else {
+                        setTestUrl(DEFAULT_TEST_URL)
+                      }
+                    }
+                  }}
+                  fullWidth
+                >
+                  <ToggleButton 
+                    value="webdav" 
+                    sx={{ 
+                      color: '#fff', 
+                      '&.Mui-selected': { backgroundColor: '#e94560', color: '#fff' } 
+                    }}
+                  >
+                    WebDAV 流式传输
+                  </ToggleButton>
+                  <ToggleButton 
+                    value="direct" 
+                    sx={{ 
+                      color: '#fff', 
+                      '&.Mui-selected': { backgroundColor: '#4ade80', color: '#000' } 
+                    }}
+                  >
+                    OpenList 直链播放
+                  </ToggleButton>
+                </ToggleButtonGroup>
+              </Box>
+              
               <TextField
                 fullWidth
                 multiline
-                rows={3}
+                rows={testMode === 'direct' ? 2 : 3}
                 value={testUrl}
                 onChange={(e) => setTestUrl(e.target.value)}
-                placeholder="输入要测试的视频流 URL"
+                placeholder={
+                  testMode === 'direct' 
+                    ? '输入 OpenList 直链 URL，例如: /d/115open/115/path/to/video.mp4' 
+                    : '输入 WebDAV 视频流 URL'
+                }
                 sx={{
                   '& .MuiOutlinedInput-root': {
                     color: '#fff',
@@ -390,36 +461,47 @@ export default function StreamTestPage() {
                 <Box sx={{ mt: 2 }}>
                   <Typography variant="caption" sx={{ color: '#888' }}>解析结果:</Typography>
                   <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mt: 1 }}>
-                    <Chip label={`WebDAV: ${urlParams.webdavUrl}`} size="small" sx={{ backgroundColor: '#0f3460', color: '#fff' }} />
-                    <Chip label={`用户: ${urlParams.username}`} size="small" sx={{ backgroundColor: '#0f3460', color: '#fff' }} />
-                    <Chip label={`文件: ${urlParams.filepath?.split('/').pop()}`} size="small" sx={{ backgroundColor: '#e94560', color: '#fff' }} />
+                    {urlParams.type === 'direct' ? (
+                      <>
+                        <Chip label="OpenList 直链" size="small" sx={{ backgroundColor: '#4ade80', color: '#000' }} />
+                        <Chip label={`虚拟路径: ${urlParams.virtualPath}`} size="small" sx={{ backgroundColor: '#0f3460', color: '#fff' }} />
+                        <Chip label={`文件: ${urlParams.filename}`} size="small" sx={{ backgroundColor: '#e94560', color: '#fff' }} />
+                      </>
+                    ) : (
+                      <>
+                        <Chip label={`WebDAV: ${urlParams.webdavUrl}`} size="small" sx={{ backgroundColor: '#0f3460', color: '#fff' }} />
+                        <Chip label={`用户: ${urlParams.username}`} size="small" sx={{ backgroundColor: '#0f3460', color: '#fff' }} />
+                        <Chip label={`文件: ${urlParams.filepath?.split('/').pop()}`} size="small" sx={{ backgroundColor: '#e94560', color: '#fff' }} />
+                      </>
+                    )}
                   </Stack>
                 </Box>
               )}
               
-              {/* 转码选项 */}
-              <Box sx={{ mt: 3, p: 2, backgroundColor: '#0f3460', borderRadius: 1 }}>
-                <Stack direction="row" alignItems="center" spacing={2} flexWrap="wrap">
-                  <FormControlLabel
-                    control={
-                      <Switch
-                        checked={useTranscode}
-                        onChange={(e) => setUseTranscode(e.target.checked)}
-                        sx={{
-                          '& .MuiSwitch-switchBase.Mui-checked': { color: '#e94560' },
-                          '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#e94560' },
-                        }}
-                      />
-                    }
-                    label={
-                      <Stack direction="row" alignItems="center" spacing={1}>
-                        <TransformIcon sx={{ color: useTranscode ? '#e94560' : '#888', fontSize: 20 }} />
-                        <Typography sx={{ color: useTranscode ? '#e94560' : '#888' }}>
-                          启用服务端转码
-                        </Typography>
-                      </Stack>
-                    }
-                  />
+              {/* 转码选项 - 仅在 WebDAV 模式下显示 */}
+              {testMode === 'webdav' && (
+                <Box sx={{ mt: 3, p: 2, backgroundColor: '#0f3460', borderRadius: 1 }}>
+                  <Stack direction="row" alignItems="center" spacing={2} flexWrap="wrap">
+                    <FormControlLabel
+                      control={
+                        <Switch
+                          checked={useTranscode}
+                          onChange={(e) => setUseTranscode(e.target.checked)}
+                          sx={{
+                            '& .MuiSwitch-switchBase.Mui-checked': { color: '#e94560' },
+                            '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#e94560' },
+                          }}
+                        />
+                      }
+                      label={
+                        <Stack direction="row" alignItems="center" spacing={1}>
+                          <TransformIcon sx={{ color: useTranscode ? '#e94560' : '#888', fontSize: 20 }} />
+                          <Typography sx={{ color: useTranscode ? '#e94560' : '#888' }}>
+                            启用服务端转码
+                          </Typography>
+                        </Stack>
+                      }
+                    />
                   
                   {useTranscode && (
                     <>
@@ -499,7 +581,8 @@ export default function StreamTestPage() {
                     )}
                   </Box>
                 )}
-              </Box>
+                </Box>
+              )}
               
               <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
                 <Button variant="contained" onClick={testApiHead} disabled={loading}
@@ -549,6 +632,7 @@ export default function StreamTestPage() {
                     <video
                       ref={videoRef}
                       controls
+                      preload="auto"
                       style={{ width: '100%', height: '100%' }}
                       playsInline
                     />
@@ -672,28 +756,50 @@ export default function StreamTestPage() {
               💡 使用说明
             </Typography>
             <Typography variant="body2" sx={{ mb: 1 }}>
-              <strong>原始流模式：</strong>直接从 WebDAV 获取视频流，仅支持浏览器原生格式（MP4、WebM）
+              <strong>WebDAV 流式传输：</strong>通过 WebDAV 协议获取视频流，支持原始流和转码流两种模式
             </Typography>
             <Typography variant="body2" sx={{ mb: 1 }}>
-              <strong>转码流模式：</strong>服务端使用 FFmpeg 实时转码，支持 AVI、MKV、FLV 等所有格式
+              <strong>OpenList 直链播放：</strong>通过 Nginx 反向代理直接访问 OpenList 的 /d/ 直链，性能更好，无需转码
+            </Typography>
+            <Typography variant="body2" sx={{ color: '#4ade80' }}>
+              ✅ 直链播放需要配置 Nginx 反向代理，将 /d/ 路径代理到 OpenList 服务器
             </Typography>
             <Typography variant="body2" sx={{ color: '#fbbf24' }}>
               ⚠️ 转码模式需要服务器安装 FFmpeg，首次播放可能有几秒延迟
             </Typography>
           </Alert>
 
-          <Alert severity="warning" sx={{ backgroundColor: '#2d2d44', color: '#fff' }}>
-            <Typography variant="subtitle2" sx={{ fontWeight: 'bold', mb: 1 }}>
-              ⚠️ 关于 AVI 格式播放问题
-            </Typography>
-            <Typography variant="body2">
-              日志中的错误 <code>MEDIA_ERR_SRC_NOT_SUPPORTED (4)</code> 和 <code>FFmpegDemuxer: open context failed</code> 
-              表明浏览器原生 video 标签不支持 AVI 格式。
-            </Typography>
-            <Typography variant="body2" sx={{ mt: 1 }}>
-              <strong>解决方案：</strong>启用上方的「服务端转码」开关，将 AVI 实时转换为 MP4 播放
-            </Typography>
-          </Alert>
+          {testMode === 'direct' ? (
+            <Alert severity="success" sx={{ backgroundColor: '#2d2d44', color: '#fff' }}>
+              <Typography variant="subtitle2" sx={{ fontWeight: 'bold', mb: 1 }}>
+                🎯 OpenList 直链播放测试
+              </Typography>
+              <Typography variant="body2" sx={{ mb: 1 }}>
+                直链播放通过 Nginx 反向代理直接访问 OpenList 的 CDN 直链，具有以下优势：
+              </Typography>
+              <Typography variant="body2" component="div">
+                • 性能更好：直接从 CDN 获取，无需经过 WebDAV 协议<br />
+                • 无需转码：OpenList 直链通常为 MP4 格式，浏览器原生支持<br />
+                • 降低服务器负载：流量直接走 CDN，不占用服务器带宽
+              </Typography>
+              <Typography variant="body2" sx={{ mt: 1, color: '#fbbf24' }}>
+                ⚠️ 需要在 nginx.conf 中配置 <code>location /d/</code> 反向代理到 OpenList 服务器
+              </Typography>
+            </Alert>
+          ) : (
+            <Alert severity="warning" sx={{ backgroundColor: '#2d2d44', color: '#fff' }}>
+              <Typography variant="subtitle2" sx={{ fontWeight: 'bold', mb: 1 }}>
+                ⚠️ 关于 AVI 格式播放问题
+              </Typography>
+              <Typography variant="body2">
+                日志中的错误 <code>MEDIA_ERR_SRC_NOT_SUPPORTED (4)</code> 和 <code>FFmpegDemuxer: open context failed</code> 
+                表明浏览器原生 video 标签不支持 AVI 格式。
+              </Typography>
+              <Typography variant="body2" sx={{ mt: 1 }}>
+                <strong>解决方案：</strong>启用上方的「服务端转码」开关，将 AVI 实时转换为 MP4 播放
+              </Typography>
+            </Alert>
+          )}
         </Stack>
       </Container>
     </Box>
