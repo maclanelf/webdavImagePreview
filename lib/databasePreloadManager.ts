@@ -117,19 +117,26 @@ class DatabasePreloadManager {
 
   // 获取预加载许可
   private async acquirePreloadSlot(): Promise<void> {
+    console.log(`[并发控制] 请求许可，当前活跃: ${this.activePreloadCount}/${this.maxConcurrentPreloads}，限制: ${this.concurrencyLimitEnabled}`)
+    
     if (!this.concurrencyLimitEnabled) {
       this.activePreloadCount++
+      console.log(`[并发控制] 无限制模式，活跃数: ${this.activePreloadCount}`)
       return
     }
     
     if (this.activePreloadCount < this.maxConcurrentPreloads) {
       this.activePreloadCount++
+      console.log(`[并发控制] ✅ 获得许可，活跃数: ${this.activePreloadCount}/${this.maxConcurrentPreloads}`)
       return
     }
+    
+    console.log(`[并发控制] ⏸️ 达到上限，加入等待队列，队列长度: ${this.pendingPreloadQueue.length + 1}`)
     
     return new Promise(resolve => {
       this.pendingPreloadQueue.push(() => {
         this.activePreloadCount++
+        console.log(`[并发控制] ✅ 从队列获得许可，活跃数: ${this.activePreloadCount}/${this.maxConcurrentPreloads}`)
         resolve()
       })
     })
@@ -138,12 +145,14 @@ class DatabasePreloadManager {
   // 释放预加载许可
   private releasePreloadSlot(): void {
     this.activePreloadCount--
+    console.log(`[并发控制] 🔓 释放许可，活跃数: ${this.activePreloadCount}/${this.maxConcurrentPreloads}，队列长度: ${this.pendingPreloadQueue.length}`)
     
     if (!this.concurrencyLimitEnabled) {
       return
     }
     
     if (this.pendingPreloadQueue.length > 0) {
+      console.log(`[并发控制] 🔔 唤醒等待队列中的任务`)
       const next = this.pendingPreloadQueue.shift()
       next?.()
     }
@@ -169,6 +178,7 @@ class DatabasePreloadManager {
       return
     }
     
+    // ✅ 在获取许可前检查，避免不必要的等待
     if (this.cache.has(filepath)) return
     if (this.queue.has(filepath)) return
 
@@ -182,7 +192,11 @@ class DatabasePreloadManager {
     }
     
     try {
-      if (this.cache.has(filepath)) return
+      // ✅ 获取许可后再次检查，如果已在缓存中，直接返回（会在finally中释放许可）
+      if (this.cache.has(filepath)) {
+        console.log(`[数据库模式] 文件已在缓存中，跳过: ${file.basename}`)
+        return
+      }
       
       this.queue.add(filepath)
 
@@ -241,6 +255,7 @@ class DatabasePreloadManager {
       throw error
     } finally {
       this.queue.delete(filepath)
+      // ✅ 确保总是释放许可
       this.releasePreloadSlot()
     }
   }
@@ -1402,6 +1417,9 @@ class DatabasePreloadManager {
       return
     }
     
+    // ✅ 确保并发限制已启用（智能预加载必须受限制）
+    this.setConcurrencyLimitEnabled(true)
+    
     // 更新最大缓存大小
     this.setMaxCacheSize(maxCount)
     
@@ -1471,7 +1489,7 @@ class DatabasePreloadManager {
         lastmod: data.files[0].lastmod || ''
       }
       
-      // 预加载单个文件
+      // ✅ 预加载单个文件（受并发控制，最多4个）
       await this.preloadFile(config, fileToPreload)
       console.log(`[数据库模式] 智能预加载完成: ${fileToPreload.basename}`)
       

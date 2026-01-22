@@ -203,6 +203,10 @@ export default function HomePage() {
   const initialPreloadTriggeredRef = useRef(false)
   // 追踪当前模式（使用 ref 避免闭包陷阱）
   const viewModeRef = useRef<ViewMode>(viewMode)
+  // 智能预加载防抖动定时器
+  const smartPreloadTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  // 智能预加载进行中标志
+  const smartPreloadInProgressRef = useRef(false)
   
   // 同步 viewMode 到 ref（避免闭包问题）
   useEffect(() => {
@@ -640,18 +644,36 @@ export default function HomePage() {
     }
     
     if (!preloadEnabled || !config) return
-
-    try {
-      // 从配置中获取预加载数量，默认为10
-      const preloadCount = config.scanSettings?.preloadCount || 10
-      await databasePreloadManager.smartPreload(config, [], currentFile, preloadCount, viewedFilter, preloadRandomness, mediaFilter)
-      // 预加载完成后更新缓存状态显示
-      setPreloadStatus(databasePreloadManager.getCacheStatus())
-    } catch (error) {
-      console.error('智能预加载失败:', error)
-      // 即使失败也更新显示，确保状态准确
-      setPreloadStatus(databasePreloadManager.getCacheStatus())
+    
+    // ✅ 如果已经有智能预加载在进行，跳过
+    if (smartPreloadInProgressRef.current) {
+      console.log('[智能预加载] 已有预加载在进行，跳过')
+      return
     }
+    
+    // ✅ 清除之前的定时器（防抖动）
+    if (smartPreloadTimeoutRef.current) {
+      clearTimeout(smartPreloadTimeoutRef.current)
+    }
+    
+    // ✅ 延迟执行，避免快速切换时重复触发
+    smartPreloadTimeoutRef.current = setTimeout(async () => {
+      smartPreloadInProgressRef.current = true
+      
+      try {
+        // 从配置中获取预加载数量，默认为10
+        const preloadCount = config.scanSettings?.preloadCount || 10
+        await databasePreloadManager.smartPreload(config, [], currentFile, preloadCount, viewedFilter, preloadRandomness, mediaFilter)
+        // 预加载完成后更新缓存状态显示
+        setPreloadStatus(databasePreloadManager.getCacheStatus())
+      } catch (error) {
+        console.error('智能预加载失败:', error)
+        // 即使失败也更新显示，确保状态准确
+        setPreloadStatus(databasePreloadManager.getCacheStatus())
+      } finally {
+        smartPreloadInProgressRef.current = false
+      }
+    }, 200) // 延迟200ms，避免快速切换时重复触发
   }
 
 
