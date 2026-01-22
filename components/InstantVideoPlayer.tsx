@@ -1,14 +1,16 @@
 'use client'
 
 import { useRef, useEffect, useState, forwardRef, useImperativeHandle } from 'react'
-import { Box, CircularProgress, Typography, IconButton } from '@mui/material'
+import { Box, CircularProgress, Typography, IconButton, Menu, MenuItem } from '@mui/material'
 import { 
   PlayArrow as PlayArrowIcon, 
   Pause as PauseIcon, 
   VolumeUp as VolumeUpIcon,
+  VolumeOff as VolumeOffIcon,
   Fullscreen as FullscreenIcon,
   FullscreenExit as FullscreenExitIcon,
-  Shuffle as ShuffleIcon,
+  ScreenRotation as ScreenRotationIcon,
+  Speed as SpeedIcon,
   Replay as ReplayIcon,
 } from '@mui/icons-material'
 
@@ -91,6 +93,9 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   const [videoAspectRatio, setVideoAspectRatio] = useState<number | null>(null) // 视频宽高比
   const [isFullscreen, setIsFullscreen] = useState(false) // 全屏状态
   const containerRef = useRef<HTMLDivElement>(null) // 容器元素引用
+  const [isMuted, setIsMuted] = useState(false) // 静音状态
+  const [playbackRate, setPlaybackRate] = useState(1) // 播放速度
+  const [speedMenuAnchor, setSpeedMenuAnchor] = useState<null | HTMLElement>(null) // 倍速菜单锚点
   
   // 转码降级状态
   const [isUsingTranscode, setIsUsingTranscode] = useState(false) // 是否正在使用转码流
@@ -310,7 +315,7 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     },
     getVideoElement: () => videoRef.current,
     isPaused: () => videoRef.current?.paused || true,
-    getContainerElement: () => containerRef.current
+    getContainerElement: () => containerRef.current,
   }))
 
   // 视频事件处理
@@ -771,6 +776,71 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     }
   }
 
+  // 横竖屏切换
+  const toggleOrientation = async () => {
+    try {
+      // 尝试使用 Screen Orientation API
+      if ('orientation' in screen && 'lock' in (screen.orientation as any)) {
+        const currentOrientation = screen.orientation.type
+        if (currentOrientation.includes('portrait')) {
+          // 当前竖屏，切换到横屏
+          await (screen.orientation as any).lock('landscape')
+        } else {
+          // 当前横屏，切换到竖屏
+          await (screen.orientation as any).lock('portrait')
+        }
+      } else {
+        // 如果不支持方向锁定，尝试进入全屏（移动端的替代方案）
+        if (!document.fullscreenElement) {
+          await toggleFullscreen()
+        } else {
+          await document.exitFullscreen()
+        }
+      }
+    } catch (error) {
+      console.error('屏幕方向切换失败:', error)
+      // 如果锁定失败，尝试进入/退出全屏
+      try {
+        if (!document.fullscreenElement) {
+          await toggleFullscreen()
+        } else {
+          await document.exitFullscreen()
+        }
+      } catch (e) {
+        console.error('全屏切换也失败:', e)
+      }
+    }
+  }
+
+  // 切换静音
+  const toggleMute = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (videoRef.current) {
+      videoRef.current.muted = !videoRef.current.muted
+      setIsMuted(videoRef.current.muted)
+    }
+  }
+
+  // 打开倍速菜单
+  const handleSpeedMenuOpen = (e: React.MouseEvent<HTMLElement>) => {
+    e.stopPropagation()
+    setSpeedMenuAnchor(e.currentTarget)
+  }
+
+  // 关闭倍速菜单
+  const handleSpeedMenuClose = () => {
+    setSpeedMenuAnchor(null)
+  }
+
+  // 设置播放速度
+  const handleSpeedChange = (speed: number) => {
+    if (videoRef.current) {
+      videoRef.current.playbackRate = speed
+      setPlaybackRate(speed)
+    }
+    handleSpeedMenuClose()
+  }
+
   // 监听全屏状态变化
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -990,106 +1060,190 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
         onStalled={handleStalled}
       />
       
-      {/* 加载指示器 - 优化样式 */}
+      {/* 加载指示器 - 优化样式，卡顿时也显示进度条和控制按钮 */}
       {loading && (
-        <Box
-          position="absolute"
-          top="50%"
-          left="50%"
-          sx={{
-            transform: 'translate(-50%, -50%)',
-            zIndex: 2,
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: 1.5,
-            backgroundColor: 'rgba(0, 0, 0, 0.75)',
-            backdropFilter: 'blur(8px)',
-            borderRadius: 3,
-            padding: '20px 28px',
-            minWidth: 140,
-          }}
-        >
-          {/* 圆形进度条 */}
-          <Box sx={{ position: 'relative', display: 'inline-flex' }}>
-            {/* 背景圆环 */}
-            <CircularProgress 
-              variant="determinate" 
-              value={100} 
-              size={70}
-              thickness={3}
-              sx={{ color: 'rgba(255, 255, 255, 0.15)' }} 
-            />
-            {/* 进度圆环 */}
-            <CircularProgress 
-              variant={bufferedPercent > 0 ? "determinate" : "indeterminate"}
-              value={bufferedPercent} 
-              size={70}
-              thickness={3}
-              sx={{ 
-                color: bufferedPercent > 50 ? '#4caf50' : '#2196f3',
-                position: 'absolute',
-                left: 0,
-              }} 
-            />
-            {/* 中心百分比 */}
-            <Box
-              sx={{
-                top: 0,
-                left: 0,
-                bottom: 0,
-                right: 0,
-                position: 'absolute',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <Typography
-                variant="body2"
-                component="div"
+        <>
+          {/* 中央加载指示器 */}
+          <Box
+            position="absolute"
+            top="50%"
+            left="50%"
+            sx={{
+              transform: 'translate(-50%, -50%)',
+              zIndex: 2,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: 1.5,
+              backgroundColor: 'rgba(0, 0, 0, 0.75)',
+              backdropFilter: 'blur(8px)',
+              borderRadius: 3,
+              padding: '20px 28px',
+              minWidth: 140,
+            }}
+          >
+            {/* 圆形进度条 */}
+            <Box sx={{ position: 'relative', display: 'inline-flex' }}>
+              {/* 背景圆环 */}
+              <CircularProgress 
+                variant="determinate" 
+                value={100} 
+                size={70}
+                thickness={3}
+                sx={{ color: 'rgba(255, 255, 255, 0.15)' }} 
+              />
+              {/* 进度圆环 */}
+              <CircularProgress 
+                variant={bufferedPercent > 0 ? "determinate" : "indeterminate"}
+                value={bufferedPercent} 
+                size={70}
+                thickness={3}
                 sx={{ 
-                  color: '#fff', 
-                  fontWeight: 'bold',
-                  fontSize: '1rem',
+                  color: bufferedPercent > 50 ? '#4caf50' : '#2196f3',
+                  position: 'absolute',
+                  left: 0,
+                }} 
+              />
+              {/* 中心百分比 */}
+              <Box
+                sx={{
+                  top: 0,
+                  left: 0,
+                  bottom: 0,
+                  right: 0,
+                  position: 'absolute',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
                 }}
               >
-                {bufferedPercent > 0 ? `${Math.round(bufferedPercent)}%` : '...'}
-              </Typography>
+                <Typography
+                  variant="body2"
+                  component="div"
+                  sx={{ 
+                    color: '#fff', 
+                    fontWeight: 'bold',
+                    fontSize: '1rem',
+                  }}
+                >
+                  {bufferedPercent > 0 ? `${Math.round(bufferedPercent)}%` : '...'}
+                </Typography>
+              </Box>
             </Box>
-          </Box>
-          
-          {/* 下载速度 */}
-          {downloadSpeed > 0 ? (
-            <Box sx={{ 
-              display: 'flex', 
-              alignItems: 'center', 
-              gap: 0.5,
-            }}>
+            
+            {/* 下载速度 */}
+            {downloadSpeed > 0 ? (
+              <Box sx={{ 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: 0.5,
+              }}>
+                <Typography 
+                  sx={{ 
+                    color: downloadSpeed > 2 ? '#4caf50' : downloadSpeed > 0.5 ? '#2196f3' : '#ffa726',
+                    fontSize: '0.9rem',
+                    fontWeight: 'medium',
+                    fontFamily: 'monospace',
+                  }}
+                >
+                  {downloadSpeed >= 1 
+                    ? `${downloadSpeed.toFixed(1)} MB/s` 
+                    : `${(downloadSpeed * 1024).toFixed(0)} KB/s`}
+                </Typography>
+              </Box>
+            ) : (
               <Typography 
                 sx={{ 
-                  color: downloadSpeed > 2 ? '#4caf50' : downloadSpeed > 0.5 ? '#2196f3' : '#ffa726',
-                  fontSize: '0.9rem',
-                  fontWeight: 'medium',
-                  fontFamily: 'monospace',
+                  color: 'rgba(255, 255, 255, 0.7)',
+                  fontSize: '0.85rem',
                 }}
               >
-                {downloadSpeed >= 1 
-                  ? `${downloadSpeed.toFixed(1)} MB/s` 
-                  : `${(downloadSpeed * 1024).toFixed(0)} KB/s`}
+                正在连接...
               </Typography>
-            </Box>
-          ) : (
-            <Typography 
+            )}
+          </Box>
+          
+          {/* 卡顿时也显示底部控制栏 */}
+          <Box
+            position="absolute"
+            bottom={0}
+            left={0}
+            right={0}
+            sx={{
+              background: 'linear-gradient(transparent, rgba(0, 0, 0, 0.8))',
+              p: 1,
+              pb: 2,
+              zIndex: 2,
+            }}
+          >
+            {/* 进度条 */}
+            <Box 
               sx={{ 
-                color: 'rgba(255, 255, 255, 0.7)',
-                fontSize: '0.85rem',
-              }}
+                width: '100%', 
+                mb: 1,
+                px: 1,
+              }} 
+              onClick={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
             >
-              正在连接...
-            </Typography>
-          )}
-        </Box>
+              <input
+                type="range"
+                min="0"
+                max={duration || 100}
+                value={currentTime}
+                onChange={(e) => {
+                  const newTime = parseFloat(e.target.value)
+                  setCurrentTime(newTime)
+                  if (videoRef.current) {
+                    videoRef.current.currentTime = newTime
+                  }
+                }}
+                style={{
+                  width: '100%',
+                  height: '8px',
+                  background: `linear-gradient(to right, #4caf50 ${(currentTime / (duration || 1)) * 100}%, rgba(255, 255, 255, 0.3) ${(currentTime / (duration || 1)) * 100}%)`,
+                  outline: 'none',
+                  cursor: 'pointer',
+                  borderRadius: '4px',
+                  WebkitAppearance: 'none',
+                  appearance: 'none',
+                }}
+              />
+            </Box>
+            
+            {/* 控制按钮 */}
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 0.5 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                <IconButton
+                  size="small"
+                  disableRipple
+                  onClick={(e) => togglePlayPause(e)}
+                  sx={{ color: '#fff', p: 0.5 }}
+                >
+                  {isPlaying ? <PauseIcon /> : <PlayArrowIcon />}
+                </IconButton>
+                <Typography variant="caption" sx={{ color: '#fff', fontSize: '0.75rem' }}>
+                  {formatTime(currentTime)} / {formatTime(duration)}
+                </Typography>
+              </Box>
+              
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0 }}>
+                <IconButton size="small" disableRipple sx={{ color: '#fff', p: 0.5 }} onClick={toggleMute}>
+                  {isMuted ? <VolumeOffIcon fontSize="small" /> : <VolumeUpIcon fontSize="small" />}
+                </IconButton>
+                <IconButton size="small" disableRipple sx={{ color: '#fff', p: 0.5 }} onClick={handleSpeedMenuOpen}>
+                  <SpeedIcon fontSize="small" />
+                </IconButton>
+                <IconButton size="small" disableRipple sx={{ color: '#fff', p: 0.5 }} onClick={(e) => { e.stopPropagation(); toggleOrientation(); }}>
+                  <ScreenRotationIcon fontSize="small" />
+                </IconButton>
+                <IconButton size="small" disableRipple sx={{ color: '#fff', p: 0.5 }} onClick={(e) => { e.stopPropagation(); toggleFullscreen(); }}>
+                  {isFullscreen ? <FullscreenExitIcon fontSize="small" /> : <FullscreenIcon fontSize="small" />}
+                </IconButton>
+              </Box>
+            </Box>
+          </Box>
+        </>
       )}
       
       {/* 播放/暂停按钮覆盖层 - 始终渲染，通过 opacity 控制显示 */}
@@ -1200,22 +1354,37 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
               </Typography>
             </Box>
             
-            {/* 中间：缓冲进度（竖屏时隐藏下载速度） */}
-            <Box sx={{ display: 'flex', alignItems: 'center' }}>
-              <Typography 
-                variant="caption" 
-                sx={{ 
-                  color: bufferedPercent >= 99 ? '#4caf50' : '#fff',
-                  fontSize: '0.7rem',
-                }}
-              >
-                {bufferedPercent.toFixed(0)}%
-                {downloadSpeed > 0.1 && ` ⬇${downloadSpeed.toFixed(1)}MB/s`}
-              </Typography>
-            </Box>
-            
             {/* 右侧：功能按钮 */}
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0 }}>
+              {/* 音量按钮 */}
+              <IconButton
+                size="small"
+                disableRipple
+                sx={{ 
+                  color: '#fff', 
+                  p: 0.5,
+                  '&:active': { opacity: 0.7 },
+                }}
+                onClick={toggleMute}
+              >
+                {isMuted ? <VolumeOffIcon fontSize="small" /> : <VolumeUpIcon fontSize="small" />}
+              </IconButton>
+              
+              {/* 倍速按钮 */}
+              <IconButton
+                size="small"
+                disableRipple
+                sx={{ 
+                  color: '#fff', 
+                  p: 0.5,
+                  '&:active': { opacity: 0.7 },
+                }}
+                onClick={handleSpeedMenuOpen}
+              >
+                <SpeedIcon fontSize="small" />
+              </IconButton>
+              
+              {/* 横竖屏切换按钮 */}
               <IconButton
                 size="small"
                 disableRipple
@@ -1226,12 +1395,10 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
                 }}
                 onClick={(e) => {
                   e.stopPropagation()
-                  if (videoRef.current) {
-                    videoRef.current.muted = !videoRef.current.muted
-                  }
+                  toggleOrientation()
                 }}
               >
-                <VolumeUpIcon fontSize="small" />
+                <ScreenRotationIcon fontSize="small" />
               </IconButton>
               
               {/* 全屏按钮 */}
@@ -1250,30 +1417,40 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
               >
                 {isFullscreen ? <FullscreenExitIcon fontSize="small" /> : <FullscreenIcon fontSize="small" />}
               </IconButton>
-              
-              {/* 换一个按钮 */}
-              {onNext && (
-                <IconButton
-                  size="small"
-                  disableRipple
-                  sx={{ 
-                    color: '#fff', 
-                    p: 0.5,
-                    '&:active': { opacity: 0.7 },
-                  }}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onNext()
-                  }}
-                  title="换一个"
-                >
-                  <ShuffleIcon fontSize="small" />
-                </IconButton>
-              )}
             </Box>
           </Box>
         </Box>
       )}
+      
+      {/* 倍速菜单 */}
+      <Menu
+        anchorEl={speedMenuAnchor}
+        open={Boolean(speedMenuAnchor)}
+        onClose={handleSpeedMenuClose}
+        anchorOrigin={{
+          vertical: 'top',
+          horizontal: 'center',
+        }}
+        transformOrigin={{
+          vertical: 'bottom',
+          horizontal: 'center',
+        }}
+      >
+        {[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((speed) => (
+          <MenuItem
+            key={speed}
+            selected={playbackRate === speed}
+            onClick={() => handleSpeedChange(speed)}
+            sx={{
+              fontSize: '0.875rem',
+              minWidth: 100,
+              justifyContent: 'center',
+            }}
+          >
+            {speed}x
+          </MenuItem>
+        ))}
+      </Menu>
     </Box>
   )
 })

@@ -29,6 +29,10 @@ import {
   Slider,
   Menu,
   MenuItem,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
 } from '@mui/material'
 import {
   Shuffle as ShuffleIcon,
@@ -969,20 +973,37 @@ export default function HomePage() {
   // 外部播放器菜单状态
   const [externalPlayerAnchor, setExternalPlayerAnchor] = useState<null | HTMLElement>(null)
   const externalPlayerMenuOpen = Boolean(externalPlayerAnchor)
+  // 播放方式选择状态（在视频框中央显示）
+  const [showPlayModeSelector, setShowPlayModeSelector] = useState(false)
 
-  // 使用外部播放器播放当前视频
+  // 使用外部播放器播放当前视频（PotPlayer/VLC）
   const playWithExternalPlayer = useCallback((player?: 'potplayer' | 'vlc' | 'system') => {
-    // 外部播放器使用原始流URL（外部播放器能直接播放各种格式，不需要转码）
-    const urlToUse = originalStreamUrl || mediaUrl
+    // 外部播放器使用直链（如果有配置）
+    let urlToUse = ''
+    
+    if (config?.enableDirectLink && currentFile) {
+      // 使用直链
+      // 处理路径：将全角斜杠替换为竖线（OpenList 特殊处理）
+      let processedPath = currentFile.filename
+        .split('/')
+        .map(segment => segment.replace(/／/g, '|'))
+        .join('/')
+      
+      const directLinkUrl = `/d${processedPath}`
+      urlToUse = new URL(directLinkUrl, window.location.origin).href
+      console.log('🎬 外部播放器使用直链:', urlToUse)
+    } else {
+      // 降级到原始流URL
+      urlToUse = originalStreamUrl || mediaUrl || ''
+      console.log('🎬 外部播放器使用原始流:', urlToUse)
+    }
+    
     if (!urlToUse) {
       console.log('⚠️ 没有可用的视频 URL')
       return
     }
     
-    // 构建完整的视频 URL
-    const videoUrl = new URL(urlToUse, window.location.origin).href
-    
-    console.log('🎬 调用外部播放器:', player || 'system', videoUrl)
+    console.log('🎬 调用外部播放器:', player || 'system', urlToUse)
     
     // 检测平台
     const userAgent = navigator.userAgent.toLowerCase()
@@ -1004,38 +1025,48 @@ export default function HomePage() {
     
     if (isAndroid) {
       // Android: 使用 intent 协议，让系统选择播放器
-      const intentUrl = `intent:${videoUrl}#Intent;type=video/*;end`
+      const intentUrl = `intent:${urlToUse}#Intent;type=video/*;end`
       openProtocol(intentUrl)
     } else if (isIOS) {
       // iOS: 尝试 VLC 的 vlc-x-callback 协议
-      const vlcUrl = `vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(videoUrl)}`
+      const vlcUrl = `vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(urlToUse)}`
       openProtocol(vlcUrl)
       
       // 500ms 后如果没有跳转，直接打开
       setTimeout(() => {
-        window.open(videoUrl, '_blank')
+        window.open(urlToUse, '_blank')
       }, 500)
     } else {
       // PC 端: 根据选择的播放器打开
-      // 注意：videoUrl 已经包含编码过的参数，不需要再次编码
       if (player === 'potplayer') {
         // PotPlayer 协议格式: potplayer://URL
-        openProtocol(`potplayer://${videoUrl}`)
+        openProtocol(`potplayer://${urlToUse}`)
       } else if (player === 'vlc') {
         // VLC 协议格式: vlc://URL
-        openProtocol(`vlc://${videoUrl}`)
+        openProtocol(`vlc://${urlToUse}`)
       } else {
         // 默认在新标签页打开
-        window.open(videoUrl, '_blank')
+        window.open(urlToUse, '_blank')
       }
     }
     
     // 关闭菜单
     setExternalPlayerAnchor(null)
-  }, [originalStreamUrl, mediaUrl])
+  }, [originalStreamUrl, mediaUrl, config, currentFile])
 
-  // 处理外部播放按钮点击
+  // 处理外部播放器按钮点击（PotPlayer/VLC）
   const handleExternalPlayerClick = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    // 1. 如果是视频，暂停播放并显示播放方式选择器
+    if (mediaType === 'stream-video' || mediaType === 'small-video') {
+      // 暂停视频播放（不是取消请求）
+      if (instantVideoRef.current?.pause) {
+        instantVideoRef.current.pause()
+      }
+      // 显示播放方式选择器（在视频中央）
+      setShowPlayModeSelector(true)
+    }
+    
+    // 2. 同时展开外部播放器菜单（所有视频类型）
     if (isMobile) {
       // 移动端直接调用系统选择器
       playWithExternalPlayer('system')
@@ -1043,7 +1074,122 @@ export default function HomePage() {
       // PC 端显示下拉菜单
       setExternalPlayerAnchor(event.currentTarget)
     }
-  }, [isMobile, playWithExternalPlayer])
+  }, [isMobile, playWithExternalPlayer, mediaType])
+
+  // 处理播放方式选择（在视频框中央的选择器）
+  const handlePlayModeSelect = useCallback((mode: 'webdav' | 'direct' | 'transcode') => {
+    console.log('🎬 [播放方式] 用户选择:', mode)
+    console.log('🎬 [播放方式] 当前文件:', currentFile?.filename)
+    console.log('🎬 [播放方式] originalStreamUrl:', originalStreamUrl)
+    console.log('🎬 [播放方式] 当前 mediaUrl:', mediaUrl)
+    
+    // 关闭选择器
+    setShowPlayModeSelector(false)
+    
+    // 根据选择切换播放方式
+    if (!currentFile || !config) {
+      console.error('❌ 缺少必要信息: currentFile 或 config')
+      return
+    }
+    
+    let newUrl = ''
+    
+    switch (mode) {
+      case 'webdav':
+        // 使用 WebDAV 原始流
+        console.log('🎬 切换到 WebDAV 播放')
+        // 构建 WebDAV instant-stream URL
+        const webdavParams = new URLSearchParams({
+          url: config.url,
+          username: config.username,
+          password: config.password,
+          filepath: currentFile.filename,
+          sourceType: config.sourceType || 'clouddrive2',
+          forceWebDAV: 'true', // 强制使用 WebDAV，不要重定向到直链
+        })
+        newUrl = `/api/webdav/instant-stream?${webdavParams.toString().replace(/\+/g, '%20')}`
+        console.log('🔗 [WebDAV] 新 URL:', newUrl)
+        break
+        
+      case 'direct':
+        // 使用直链
+        if (config.enableDirectLink) {
+          console.log('🎬 切换到直链播放')
+          // 处理路径：将全角斜杠替换为竖线（OpenList 特殊处理）
+          let processedPath = currentFile.filename
+            .split('/')
+            .map(segment => segment.replace(/／/g, '|'))
+            .join('/')
+          
+          newUrl = `/d${processedPath}`
+          console.log('🔗 [直链播放] 原始路径:', currentFile.filename)
+          console.log('🔗 [直链播放] 处理后路径:', processedPath)
+          console.log('🔗 [直链播放] 直链 URL:', newUrl)
+        } else {
+          console.error('❌ 直链播放未启用')
+        }
+        break
+        
+      case 'transcode':
+        // 使用转码流（仅 WebDAV）
+        console.log('🎬 切换到转码播放')
+        // 构建 WebDAV transcode-stream URL
+        const transcodeParams = new URLSearchParams({
+          url: config.url,
+          username: config.username,
+          password: config.password,
+          filepath: currentFile.filename,
+          sourceType: config.sourceType || 'clouddrive2',
+          format: 'mp4',
+          quality: 'high',
+        })
+        newUrl = `/api/webdav/transcode-stream?${transcodeParams.toString().replace(/\+/g, '%20')}`
+        console.log('🔗 [转码] 新 URL:', newUrl)
+        break
+    }
+    
+    if (newUrl) {
+      console.log('✅ [播放方式] 设置新 URL:', newUrl)
+      
+      // 更新 URL 并重新播放
+      setMediaUrl(newUrl)
+      
+      // 根据模式更新相关状态
+      if (mode === 'direct') {
+        // 直链模式：保存完整 URL 用于外部播放器
+        const fullDirectLinkUrl = new URL(newUrl, window.location.origin).href
+        setOriginalStreamUrl(fullDirectLinkUrl)
+        setTranscodeUrl(null) // 直链不支持转码
+        setIsUsingTranscode(false)
+      } else if (mode === 'transcode') {
+        // 转码模式
+        setTranscodeUrl(newUrl)
+        setIsUsingTranscode(true)
+        // 保存相对路径用于外部播放器
+        setOriginalStreamUrl(newUrl)
+      } else {
+        // WebDAV 原始流模式
+        setTranscodeUrl(null)
+        setIsUsingTranscode(false)
+        // 保存相对路径用于外部播放器
+        setOriginalStreamUrl(newUrl)
+      }
+      
+      // 延迟一下确保 URL 更新后再播放
+      setTimeout(() => {
+        console.log('🎬 [播放方式] 尝试播放...')
+        if (instantVideoRef.current?.play) {
+          instantVideoRef.current.play().catch((err: any) => {
+            console.error('❌ 播放失败:', err)
+          })
+        } else {
+          console.error('❌ instantVideoRef.current 或 play 方法不存在')
+        }
+      }, 100)
+    } else {
+      console.error('❌ [播放方式] 无法生成新 URL')
+    }
+  }, [currentFile, config, originalStreamUrl, mediaUrl])
 
   const loadRandomMedia = async () => {
     if (!config) {
@@ -1052,6 +1198,9 @@ export default function HomePage() {
     }
 
     console.log(`[loadRandomMedia] 当前模式: ${viewMode}`)
+    
+    // 关闭播放方式选择器（如果正在显示）
+    setShowPlayModeSelector(false)
     
     // 标记用户有播放意图（用于移动端视频自动播放）
     playIntentRef.current = true
@@ -2599,22 +2748,143 @@ export default function HomePage() {
                 />
               )}
               {mediaType === 'stream-video' && (
-                <InstantVideoPlayer
-                  key={mediaUrl} // 使用 mediaUrl 作为 key，确保 URL 变化时重新创建实例
-                  ref={instantVideoRef}
-                  src={mediaUrl}
-                  autoPlay={true}
-                  playIntent={playIntentRef.current} // 传递播放意图，用于安卓浏览器自动播放
-                  transcodeUrl={transcodeUrl || undefined} // 转码流 URL，用于自动降级
-                  onTranscodeFallback={() => {
-                    console.log('[大视频模式] 已降级到转码流播放')
-                    setIsUsingTranscode(true)
-                  }}
-                  onTimeUpdate={handleInstantVideoTimeUpdate}
-                  onEnded={handleVideoEnded}
-                  onNext={loadRandomMedia} // 换一个按钮
-                  // 不再使用 onError 回调，InstantVideoPlayer 内部已有错误 UI
-                />
+                <Box sx={{ position: 'relative', width: '100%', height: '100%' }}>
+                  <InstantVideoPlayer
+                    key={mediaUrl} // 使用 mediaUrl 作为 key，确保 URL 变化时重新创建实例
+                    ref={instantVideoRef}
+                    src={mediaUrl}
+                    autoPlay={true}
+                    playIntent={playIntentRef.current} // 传递播放意图，用于安卓浏览器自动播放
+                    transcodeUrl={transcodeUrl || undefined} // 转码流 URL，用于自动降级
+                    onTranscodeFallback={() => {
+                      console.log('[大视频模式] 已降级到转码流播放')
+                      setIsUsingTranscode(true)
+                    }}
+                    onTimeUpdate={handleInstantVideoTimeUpdate}
+                    onEnded={handleVideoEnded}
+                    onNext={loadRandomMedia} // 换一个按钮
+                    // 不再使用 onError 回调，InstantVideoPlayer 内部已有错误 UI
+                  />
+                  
+                  {/* 播放方式选择器 - 在视频框中央显示 */}
+                  {showPlayModeSelector && (
+                    <Box
+                      sx={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        backgroundColor: 'rgba(0, 0, 0, 0.85)',
+                        backdropFilter: 'blur(10px)',
+                        zIndex: 1000,
+                      }}
+                      onClick={() => setShowPlayModeSelector(false)}
+                    >
+                      <Box
+                        sx={{
+                          backgroundColor: '#16213e',
+                          borderRadius: 3,
+                          padding: 3,
+                          minWidth: { xs: 300, sm: 500 },
+                          maxWidth: 600,
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <Typography variant="h6" sx={{ color: '#e94560', fontWeight: 'bold', mb: 3, textAlign: 'center' }}>
+                          选择播放方式
+                        </Typography>
+                        
+                        {/* 横向排列的按钮 */}
+                        <Stack direction="row" spacing={2} sx={{ mb: 2 }}>
+                          {/* WebDAV 播放 */}
+                          {originalStreamUrl && (
+                            <Button
+                              variant="outlined"
+                              fullWidth
+                              size="large"
+                              onClick={() => handlePlayModeSelect('webdav')}
+                              sx={{
+                                borderColor: '#4ade80',
+                                color: '#4ade80',
+                                py: 2,
+                                fontSize: '1rem',
+                                fontWeight: 'bold',
+                                '&:hover': {
+                                  borderColor: '#22c55e',
+                                  backgroundColor: 'rgba(74, 222, 128, 0.1)',
+                                },
+                              }}
+                            >
+                              WebDAV<br/>播放
+                            </Button>
+                          )}
+                          
+                          {/* 直链播放 */}
+                          {config?.enableDirectLink && currentFile && (
+                            <Button
+                              variant="outlined"
+                              fullWidth
+                              size="large"
+                              onClick={() => handlePlayModeSelect('direct')}
+                              sx={{
+                                borderColor: '#2196f3',
+                                color: '#2196f3',
+                                py: 2,
+                                fontSize: '1rem',
+                                fontWeight: 'bold',
+                                '&:hover': {
+                                  borderColor: '#1976d2',
+                                  backgroundColor: 'rgba(33, 150, 243, 0.1)',
+                                },
+                              }}
+                            >
+                              直链<br/>播放
+                            </Button>
+                          )}
+                          
+                          {/* 转码播放 - 只能针对 WebDAV */}
+                          {originalStreamUrl && (
+                            <Button
+                              variant="outlined"
+                              fullWidth
+                              size="large"
+                              onClick={() => handlePlayModeSelect('transcode')}
+                              sx={{
+                                borderColor: '#e94560',
+                                color: '#e94560',
+                                py: 2,
+                                fontSize: '1rem',
+                                fontWeight: 'bold',
+                                '&:hover': {
+                                  borderColor: '#ff6b6b',
+                                  backgroundColor: 'rgba(233, 69, 96, 0.1)',
+                                },
+                              }}
+                            >
+                              转码<br/>播放
+                            </Button>
+                          )}
+                        </Stack>
+                        
+                        <Typography variant="caption" sx={{ color: '#888', display: 'block', mb: 2, textAlign: 'center' }}>
+                          💡 转码播放仅支持 WebDAV 源
+                        </Typography>
+                        
+                        <Button
+                          fullWidth
+                          onClick={() => setShowPlayModeSelector(false)}
+                          sx={{ color: '#888' }}
+                        >
+                          取消
+                        </Button>
+                      </Box>
+                    </Box>
+                  )}
+                </Box>
               )}
 
               {/* 全屏时的 UI 覆盖层（图片和视频通用） */}
@@ -2939,9 +3209,10 @@ export default function HomePage() {
                 />
               </Box>
               
-              {/* 外部播放器按钮 - 仅视频文件显示 */}
+              {/* 视频操作按钮 - 仅视频文件显示 */}
               {isVideo(currentFile.filename) && (
                 <Box sx={{ mt: 1.5 }}>
+                  {/* 外部播放器按钮 */}
                   <Button
                     variant="outlined"
                     size="small"
@@ -2950,6 +3221,7 @@ export default function HomePage() {
                     sx={{ 
                       color: '#4ade80', 
                       borderColor: '#4ade80',
+                      width: '100%',
                       '&:hover': {
                         borderColor: '#22c55e',
                         backgroundColor: 'rgba(74, 222, 128, 0.1)',
@@ -2959,7 +3231,7 @@ export default function HomePage() {
                     外部播放
                   </Button>
                   
-                  {/* PC 端下拉菜单 */}
+                  {/* PC 端下拉菜单 - 外部播放器选择（所有视频类型都显示） */}
                   <Menu
                     anchorEl={externalPlayerAnchor}
                     open={externalPlayerMenuOpen}

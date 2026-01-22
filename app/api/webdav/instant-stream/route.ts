@@ -47,6 +47,7 @@ export async function GET(request: NextRequest) {
     const password = searchParams.get('password')
     const filepath = searchParams.get('filepath')
     const sourceType = searchParams.get('sourceType') || 'clouddrive2'
+    const forceWebDAV = searchParams.get('forceWebDAV') === 'true' // 是否强制使用 WebDAV
 
     if (!url || !username || !password || !filepath) {
       return NextResponse.json(
@@ -59,8 +60,8 @@ export async function GET(request: NextRequest) {
     try {
       const config = webdavConfigs.get(url, username)
       
-      // 如果启用了直链播放且配置了直链源
-      if (config?.enableDirectLink && config?.directLinkUrl) {
+      // 如果启用了直链播放且配置了直链源，并且没有强制使用 WebDAV
+      if (config?.enableDirectLink && config?.directLinkUrl && !forceWebDAV) {
         console.log(`🎯 [即点即播] 使用直链播放: ${filepath}`)
         console.log(`🔗 [即点即播] 直链源: ${config.directLinkUrl}`)
         
@@ -74,8 +75,12 @@ export async function GET(request: NextRequest) {
         return NextResponse.redirect(new URL(directLinkPath, request.url), 302)
       }
       
-      // 如果未启用直链或未配置直链源，继续使用 WebDAV 流式传输
-      console.log(`📡 [即点即播] 使用 WebDAV 流式传输: ${filepath}`)
+      // 如果未启用直链或未配置直链源或强制使用 WebDAV，继续使用 WebDAV 流式传输
+      if (forceWebDAV) {
+        console.log(`📡 [即点即播] 强制使用 WebDAV 流式传输: ${filepath}`)
+      } else {
+        console.log(`📡 [即点即播] 使用 WebDAV 流式传输: ${filepath}`)
+      }
     } catch (dbError) {
       // 如果数据库查询失败，继续使用 WebDAV 流式传输（降级策略）
       console.warn(`⚠️ [即点即播] 数据库查询失败，降级到 WebDAV 流式传输:`, dbError)
