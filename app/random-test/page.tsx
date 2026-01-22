@@ -18,14 +18,25 @@ import {
   CircularProgress,
   Chip,
   Stack,
+  Tabs,
+  Tab,
+  LinearProgress,
 } from '@mui/material'
 
 interface RandomTestResult {
   filename: string
   basename: string
+  parent_path: string
   id: number
   file_size: number
   count: number // 被随机到的次数
+}
+
+interface PersonStats {
+  parent_path: string
+  count: number
+  percentage: number
+  files: string[]
 }
 
 interface WebDAVConfig {
@@ -37,7 +48,7 @@ interface WebDAVConfig {
 
 export default function RandomTestPage() {
   const [config, setConfig] = useState<WebDAVConfig | null>(null)
-  const [testCount, setTestCount] = useState(20)
+  const [testCount, setTestCount] = useState(100)
   const [minFileSize, setMinFileSize] = useState(100 * 1024 * 1024) // 100MB
   const [loading, setLoading] = useState(false)
   const [loadingConfig, setLoadingConfig] = useState(true)
@@ -45,6 +56,8 @@ export default function RandomTestPage() {
   const [excludeIds, setExcludeIds] = useState<number[]>([])
   const [error, setError] = useState<string | null>(null)
   const [testMode, setTestMode] = useState<'none' | 'without' | 'with'>('none')
+  const [currentTab, setCurrentTab] = useState(0)
+  const [progress, setProgress] = useState(0)
 
   // 自动从数据库加载配置
   useEffect(() => {
@@ -129,6 +142,7 @@ export default function RandomTestPage() {
     setResults(new Map())
     setExcludeIds([])
     setTestMode('without')
+    setProgress(0)
 
     const newResults = new Map<string, RandomTestResult>()
 
@@ -145,6 +159,7 @@ export default function RandomTestPage() {
           newResults.set(key, {
             filename: file.filename,
             basename: file.basename,
+            parent_path: file.parent_path,
             id: file.id,
             file_size: file.file_size,
             count: 1,
@@ -153,10 +168,12 @@ export default function RandomTestPage() {
       }
 
       // 更新进度
+      setProgress(((i + 1) / testCount) * 100)
       setResults(new Map(newResults))
     }
 
     setLoading(false)
+    setProgress(100)
   }
 
   // 执行带排除的测试
@@ -165,6 +182,7 @@ export default function RandomTestPage() {
     setError(null)
     setResults(new Map())
     setTestMode('with')
+    setProgress(0)
     
     const newResults = new Map<string, RandomTestResult>()
     const currentExcludeIds: number[] = []
@@ -182,6 +200,7 @@ export default function RandomTestPage() {
           newResults.set(key, {
             filename: file.filename,
             basename: file.basename,
+            parent_path: file.parent_path,
             id: file.id,
             file_size: file.file_size,
             count: 1,
@@ -193,11 +212,43 @@ export default function RandomTestPage() {
       }
 
       // 更新进度
+      setProgress(((i + 1) / testCount) * 100)
       setResults(new Map(newResults))
       setExcludeIds([...currentExcludeIds])
     }
 
     setLoading(false)
+    setProgress(100)
+  }
+
+  // 计算按人（父文件夹）统计的数据
+  const calculatePersonStats = (): PersonStats[] => {
+    const personMap = new Map<string, PersonStats>()
+    const totalTests = Array.from(results.values()).reduce((sum, r) => sum + r.count, 0)
+
+    results.forEach((result) => {
+      const person = result.parent_path
+      const existing = personMap.get(person)
+
+      if (existing) {
+        existing.count += result.count
+        existing.files.push(result.basename)
+      } else {
+        personMap.set(person, {
+          parent_path: person,
+          count: result.count,
+          percentage: 0,
+          files: [result.basename],
+        })
+      }
+    })
+
+    // 计算百分比
+    personMap.forEach((stats) => {
+      stats.percentage = totalTests > 0 ? (stats.count / totalTests) * 100 : 0
+    })
+
+    return Array.from(personMap.values()).sort((a, b) => b.count - a.count)
   }
 
   // 格式化文件大小
@@ -216,6 +267,10 @@ export default function RandomTestPage() {
   const totalTests = Array.from(results.values()).reduce((sum, r) => sum + r.count, 0)
   const duplicateCount = Array.from(results.values()).filter(r => r.count > 1).length
   const maxCount = Math.max(...Array.from(results.values()).map(r => r.count), 0)
+  const personStats = calculatePersonStats()
+  const totalPersons = personStats.length
+  const maxPersonCount = Math.max(...personStats.map(p => p.count), 0)
+  const maxPersonPercentage = Math.max(...personStats.map(p => p.percentage), 0)
 
   if (loadingConfig) {
     return (
@@ -272,8 +327,9 @@ export default function RandomTestPage() {
             label="测试次数"
             type="number"
             value={testCount}
-            onChange={(e) => setTestCount(parseInt(e.target.value) || 20)}
+            onChange={(e) => setTestCount(parseInt(e.target.value) || 100)}
             fullWidth
+            helperText="建议100次以上以获得更准确的统计"
           />
           
           <TextField
@@ -336,10 +392,13 @@ export default function RandomTestPage() {
       )}
 
       {loading && (
-        <Paper sx={{ p: 3, mb: 3, textAlign: 'center' }}>
-          <CircularProgress />
-          <Typography sx={{ mt: 2 }}>
-            正在测试... ({totalTests}/{testCount})
+        <Paper sx={{ p: 3, mb: 3 }}>
+          <Typography sx={{ mb: 2 }}>
+            正在测试... ({Math.round(progress)}%)
+          </Typography>
+          <LinearProgress variant="determinate" value={progress} />
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+            已完成: {totalTests}/{testCount}
           </Typography>
         </Paper>
       )}
@@ -351,7 +410,7 @@ export default function RandomTestPage() {
               统计信息
             </Typography>
             
-            <Stack direction="row" spacing={2} flexWrap="wrap">
+            <Stack direction="row" spacing={2} flexWrap="wrap" sx={{ mb: 2 }}>
               <Chip label={`总测试次数: ${totalTests}`} color="primary" />
               <Chip label={`不同文件数: ${totalFiles}`} color="info" />
               <Chip 
@@ -361,6 +420,21 @@ export default function RandomTestPage() {
               <Chip 
                 label={`最大重复次数: ${maxCount}`} 
                 color={maxCount > 1 ? 'error' : 'success'} 
+              />
+            </Stack>
+
+            <Stack direction="row" spacing={2} flexWrap="wrap">
+              <Chip 
+                label={`不同的人数: ${totalPersons}`} 
+                color="secondary" 
+              />
+              <Chip 
+                label={`最高出现次数: ${maxPersonCount}`} 
+                color={maxPersonCount > totalTests * 0.3 ? 'error' : 'success'} 
+              />
+              <Chip 
+                label={`最高出现概率: ${maxPersonPercentage.toFixed(2)}%`} 
+                color={maxPersonPercentage > 30 ? 'error' : maxPersonPercentage > 15 ? 'warning' : 'success'} 
               />
             </Stack>
             
@@ -381,43 +455,133 @@ export default function RandomTestPage() {
                 ❌ 测试失败！带排除模式下发现了 {duplicateCount} 个重复文件
               </Alert>
             )}
+
+            {testMode === 'without' && !loading && maxPersonPercentage > 30 && (
+              <Alert severity="error" sx={{ mt: 2 }}>
+                ⚠️ 随机性问题！某个人出现概率超过 30%，说明随机算法存在偏向性
+              </Alert>
+            )}
+
+            {testMode === 'without' && !loading && maxPersonPercentage <= 15 && (
+              <Alert severity="success" sx={{ mt: 2 }}>
+                ✅ 随机性良好！各个人出现概率较为均衡
+              </Alert>
+            )}
           </Paper>
 
-          <TableContainer component={Paper}>
-            <Table>
-              <TableHead>
-                <TableRow>
-                  <TableCell>文件名</TableCell>
-                  <TableCell>ID</TableCell>
-                  <TableCell>文件大小</TableCell>
-                  <TableCell>被随机到次数</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {Array.from(results.values())
-                  .sort((a, b) => b.count - a.count)
-                  .map((result) => (
-                    <TableRow
-                      key={result.filename}
-                      sx={{
-                        backgroundColor: result.count > 1 ? 'rgba(255, 152, 0, 0.1)' : 'inherit',
-                      }}
-                    >
-                      <TableCell>{result.basename}</TableCell>
-                      <TableCell>{result.id}</TableCell>
-                      <TableCell>{formatFileSize(result.file_size)}</TableCell>
-                      <TableCell>
-                        <Chip
-                          label={result.count}
-                          color={result.count > 1 ? 'error' : 'success'}
-                          size="small"
-                        />
-                      </TableCell>
+          <Paper sx={{ mb: 3 }}>
+            <Tabs value={currentTab} onChange={(e, v) => setCurrentTab(v)}>
+              <Tab label="按人统计" />
+              <Tab label="按文件统计" />
+            </Tabs>
+
+            {currentTab === 0 && (
+              <TableContainer>
+                <Table>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>父文件夹（人）</TableCell>
+                      <TableCell>出现次数</TableCell>
+                      <TableCell>出现概率</TableCell>
+                      <TableCell>文件数量</TableCell>
+                      <TableCell>文件列表</TableCell>
                     </TableRow>
-                  ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
+                  </TableHead>
+                  <TableBody>
+                    {personStats.map((person) => (
+                      <TableRow
+                        key={person.parent_path}
+                        sx={{
+                          backgroundColor: 
+                            person.percentage > 30 ? 'rgba(244, 67, 54, 0.1)' :
+                            person.percentage > 15 ? 'rgba(255, 152, 0, 0.1)' : 
+                            'inherit',
+                        }}
+                      >
+                        <TableCell sx={{ maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {person.parent_path}
+                        </TableCell>
+                        <TableCell>
+                          <Chip
+                            label={person.count}
+                            color={
+                              person.percentage > 30 ? 'error' :
+                              person.percentage > 15 ? 'warning' : 
+                              'success'
+                            }
+                            size="small"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Typography
+                            variant="body2"
+                            sx={{
+                              fontWeight: 'bold',
+                              color: 
+                                person.percentage > 30 ? 'error.main' :
+                                person.percentage > 15 ? 'warning.main' : 
+                                'success.main',
+                            }}
+                          >
+                            {person.percentage.toFixed(2)}%
+                          </Typography>
+                        </TableCell>
+                        <TableCell>{person.files.length}</TableCell>
+                        <TableCell sx={{ maxWidth: 400, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          <Typography variant="caption" component="div">
+                            {person.files.slice(0, 3).join(', ')}
+                            {person.files.length > 3 && ` ... (+${person.files.length - 3})`}
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
+
+            {currentTab === 1 && (
+              <TableContainer>
+                <Table>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>文件名</TableCell>
+                      <TableCell>父文件夹</TableCell>
+                      <TableCell>ID</TableCell>
+                      <TableCell>文件大小</TableCell>
+                      <TableCell>被随机到次数</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {Array.from(results.values())
+                      .sort((a, b) => b.count - a.count)
+                      .map((result) => (
+                        <TableRow
+                          key={result.filename}
+                          sx={{
+                            backgroundColor: result.count > 1 ? 'rgba(255, 152, 0, 0.1)' : 'inherit',
+                          }}
+                        >
+                          <TableCell>{result.basename}</TableCell>
+                          <TableCell sx={{ maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {result.parent_path}
+                          </TableCell>
+                          <TableCell>{result.id}</TableCell>
+                          <TableCell>{formatFileSize(result.file_size)}</TableCell>
+                          <TableCell>
+                            <Chip
+                              label={result.count}
+                              color={result.count > 1 ? 'error' : 'success'}
+                              size="small"
+                            />
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
+          </Paper>
         </>
       )}
     </Container>

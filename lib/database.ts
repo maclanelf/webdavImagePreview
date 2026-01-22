@@ -1379,8 +1379,8 @@ export const scanFiles = {
       
       console.log(`📊 [动态分桶] count=${count}, bucketCount=${bucketCount}, 每桶约${Math.round(count/bucketCount)}个`)
       
-      // 4. 快速尝试（3次随机桶）
-      for (let i = 0; i < 3; i++) {
+      // 4. 快速尝试（5次随机桶，增加多样性）
+      for (let i = 0; i < 5; i++) {
         const randomBucket = Math.floor(Math.random() * bucketCount)
         
         let sql = `SELECT * FROM scan_files WHERE (id % ${bucketCount}) = ? AND cache_id = ?`
@@ -1395,7 +1395,7 @@ export const scanFiles = {
           params.push(isViewed ? 1 : 0)
         }
         
-        sql += ' LIMIT 1'
+        sql += ' ORDER BY RANDOM() LIMIT 1'
         
         const file = db.prepare(sql).get(...params)
         if (file) {
@@ -1404,7 +1404,7 @@ export const scanFiles = {
         }
       }
       
-      // 5. 保底方案：获取非空桶列表
+      // 5. 保底方案：获取非空桶列表，从多个桶中尝试
       console.log(`⚠️ [快速未命中] 切换到保底方案`)
       
       let bucketSql = `SELECT DISTINCT (id % ${bucketCount}) as bucket FROM scan_files WHERE cache_id = ?`
@@ -1426,25 +1426,36 @@ export const scanFiles = {
         return null
       }
       
-      const randomBucket = buckets[Math.floor(Math.random() * buckets.length)].bucket
+      // 打乱桶列表，从多个桶中尝试（最多尝试10个桶）
+      const shuffledBuckets = [...buckets].sort(() => Math.random() - 0.5)
+      const tryCount = Math.min(10, shuffledBuckets.length)
       
-      let sql = `SELECT * FROM scan_files WHERE (id % ${bucketCount}) = ? AND cache_id = ?`
-      const params: any[] = [randomBucket, cacheId]
-      
-      if (fileType) {
-        sql += ' AND file_type = ?'
-        params.push(fileType)
+      for (let i = 0; i < tryCount; i++) {
+        const randomBucket = shuffledBuckets[i].bucket
+        
+        let sql = `SELECT * FROM scan_files WHERE (id % ${bucketCount}) = ? AND cache_id = ?`
+        const params: any[] = [randomBucket, cacheId]
+        
+        if (fileType) {
+          sql += ' AND file_type = ?'
+          params.push(fileType)
+        }
+        if (isViewed !== undefined) {
+          sql += ' AND is_viewed = ?'
+          params.push(isViewed ? 1 : 0)
+        }
+        
+        sql += ' ORDER BY RANDOM() LIMIT 1'
+        
+        const file = db.prepare(sql).get(...params)
+        if (file) {
+          console.log(`✅ [保底成功] 非空桶${buckets.length}个, 耗时: ${Date.now() - startTime}ms`)
+          return file
+        }
       }
-      if (isViewed !== undefined) {
-        sql += ' AND is_viewed = ?'
-        params.push(isViewed ? 1 : 0)
-      }
       
-      sql += ' ORDER BY RANDOM() LIMIT 1'
-      
-      const file = db.prepare(sql).get(...params)
-      console.log(`✅ [保底成功] 非空桶${buckets.length}个, 耗时: ${Date.now() - startTime}ms`)
-      return file
+      console.log(`❌ [保底失败] 耗时: ${Date.now() - startTime}ms`)
+      return null
     } catch (error) {
       console.error('随机获取扫描文件失败:', error)
       return null
@@ -1803,7 +1814,7 @@ export const scanFiles = {
       
       console.log(`📊 [跨缓存随机] count=${count}, bucketCount=${bucketCount}`)
       
-      // 4. 快速尝试（5次随机桶）
+      // 4. 快速尝试（5次随机桶，增加多样性）
       for (let i = 0; i < 5; i++) {
         const randomBucket = Math.floor(Math.random() * bucketCount)
         
@@ -1819,7 +1830,7 @@ export const scanFiles = {
           params.push(isViewed ? 1 : 0)
         }
         
-        sql += ' LIMIT 1'
+        sql += ' ORDER BY RANDOM() LIMIT 1'
         
         const file = db.prepare(sql).get(...params) as any
         if (file && !excludeSet.has(file.filename)) {
@@ -1828,7 +1839,7 @@ export const scanFiles = {
         }
       }
       
-      // 5. 保底方案：获取非空桶列表
+      // 5. 保底方案：获取非空桶列表，从多个桶中尝试
       console.log(`⚠️ [快速未命中] 切换到保底方案`)
       
       let bucketSql = `SELECT DISTINCT (id % ${bucketCount}) as bucket FROM scan_files WHERE cache_id IN (${placeholders})`
@@ -1847,27 +1858,32 @@ export const scanFiles = {
       
       if (buckets.length === 0) return null
       
-      const randomBucket = buckets[Math.floor(Math.random() * buckets.length)].bucket
+      // 打乱桶列表，从多个桶中尝试（最多尝试10个桶）
+      const shuffledBuckets = [...buckets].sort(() => Math.random() - 0.5)
+      const tryCount = Math.min(10, shuffledBuckets.length)
       
-      let sql = `SELECT * FROM scan_files WHERE (id % ${bucketCount}) = ? AND cache_id IN (${placeholders})`
-      const params: any[] = [randomBucket, ...cacheIds]
-      
-      if (fileType) {
-        sql += ' AND file_type = ?'
-        params.push(fileType)
-      }
-      if (isViewed !== undefined) {
-        sql += ' AND is_viewed = ?'
-        params.push(isViewed ? 1 : 0)
-      }
-      
-      sql += ' ORDER BY RANDOM() LIMIT 1'
-      
-      const file = db.prepare(sql).get(...params) as any
-      
-      if (file && !excludeSet.has(file.filename)) {
-        console.log(`✅ [保底成功] 耗时: ${Date.now() - startTime}ms`)
-        return file
+      for (let i = 0; i < tryCount; i++) {
+        const randomBucket = shuffledBuckets[i].bucket
+        
+        let sql = `SELECT * FROM scan_files WHERE (id % ${bucketCount}) = ? AND cache_id IN (${placeholders})`
+        const params: any[] = [randomBucket, ...cacheIds]
+        
+        if (fileType) {
+          sql += ' AND file_type = ?'
+          params.push(fileType)
+        }
+        if (isViewed !== undefined) {
+          sql += ' AND is_viewed = ?'
+          params.push(isViewed ? 1 : 0)
+        }
+        
+        sql += ' ORDER BY RANDOM() LIMIT 1'
+        
+        const file = db.prepare(sql).get(...params) as any
+        if (file && !excludeSet.has(file.filename)) {
+          console.log(`✅ [保底成功] 耗时: ${Date.now() - startTime}ms`)
+          return file
+        }
       }
       
       return null
@@ -2050,13 +2066,15 @@ export const scanFiles = {
         }
         
         // 大数据集：使用动态分桶
-        // 快速尝试（3次随机桶）
-        for (let i = 0; i < 3; i++) {
+        // 快速尝试（5次随机桶，增加多样性）
+        for (let i = 0; i < 5; i++) {
           const randomBucket = Math.floor(Math.random() * bucketCount)
           
+          // 从桶中随机选择一个文件（使用 ORDER BY RANDOM() 增加多样性）
           const file = db.prepare(`
             SELECT * FROM scan_files 
             WHERE (id % ${bucketCount}) = ? AND ${whereClause}
+            ORDER BY RANDOM()
             LIMIT 1
           `).get(randomBucket, ...params) as any
           
@@ -2065,7 +2083,7 @@ export const scanFiles = {
           }
         }
         
-        // 保底方案：获取非空桶列表
+        // 保底方案：获取非空桶列表，并从多个桶中尝试
         const buckets = db.prepare(`
           SELECT DISTINCT (id % ${bucketCount}) as bucket 
           FROM scan_files 
@@ -2074,18 +2092,23 @@ export const scanFiles = {
         
         if (buckets.length === 0) return null
         
-        // 从非空桶中随机选择
-        const randomBucket = buckets[Math.floor(Math.random() * buckets.length)].bucket
+        // 打乱桶列表，从多个桶中尝试（最多尝试10个桶）
+        const shuffledBuckets = [...buckets].sort(() => Math.random() - 0.5)
+        const tryCount = Math.min(10, shuffledBuckets.length)
         
-        const file = db.prepare(`
-          SELECT * FROM scan_files 
-          WHERE (id % ${bucketCount}) = ? AND ${whereClause}
-          ORDER BY RANDOM()
-          LIMIT 1
-        `).get(randomBucket, ...params) as any
-        
-        if (file && !excludeSet.has(file.filename)) {
-          return file
+        for (let i = 0; i < tryCount; i++) {
+          const randomBucket = shuffledBuckets[i].bucket
+          
+          const file = db.prepare(`
+            SELECT * FROM scan_files 
+            WHERE (id % ${bucketCount}) = ? AND ${whereClause}
+            ORDER BY RANDOM()
+            LIMIT 1
+          `).get(randomBucket, ...params) as any
+          
+          if (file && !excludeSet.has(file.filename)) {
+            return file
+          }
         }
         
         return null
