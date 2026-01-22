@@ -302,13 +302,15 @@ class DatabasePreloadManager {
       
       const url = URL.createObjectURL(blob)
       
-      // 检查文件是否还属于当前图组
-      const isFileInCurrentGroup = this.currentGroupFiles.some(f => f.filename === filepath)
-      
-      if (!isFileInCurrentGroup) {
-        URL.revokeObjectURL(url)
-        console.log(`[数据库模式] 预加载完成但图组已切换，丢弃文件: ${file.basename}`)
-        return
+      // 只在图组模式下检查文件是否还属于当前图组
+      if (this.currentGroupFiles.length > 0) {
+        const isFileInCurrentGroup = this.currentGroupFiles.some(f => f.filename === filepath)
+        
+        if (!isFileInCurrentGroup) {
+          URL.revokeObjectURL(url)
+          console.log(`[数据库模式] 预加载完成但图组已切换，丢弃文件: ${file.basename}`)
+          return
+        }
       }
       
       if (this.cache.has(filepath)) {
