@@ -298,10 +298,20 @@ export function initDatabase() {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_files_query ON scan_files(cache_id, file_type, is_viewed)`)
     // 为 filename 单独创建索引，用于 mediaRatings.save 中的同步更新
     db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_files_filename ON scan_files(filename)`)
-    // 优化随机查询的复合索引（cache_id + is_viewed + id 覆盖 ROWID 范围查询）
-    // 3列索引让 WHERE cache_id IN (...) AND is_viewed = ? AND id >= ? ORDER BY id 
-    // 可以直接在索引中完成定位和排序，无需回表后再排序
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_files_random ON scan_files(cache_id, is_viewed, id)`)
+    
+    // 🚀 动态分桶索引（表达式索引，支持亿级数据高效随机查询）
+    // 使用 id % bucketCount 动态计算桶号，无需额外字段
+    // 根据数据量自动选择最优桶数：1024/4096/16384
+    console.log('创建动态分桶索引...')
+    try {
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_files_bucket_1024 ON scan_files((id % 1024), cache_id, file_type, is_viewed)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_files_bucket_4096 ON scan_files((id % 4096), cache_id, file_type, is_viewed)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_files_bucket_16384 ON scan_files((id % 16384), cache_id, file_type, is_viewed)`)
+      console.log('✅ 动态分桶索引创建成功（支持 1024/4096/16384 桶）')
+    } catch (error: any) {
+      console.warn('⚠️ 动态分桶索引创建失败（可能是 SQLite 版本过低）:', error.message)
+      console.warn('   降级使用基础索引，性能可能稍差')
+    }
 
     // 创建 scan_cache 索引（加速批量查询）
     db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_cache_config ON scan_cache(webdav_url, webdav_username)`)
@@ -1307,47 +1317,134 @@ export const scanFiles = {
     }
   },
 
-  // 随机获取一个文件（亿级数据高效随机 - 使用 ROWID 范围）
+  // 🚀 智能随机获取（动态分桶策略，支持亿级数据）
   getRandom: (cacheId: number, options?: {
     fileType?: 'image' | 'video'
     isViewed?: boolean
   }) => {
+    const startTime = Date.now()
     try {
       ensureInitialized()
       
       const { fileType, isViewed } = options || {}
       
-      // 构建 WHERE 条件
-      let whereClause = `cache_id = ?`
-      const params: any[] = [cacheId]
+      // 1. 统计数据量，选择最优桶数
+      let countSql = 'SELECT COUNT(*) as count FROM scan_files WHERE cache_id = ?'
+      const countParams: any[] = [cacheId]
       
       if (fileType) {
-        whereClause += ` AND file_type = ?`
+        countSql += ' AND file_type = ?'
+        countParams.push(fileType)
+      }
+      if (isViewed !== undefined) {
+        countSql += ' AND is_viewed = ?'
+        countParams.push(isViewed ? 1 : 0)
+      }
+      
+      const { count } = db.prepare(countSql).get(...countParams) as { count: number }
+      
+      if (count === 0) return null
+      
+      // 2. 小数据集（< 10万）：直接随机，不分桶
+      if (count < 100000) {
+        let sql = 'SELECT * FROM scan_files WHERE cache_id = ?'
+        const params: any[] = [cacheId]
+        
+        if (fileType) {
+          sql += ' AND file_type = ?'
+          params.push(fileType)
+        }
+        if (isViewed !== undefined) {
+          sql += ' AND is_viewed = ?'
+          params.push(isViewed ? 1 : 0)
+        }
+        
+        sql += ' ORDER BY RANDOM() LIMIT 1'
+        
+        const file = db.prepare(sql).get(...params)
+        console.log(`⚡ [小数据集] 耗时: ${Date.now() - startTime}ms, count=${count}`)
+        return file
+      }
+      
+      // 3. 大数据集：使用动态分桶
+      // 根据数据量选择最优桶数
+      let bucketCount: number
+      if (count < 1000000) {
+        bucketCount = 1024  // 100万以下：1024桶，每桶约100-1000个
+      } else if (count < 10000000) {
+        bucketCount = 4096  // 1000万以下：4096桶，每桶约250-2500个
+      } else {
+        bucketCount = 16384  // 1000万以上：16384桶，每桶约600-6000个
+      }
+      
+      console.log(`📊 [动态分桶] count=${count}, bucketCount=${bucketCount}, 每桶约${Math.round(count/bucketCount)}个`)
+      
+      // 4. 快速尝试（3次随机桶）
+      for (let i = 0; i < 3; i++) {
+        const randomBucket = Math.floor(Math.random() * bucketCount)
+        
+        let sql = `SELECT * FROM scan_files WHERE (id % ${bucketCount}) = ? AND cache_id = ?`
+        const params: any[] = [randomBucket, cacheId]
+        
+        if (fileType) {
+          sql += ' AND file_type = ?'
+          params.push(fileType)
+        }
+        if (isViewed !== undefined) {
+          sql += ' AND is_viewed = ?'
+          params.push(isViewed ? 1 : 0)
+        }
+        
+        sql += ' LIMIT 1'
+        
+        const file = db.prepare(sql).get(...params)
+        if (file) {
+          console.log(`⚡ [快速命中] 第${i + 1}次, 耗时: ${Date.now() - startTime}ms`)
+          return file
+        }
+      }
+      
+      // 5. 保底方案：获取非空桶列表
+      console.log(`⚠️ [快速未命中] 切换到保底方案`)
+      
+      let bucketSql = `SELECT DISTINCT (id % ${bucketCount}) as bucket FROM scan_files WHERE cache_id = ?`
+      const bucketParams: any[] = [cacheId]
+      
+      if (fileType) {
+        bucketSql += ' AND file_type = ?'
+        bucketParams.push(fileType)
+      }
+      if (isViewed !== undefined) {
+        bucketSql += ' AND is_viewed = ?'
+        bucketParams.push(isViewed ? 1 : 0)
+      }
+      
+      const buckets = db.prepare(bucketSql).all(...bucketParams) as Array<{ bucket: number }>
+      
+      if (buckets.length === 0) {
+        console.log(`❌ [无数据] 耗时: ${Date.now() - startTime}ms`)
+        return null
+      }
+      
+      const randomBucket = buckets[Math.floor(Math.random() * buckets.length)].bucket
+      
+      let sql = `SELECT * FROM scan_files WHERE (id % ${bucketCount}) = ? AND cache_id = ?`
+      const params: any[] = [randomBucket, cacheId]
+      
+      if (fileType) {
+        sql += ' AND file_type = ?'
         params.push(fileType)
       }
       if (isViewed !== undefined) {
-        whereClause += ` AND is_viewed = ?`
+        sql += ' AND is_viewed = ?'
         params.push(isViewed ? 1 : 0)
       }
       
-      // 获取 ID 范围和数量
-      const stats = db.prepare(`SELECT COUNT(*) as count, MIN(id) as minId, MAX(id) as maxId FROM scan_files WHERE ${whereClause}`).get(...params) as any
-      if (!stats || stats.count === 0) return null
+      sql += ' ORDER BY RANDOM() LIMIT 1'
       
-      // 在 ID 范围内随机，最多尝试 5 次
-      for (let attempt = 0; attempt < 5; attempt++) {
-        const randomId = stats.minId + Math.floor(Math.random() * (stats.maxId - stats.minId + 1))
-        
-        // 获取 >= randomId 的第一条符合条件的记录
-        let file = db.prepare(`SELECT * FROM scan_files WHERE ${whereClause} AND id >= ? ORDER BY id LIMIT 1`).get(...params, randomId) as any
-        if (file) return file
-        
-        // 如果没找到，尝试 < randomId 的记录
-        file = db.prepare(`SELECT * FROM scan_files WHERE ${whereClause} AND id < ? ORDER BY id DESC LIMIT 1`).get(...params, randomId) as any
-        if (file) return file
-      }
-      
-      return null
+      const file = db.prepare(sql).get(...params)
+      console.log(`✅ [保底成功] 非空桶${buckets.length}个, 耗时: ${Date.now() - startTime}ms`)
+      return file
     } catch (error) {
       console.error('随机获取扫描文件失败:', error)
       return null
@@ -1636,12 +1733,13 @@ export const scanFiles = {
     }
   },
 
-  // 跨多个 cacheId 随机获取文件（使用 ROWID 范围）
+  // 🚀 跨多个 cacheId 随机获取文件（动态分桶策略）
   getRandomMultiple: (cacheIds: number[], options?: {
     fileType?: 'image' | 'video'
     isViewed?: boolean
     excludeFilenames?: string[]
   }) => {
+    const startTime = Date.now()
     try {
       ensureInitialized()
       
@@ -1651,34 +1749,125 @@ export const scanFiles = {
       const placeholders = cacheIds.map(() => '?').join(',')
       const excludeSet = new Set(excludeFilenames)
       
-      // 构建 WHERE 条件（不包含 excludeFilenames，在内存中过滤）
-      let whereClause = `cache_id IN (${placeholders})`
-      const params: any[] = [...cacheIds]
+      // 1. 统计数据量，选择最优桶数
+      let countSql = `SELECT COUNT(*) as count FROM scan_files WHERE cache_id IN (${placeholders})`
+      const countParams: any[] = [...cacheIds]
       
       if (fileType) {
-        whereClause += ` AND file_type = ?`
+        countSql += ' AND file_type = ?'
+        countParams.push(fileType)
+      }
+      if (isViewed !== undefined) {
+        countSql += ' AND is_viewed = ?'
+        countParams.push(isViewed ? 1 : 0)
+      }
+      
+      const { count } = db.prepare(countSql).get(...countParams) as { count: number }
+      
+      if (count === 0) return null
+      
+      // 2. 小数据集（< 10万）：直接随机
+      if (count < 100000) {
+        let sql = `SELECT * FROM scan_files WHERE cache_id IN (${placeholders})`
+        const params: any[] = [...cacheIds]
+        
+        if (fileType) {
+          sql += ' AND file_type = ?'
+          params.push(fileType)
+        }
+        if (isViewed !== undefined) {
+          sql += ' AND is_viewed = ?'
+          params.push(isViewed ? 1 : 0)
+        }
+        
+        sql += ' ORDER BY RANDOM() LIMIT 1'
+        
+        const file = db.prepare(sql).get(...params) as any
+        
+        if (file && !excludeSet.has(file.filename)) {
+          console.log(`⚡ [小数据集] 耗时: ${Date.now() - startTime}ms`)
+          return file
+        }
+        return null
+      }
+      
+      // 3. 大数据集：使用动态分桶
+      let bucketCount: number
+      if (count < 1000000) {
+        bucketCount = 1024
+      } else if (count < 10000000) {
+        bucketCount = 4096
+      } else {
+        bucketCount = 16384
+      }
+      
+      console.log(`📊 [跨缓存随机] count=${count}, bucketCount=${bucketCount}`)
+      
+      // 4. 快速尝试（5次随机桶）
+      for (let i = 0; i < 5; i++) {
+        const randomBucket = Math.floor(Math.random() * bucketCount)
+        
+        let sql = `SELECT * FROM scan_files WHERE (id % ${bucketCount}) = ? AND cache_id IN (${placeholders})`
+        const params: any[] = [randomBucket, ...cacheIds]
+        
+        if (fileType) {
+          sql += ' AND file_type = ?'
+          params.push(fileType)
+        }
+        if (isViewed !== undefined) {
+          sql += ' AND is_viewed = ?'
+          params.push(isViewed ? 1 : 0)
+        }
+        
+        sql += ' LIMIT 1'
+        
+        const file = db.prepare(sql).get(...params) as any
+        if (file && !excludeSet.has(file.filename)) {
+          console.log(`⚡ [快速命中] 第${i + 1}次, 耗时: ${Date.now() - startTime}ms`)
+          return file
+        }
+      }
+      
+      // 5. 保底方案：获取非空桶列表
+      console.log(`⚠️ [快速未命中] 切换到保底方案`)
+      
+      let bucketSql = `SELECT DISTINCT (id % ${bucketCount}) as bucket FROM scan_files WHERE cache_id IN (${placeholders})`
+      const bucketParams: any[] = [...cacheIds]
+      
+      if (fileType) {
+        bucketSql += ' AND file_type = ?'
+        bucketParams.push(fileType)
+      }
+      if (isViewed !== undefined) {
+        bucketSql += ' AND is_viewed = ?'
+        bucketParams.push(isViewed ? 1 : 0)
+      }
+      
+      const buckets = db.prepare(bucketSql).all(...bucketParams) as Array<{ bucket: number }>
+      
+      if (buckets.length === 0) return null
+      
+      const randomBucket = buckets[Math.floor(Math.random() * buckets.length)].bucket
+      
+      let sql = `SELECT * FROM scan_files WHERE (id % ${bucketCount}) = ? AND cache_id IN (${placeholders})`
+      const params: any[] = [randomBucket, ...cacheIds]
+      
+      if (fileType) {
+        sql += ' AND file_type = ?'
         params.push(fileType)
       }
       if (isViewed !== undefined) {
-        whereClause += ` AND is_viewed = ?`
+        sql += ' AND is_viewed = ?'
         params.push(isViewed ? 1 : 0)
       }
       
-      // 获取 ID 范围和数量
-      const stats = db.prepare(`SELECT COUNT(*) as count, MIN(id) as minId, MAX(id) as maxId FROM scan_files WHERE ${whereClause}`).get(...params) as any
-      if (!stats || stats.count === 0) return null
+      sql += ' ORDER BY RANDOM() LIMIT 1'
       
-      // 在 ID 范围内随机，最多尝试 5 次
-      for (let attempt = 0; attempt < 5; attempt++) {
-        const randomId = stats.minId + Math.floor(Math.random() * (stats.maxId - stats.minId + 1))
-        
-        // 获取 >= randomId 的第一条符合条件的记录
-        let file = db.prepare(`SELECT * FROM scan_files WHERE ${whereClause} AND id >= ? ORDER BY id LIMIT 1`).get(...params, randomId) as any
-        if (file && !excludeSet.has(file.filename)) return file
-        
-        // 如果没找到或被排除，尝试 < randomId 的记录
-        file = db.prepare(`SELECT * FROM scan_files WHERE ${whereClause} AND id < ? ORDER BY id DESC LIMIT 1`).get(...params, randomId) as any
-        if (file && !excludeSet.has(file.filename)) return file
+      const file = db.prepare(sql).get(...params) as any
+      
+      if (file && !excludeSet.has(file.filename)) {
+        console.log(`✅ [保底成功] 耗时: ${Date.now() - startTime}ms`)
+        return file
       }
       
       return null
@@ -1791,8 +1980,7 @@ export const scanFiles = {
     }
   },
 
-  // 跨多个 cacheId 批量获取随机文件（支持随机性控制）
-  // 优化：ROWID 范围随机获取而非OFFSET ORDER BY RANDOM()，大幅提升大数据量下的性能
+  // 🚀 跨多个 cacheId 批量获取随机文件（动态分桶策略，支持亿级数据）
   getRandomBatchMultiple: (cacheIds: number[], count: number, options?: {
     fileType?: 'image' | 'video'
     isViewed?: boolean
@@ -1810,8 +1998,9 @@ export const scanFiles = {
       
       const { fileType, isViewed, excludeFilenames = [], minFileSize, maxFileSize, currentParentPath, randomness = 1 } = options || {}
       const placeholders = cacheIds.map(() => '?').join(',')
+      const excludeSet = new Set(excludeFilenames)
       
-      // 构建基础 WHERE 条件（不包含 excludeFilenames，因为会在内存中过滤）
+      // 构建基础 WHERE 条件
       const buildWhereClause = (includeParentPath?: string, excludeParentPath?: string) => {
         let where = `cache_id IN (${placeholders})`
         const params: any[] = [...cacheIds]
@@ -1843,95 +2032,65 @@ export const scanFiles = {
         return { where, params }
       }
       
-      // 缓存 COUNT 和 ROWID 范围结果，避免重复查询
-      const statsCache = new Map<string, { count: number, minId: number, maxId: number, allIds?: number[] }>()
-      
-      // 小数据集：直接获取所有 ID 并随机选择（< 1000 条记录）
-      const getRandomFileSmall = (whereClause: string, params: any[], excludeSet: Set<string>, allIds: number[]): any => {
-        if (allIds.length === 0) return null
-        
-        // 过滤掉已排除的 ID
-        const availableIds = allIds.filter(id => {
-          const file = db.prepare(`SELECT filename FROM scan_files WHERE ${whereClause} AND id = ?`).get(...params, id) as any
-          return file && !excludeSet.has(file.filename)
-        })
-        
-        if (availableIds.length === 0) return null
-        
-        // 随机选择一个可用 ID
-        const randomIndex = Math.floor(Math.random() * availableIds.length)
-        const selectedId = availableIds[randomIndex]
-        
-        // 获取完整记录
-        const file = db.prepare(`SELECT * FROM scan_files WHERE ${whereClause} AND id = ?`).get(...params, selectedId) as any
-        return file
-      }
-      
-      // 大数据集：使用 ROWID 范围随机获取（>= 1000 条记录）
-      const getRandomFileLarge = (whereClause: string, params: any[], excludeSet: Set<string>, stats: { count: number, minId: number, maxId: number }): any => {
-        if (stats.count === 0) return null
-        
-        // 根据排除列表大小动态调整尝试次数
-        const maxAttempts = Math.min(50, stats.count)
-        
-        for (let attempt = 0; attempt < maxAttempts; attempt++) {
-          // 在 ID 范围内随机选择一个 ID
-          const randomId = stats.minId + Math.floor(Math.random() * (stats.maxId - stats.minId + 1))
-          
-          // 获取 >= randomId 的第一条符合条件的记录
-          const file = db.prepare(`SELECT * FROM scan_files WHERE ${whereClause} AND id >= ? ORDER BY id LIMIT 1`).get(...params, randomId) as any
+      // 统一的随机文件获取接口（使用动态分桶）
+      const getRandomFile = (whereClause: string, params: any[], totalCount: number, bucketCount: number): any => {
+        // 小数据集：直接随机
+        if (totalCount < 100000) {
+          const file = db.prepare(`
+            SELECT * FROM scan_files 
+            WHERE ${whereClause}
+            ORDER BY RANDOM() 
+            LIMIT 1
+          `).get(...params) as any
           
           if (file && !excludeSet.has(file.filename)) {
             return file
           }
+          return null
+        }
+        
+        // 大数据集：使用动态分桶
+        // 快速尝试（3次随机桶）
+        for (let i = 0; i < 3; i++) {
+          const randomBucket = Math.floor(Math.random() * bucketCount)
           
-          // 如果没找到，尝试 < randomId 的记录
-          if (!file) {
-            const fallbackFile = db.prepare(`SELECT * FROM scan_files WHERE ${whereClause} AND id < ? ORDER BY id DESC LIMIT 1`).get(...params, randomId) as any
-            if (fallbackFile && !excludeSet.has(fallbackFile.filename)) {
-              return fallbackFile
-            }
+          const file = db.prepare(`
+            SELECT * FROM scan_files 
+            WHERE (id % ${bucketCount}) = ? AND ${whereClause}
+            LIMIT 1
+          `).get(randomBucket, ...params) as any
+          
+          if (file && !excludeSet.has(file.filename)) {
+            return file
           }
         }
         
-        console.log(`[getRandomFileLarge] 尝试了 ${maxAttempts} 次仍未找到可用文件，排除数量: ${excludeSet.size}`)
+        // 保底方案：获取非空桶列表
+        const buckets = db.prepare(`
+          SELECT DISTINCT (id % ${bucketCount}) as bucket 
+          FROM scan_files 
+          WHERE ${whereClause}
+        `).all(...params) as Array<{ bucket: number }>
+        
+        if (buckets.length === 0) return null
+        
+        // 从非空桶中随机选择
+        const randomBucket = buckets[Math.floor(Math.random() * buckets.length)].bucket
+        
+        const file = db.prepare(`
+          SELECT * FROM scan_files 
+          WHERE (id % ${bucketCount}) = ? AND ${whereClause}
+          ORDER BY RANDOM()
+          LIMIT 1
+        `).get(randomBucket, ...params) as any
+        
+        if (file && !excludeSet.has(file.filename)) {
+          return file
+        }
+        
         return null
       }
       
-      // 统一的随机文件获取接口
-      const getRandomFile = (whereClause: string, params: any[], excludeSet: Set<string>): any => {
-        const cacheKey = whereClause + JSON.stringify(params)
-        let stats = statsCache.get(cacheKey)
-        
-        if (!stats) {
-          // 获取符合条件的记录的 ID 范围和数量
-          const result = db.prepare(`SELECT COUNT(*) as count, MIN(id) as minId, MAX(id) as maxId FROM scan_files WHERE ${whereClause}`).get(...params) as any
-          stats = { count: result.count || 0, minId: result.minId || 0, maxId: result.maxId || 0 }
-          
-          // 小数据集：预加载所有 ID
-          if (stats.count > 0 && stats.count < 1000) {
-            const allIdsResult = db.prepare(`SELECT id FROM scan_files WHERE ${whereClause} ORDER BY id`).all(...params) as any[]
-            stats.allIds = allIdsResult.map(row => row.id)
-            console.log(`📊 [getRandomFile] 小数据集模式: 预加载 ${stats.allIds.length} 个 ID`)
-          } else {
-            console.log(`📊 [getRandomFile] 大数据集模式: count=${stats.count}, ID范围=${stats.minId}-${stats.maxId}`)
-          }
-          
-          statsCache.set(cacheKey, stats)
-        }
-        
-        if (stats.count === 0) return null
-        
-        // 根据数据量选择策略
-        if (stats.count < 1000 && stats.allIds) {
-          return getRandomFileSmall(whereClause, params, excludeSet, stats.allIds)
-        } else {
-          return getRandomFileLarge(whereClause, params, excludeSet, stats)
-        }
-      }
-      
-      // 将 excludeFilenames 转为 Set 以提高查找效率
-      const excludeSet = new Set(excludeFilenames)
       const results: any[] = []
       
       // 如果有当前目录且随机性 < 1，使用混合策略
@@ -1941,11 +2100,22 @@ export const scanFiles = {
         // 1. 从当前目录获取文件
         if (samePathCount > 0) {
           const { where, params } = buildWhereClause(currentParentPath)
-          for (let i = 0; i < samePathCount && results.length < count; i++) {
-            const file = getRandomFile(where, params, excludeSet)
-            if (file) {
-              results.push(file)
-              excludeSet.add(file.filename)
+          
+          // 统计当前目录文件数
+          const { count: totalCount } = db.prepare(`SELECT COUNT(*) as count FROM scan_files WHERE ${where}`).get(...params) as { count: number }
+          
+          if (totalCount > 0) {
+            // 选择桶数
+            let bucketCount = 1024
+            if (totalCount >= 1000000) bucketCount = 4096
+            if (totalCount >= 10000000) bucketCount = 16384
+            
+            for (let i = 0; i < samePathCount && results.length < count; i++) {
+              const file = getRandomFile(where, params, totalCount, bucketCount)
+              if (file) {
+                results.push(file)
+                excludeSet.add(file.filename)
+              }
             }
           }
         }
@@ -1954,40 +2124,61 @@ export const scanFiles = {
         const remainingCount = count - results.length
         if (remainingCount > 0) {
           const { where, params } = buildWhereClause(undefined, currentParentPath)
-          for (let i = 0; i < remainingCount; i++) {
-            const file = getRandomFile(where, params, excludeSet)
-            if (file) {
-              results.push(file)
-              excludeSet.add(file.filename)
+          
+          const { count: totalCount } = db.prepare(`SELECT COUNT(*) as count FROM scan_files WHERE ${where}`).get(...params) as { count: number }
+          
+          if (totalCount > 0) {
+            let bucketCount = 1024
+            if (totalCount >= 1000000) bucketCount = 4096
+            if (totalCount >= 10000000) bucketCount = 16384
+            
+            for (let i = 0; i < remainingCount; i++) {
+              const file = getRandomFile(where, params, totalCount, bucketCount)
+              if (file) {
+                results.push(file)
+                excludeSet.add(file.filename)
+              }
             }
           }
         }
         
-        console.log(`⏱️ [getRandomBatchMultiple] 混合模式完成: ${Date.now() - totalStartTime}ms`)
+        console.log(`⏱️ [批量随机-混合] 耗时: ${Date.now() - totalStartTime}ms, 获取: ${results.length}/${count}`)
         return results
       }
       
       // 完全随机模式
       const { where, params } = buildWhereClause()
+      
+      // 统计总数
       const countStartTime = Date.now()
+      const { count: totalCount } = db.prepare(`SELECT COUNT(*) as count FROM scan_files WHERE ${where}`).get(...params) as { count: number }
+      console.log(`⏱️ [统计] ${Date.now() - countStartTime}ms, 总数: ${totalCount}`)
       
-      // 先获取一次统计信息（COUNT + ID范围）
-      const statsResult = db.prepare(`SELECT COUNT(*) as count, MIN(id) as minId, MAX(id) as maxId FROM scan_files WHERE ${where}`).get(...params) as any
-      console.log(`⏱️ [getRandomBatchMultiple] 统计查询: ${Date.now() - countStartTime}ms, 总数=${statsResult.count}, ID范围=${statsResult.minId}-${statsResult.maxId}`)
+      if (totalCount === 0) return []
       
-      if (statsResult.count === 0) return []
-      statsCache.set(where + JSON.stringify(params), { count: statsResult.count, minId: statsResult.minId, maxId: statsResult.maxId })
+      // 选择最优桶数
+      let bucketCount = 1024
+      if (totalCount >= 1000000) bucketCount = 4096
+      if (totalCount >= 10000000) bucketCount = 16384
       
+      console.log(`📊 [批量随机] 总数: ${totalCount}, 桶数: ${bucketCount}, 需要: ${count}个`)
+      
+      // 批量获取
       const fetchStartTime = Date.now()
-      for (let i = 0; i < count; i++) {
-        const file = getRandomFile(where, params, excludeSet)
+      const maxAttempts = count * 3  // 最多尝试3倍次数
+      let attempts = 0
+      
+      while (results.length < count && attempts < maxAttempts) {
+        attempts++
+        const file = getRandomFile(where, params, totalCount, bucketCount)
         if (file) {
           results.push(file)
           excludeSet.add(file.filename)
         }
       }
-      console.log(`⏱️ [getRandomBatchMultiple] 获取${count}个文件: ${Date.now() - fetchStartTime}ms`)
-      console.log(`⏱️ [getRandomBatchMultiple] 总耗时: ${Date.now() - totalStartTime}ms`)
+      
+      console.log(`⏱️ [批量随机] 获取耗时: ${Date.now() - fetchStartTime}ms, 获取: ${results.length}/${count}, 尝试: ${attempts}次`)
+      console.log(`⏱️ [批量随机] 总耗时: ${Date.now() - totalStartTime}ms`)
       
       return results
     } catch (error) {
