@@ -728,6 +728,7 @@ class DatabasePreloadManager {
     // 重置取消状态
     this.resetCancelState()
     
+    // ✅ 初始预加载：禁用并发限制，让浏览器自己控制（最大化速度）
     this.setConcurrencyLimitEnabled(false)
     this.setMaxCacheSize(count)
     this.clearCache()
@@ -797,31 +798,34 @@ class DatabasePreloadManager {
         lastmod: f.lastmod || ''
       }))
       
+      // ✅ 初始预加载：同时发起所有请求，让浏览器自己控制并发（最大化速度）
       let completedCount = 0
+      let successCount = 0
+      let failedCount = 0
+      
       const preloadPromises = filesToPreload.map((file: any) =>
-        this.preloadFileWithoutLimit(config, file)
+        this.preloadFileWithoutLimit(config, file)  // 不限制并发，让浏览器控制
           .then(() => {
             completedCount++
+            successCount++
             if (onProgress) {
               onProgress(completedCount, count)
             }
           })
           .catch((error) => {
             completedCount++
+            failedCount++
             console.error(`[数据库模式] 预加载文件失败: ${file.filename}`, error)
             if (onProgress) {
               onProgress(completedCount, count)
             }
-            throw error
           })
       )
       
-      const results = await Promise.allSettled(preloadPromises)
+      await Promise.allSettled(preloadPromises)
       
+      // 恢复并发限制（后续的补充加载会受到限制）
       this.setConcurrencyLimitEnabled(true)
-      
-      const successCount = results.filter(r => r.status === 'fulfilled').length
-      const failedCount = results.filter(r => r.status === 'rejected').length
       
       return {
         successCount,
@@ -830,7 +834,7 @@ class DatabasePreloadManager {
       }
       
     } catch (error: any) {
-      this.setConcurrencyLimitEnabled(true)
+      this.setConcurrencyLimitEnabled(true)  // 确保恢复并发限制
       console.error('[数据库模式] 预加载失败:', error)
       return {
         successCount: 0,
@@ -859,6 +863,7 @@ class DatabasePreloadManager {
     // 重置取消状态
     this.resetCancelState()
     
+    // ✅ 初始预加载：禁用并发限制，让浏览器自己控制（最大化速度）
     this.setConcurrencyLimitEnabled(false)
     this.setMaxCacheSize(count)
     this.clearCache()
@@ -931,31 +936,34 @@ class DatabasePreloadManager {
       
       console.log(`[数据库模式] 选择图组 ${data.parentPath}，共 ${files.length} 个文件，预加载前 ${filesToPreload.length} 个`)
       
+      // ✅ 初始预加载：同时发起所有请求，让浏览器自己控制并发（最大化速度）
       let completedCount = 0
+      let successCount = 0
+      let failedCount = 0
+      
       const preloadPromises = filesToPreload.map((file: any) =>
-        this.preloadFileWithoutLimit(config, file)
+        this.preloadFileWithoutLimit(config, file)  // 不限制并发，让浏览器控制
           .then(() => {
             completedCount++
+            successCount++
             if (onProgress) {
               onProgress(completedCount, Math.min(count, files.length))
             }
           })
           .catch((error) => {
             completedCount++
+            failedCount++
             console.error(`[数据库模式] 预加载文件失败: ${file.filename}`, error)
             if (onProgress) {
               onProgress(completedCount, Math.min(count, files.length))
             }
-            throw error
           })
       )
       
-      const results = await Promise.allSettled(preloadPromises)
+      await Promise.allSettled(preloadPromises)
       
+      // 恢复并发限制（后续的补充加载会受到限制）
       this.setConcurrencyLimitEnabled(true)
-      
-      const successCount = results.filter(r => r.status === 'fulfilled').length
-      const failedCount = results.filter(r => r.status === 'rejected').length
       
       return {
         successCount,
@@ -966,7 +974,7 @@ class DatabasePreloadManager {
       }
       
     } catch (error: any) {
-      this.setConcurrencyLimitEnabled(true)
+      this.setConcurrencyLimitEnabled(true)  // 确保恢复并发限制
       console.error('[数据库模式] 图组预加载失败:', error)
       return {
         successCount: 0,
@@ -1038,6 +1046,7 @@ class DatabasePreloadManager {
       
       console.log(`[数据库模式] 下一组预加载：图组 ${data.parentPath}，共 ${data.files.length} 个文件，预加载前 ${filesToPreload.length} 个`)
       
+      // ✅ 下一组预加载：使用并发控制（4个），避免阻塞评分API
       const preloadPromises = filesToPreload.map((file: any) => this.preloadFileToNextGroup(config, file))
       await Promise.allSettled(preloadPromises)
       
@@ -1059,10 +1068,14 @@ class DatabasePreloadManager {
     randomness: number = 1,      // 随机性：0=优先当前目录，1=完全随机
     mediaFilter: string = 'all'  // 媒体类型筛选：all/images/videos
   ): Promise<void> {
-    // 初始加载时重置取消状态
+    // 初始加载时重置取消状态，禁用并发限制（让浏览器控制）
     if (isInitialLoad) {
       this.resetCancelState()
       this.setConcurrencyLimitEnabled(false)
+    }
+    // 后续补充加载时，确保并发限制已启用
+    else {
+      this.setConcurrencyLimitEnabled(true)
     }
     
     // 检查是否已取消
@@ -1144,8 +1157,12 @@ class DatabasePreloadManager {
         lastmod: f.lastmod || ''
       }))
       
+      // 根据是否为初始加载，选择不同的预加载方法
       const preloadPromises = filesToPreload.map((file: any) =>
-        this.preloadFile(config, file)
+        (isInitialLoad 
+          ? this.preloadFileWithoutLimit(config, file)  // 初始加载：不限制，让浏览器控制
+          : this.preloadFile(config, file)              // 后续补充：限制4个并发
+        )
           .then(() => {
             if (onProgress) {
               onProgress(this.cache.size, targetCount)
@@ -1278,42 +1295,27 @@ class DatabasePreloadManager {
     
     console.log(`[数据库模式] 开始预加载当前图组剩余 ${remainingFiles.length} 个文件`)
     
-    const maxConcurrent = 3
-    let currentIndex = 0
-    
     const currentGroupFilepaths = new Set(this.currentGroupFiles.map(f => f.filename))
     
-    while (currentIndex < remainingFiles.length) {
-      // 检查是否已取消
-      if (this.isPreloadCancelled()) {
-        console.log('[数据库模式] 预加载已取消，停止剩余文件预加载')
-        break
-      }
-      
-      const firstFileInBatch = remainingFiles[currentIndex]
-      if (!currentGroupFilepaths.has(firstFileInBatch.filename)) {
-        console.log('[数据库模式] 检测到图组已切换，停止预加载上一图组的剩余文件')
-        break
-      }
-      
-      const batch = remainingFiles.slice(currentIndex, currentIndex + maxConcurrent)
-      
-      const batchPromises = batch.map((file) => 
-        this.preloadFileWithoutLimit(config, file).then(() => {
-          if (onProgress) {
-            onProgress(this.cache.size)
-          }
-        }).catch(error => {
-          console.error(`[数据库模式] 预加载文件失败: ${file.filename}`, error)
-          if (onProgress) {
-            onProgress(this.cache.size)
-          }
-        })
-      )
-      
-      await Promise.allSettled(batchPromises)
-      currentIndex += maxConcurrent
-    }
+    // ✅ 剩余文件预加载：使用并发控制（4个），避免阻塞评分API
+    const preloadPromises = remainingFiles.map((file) => 
+      this.preloadFile(config, file).then(() => {  // 使用带并发控制的方法
+        // 检查文件是否还属于当前图组
+        if (!currentGroupFilepaths.has(file.filename)) {
+          console.log('[数据库模式] 检测到图组已切换，文件已不属于当前组')
+        }
+        if (onProgress) {
+          onProgress(this.cache.size)
+        }
+      }).catch(error => {
+        console.error(`[数据库模式] 预加载文件失败: ${file.filename}`, error)
+        if (onProgress) {
+          onProgress(this.cache.size)
+        }
+      })
+    )
+    
+    await Promise.allSettled(preloadPromises)
     
     console.log('[数据库模式] 当前图组剩余文件预加载完成')
   }
