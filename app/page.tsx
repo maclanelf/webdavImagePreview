@@ -645,19 +645,31 @@ export default function HomePage() {
     
     if (!preloadEnabled || !config) return
     
-    // ✅ 如果已经有智能预加载在进行，跳过
-    if (smartPreloadInProgressRef.current) {
-      console.log('[智能预加载] 已有预加载在进行，跳过')
-      return
-    }
-    
     // ✅ 清除之前的定时器（防抖动）
+    // 注意：不检查 smartPreloadInProgressRef，因为我们需要确保每次切换都最终触发预加载
     if (smartPreloadTimeoutRef.current) {
       clearTimeout(smartPreloadTimeoutRef.current)
+      console.log('[智能预加载] 清除旧定时器，重新设置')
     }
     
     // ✅ 延迟执行，避免快速切换时重复触发
+    // 如果用户在200ms内再次切换，定时器会被清除并重新设置
+    // 这样可以确保：快速切换时只触发最后一次，但不会完全跳过
     smartPreloadTimeoutRef.current = setTimeout(async () => {
+      // 如果已经有预加载在进行，等待它完成
+      if (smartPreloadInProgressRef.current) {
+        console.log('[智能预加载] 已有预加载在进行，等待完成后再执行')
+        // 等待当前预加载完成（最多等待5秒）
+        let waitCount = 0
+        while (smartPreloadInProgressRef.current && waitCount < 50) {
+          await new Promise(resolve => setTimeout(resolve, 100))
+          waitCount++
+        }
+        if (smartPreloadInProgressRef.current) {
+          console.warn('[智能预加载] 等待超时，强制执行')
+        }
+      }
+      
       smartPreloadInProgressRef.current = true
       
       try {
