@@ -299,6 +299,22 @@ export function initDatabase() {
     // 为 filename 单独创建索引，用于 mediaRatings.save 中的同步更新
     db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_files_filename ON scan_files(filename)`)
     
+    // 创建 media_ratings 索引（支持高级过滤查询）
+    console.log('创建 media_ratings 索引（支持高级过滤）...')
+    try {
+      // 评分索引（最常用的过滤条件）
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_media_ratings_rating ON media_ratings(rating)`)
+      // 复合索引（覆盖常见查询模式：JOIN + 评分过滤）
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_media_ratings_file_rating ON media_ratings(file_path, rating)`)
+      // 评价理由索引（支持关键词搜索）
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_media_ratings_reason ON media_ratings(recommendation_reason)`)
+      // is_viewed 索引（支持已看过/未看过筛选）
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_media_ratings_viewed ON media_ratings(is_viewed)`)
+      console.log('✅ media_ratings 索引创建成功')
+    } catch (error: any) {
+      console.warn('⚠️ media_ratings 索引创建失败:', error.message)
+    }
+    
     // 🚀 动态分桶索引（表达式索引，支持亿级数据高效随机查询）
     // 使用 id % bucketCount 动态计算桶号，无需额外字段
     // 根据数据量自动选择最优桶数：1024/4096/16384
@@ -1317,150 +1333,7 @@ export const scanFiles = {
     }
   },
 
-  // 🚀 智能随机获取（动态分桶策略，支持亿级数据）
-  getRandom: (cacheId: number, options?: {
-    fileType?: 'image' | 'video'
-    isViewed?: boolean
-  }) => {
-    const startTime = Date.now()
-    try {
-      ensureInitialized()
-      
-      const { fileType, isViewed } = options || {}
-      
-      // 1. 统计数据量，选择最优桶数
-      let countSql = 'SELECT COUNT(*) as count FROM scan_files WHERE cache_id = ?'
-      const countParams: any[] = [cacheId]
-      
-      if (fileType) {
-        countSql += ' AND file_type = ?'
-        countParams.push(fileType)
-      }
-      if (isViewed !== undefined) {
-        countSql += ' AND is_viewed = ?'
-        countParams.push(isViewed ? 1 : 0)
-      }
-      
-      const { count } = db.prepare(countSql).get(...countParams) as { count: number }
-      
-      if (count === 0) return null
-      
-      // 2. 小数据集（< 10万）：直接随机，不分桶
-      if (count < 100000) {
-        let sql = 'SELECT * FROM scan_files WHERE cache_id = ?'
-        const params: any[] = [cacheId]
-        
-        if (fileType) {
-          sql += ' AND file_type = ?'
-          params.push(fileType)
-        }
-        if (isViewed !== undefined) {
-          sql += ' AND is_viewed = ?'
-          params.push(isViewed ? 1 : 0)
-        }
-        
-        sql += ' ORDER BY RANDOM() LIMIT 1'
-        
-        const file = db.prepare(sql).get(...params)
-        console.log(`⚡ [小数据集] 耗时: ${Date.now() - startTime}ms, count=${count}`)
-        return file
-      }
-      
-      // 3. 大数据集：使用动态分桶
-      // 根据数据量选择最优桶数
-      let bucketCount: number
-      if (count < 1000000) {
-        bucketCount = 1024  // 100万以下：1024桶，每桶约100-1000个
-      } else if (count < 10000000) {
-        bucketCount = 4096  // 1000万以下：4096桶，每桶约250-2500个
-      } else {
-        bucketCount = 16384  // 1000万以上：16384桶，每桶约600-6000个
-      }
-      
-      console.log(`📊 [动态分桶] count=${count}, bucketCount=${bucketCount}, 每桶约${Math.round(count/bucketCount)}个`)
-      
-      // 4. 快速尝试（5次随机桶，增加多样性）
-      for (let i = 0; i < 5; i++) {
-        const randomBucket = Math.floor(Math.random() * bucketCount)
-        
-        let sql = `SELECT * FROM scan_files WHERE (id % ${bucketCount}) = ? AND cache_id = ?`
-        const params: any[] = [randomBucket, cacheId]
-        
-        if (fileType) {
-          sql += ' AND file_type = ?'
-          params.push(fileType)
-        }
-        if (isViewed !== undefined) {
-          sql += ' AND is_viewed = ?'
-          params.push(isViewed ? 1 : 0)
-        }
-        
-        sql += ' ORDER BY RANDOM() LIMIT 1'
-        
-        const file = db.prepare(sql).get(...params)
-        if (file) {
-          console.log(`⚡ [快速命中] 第${i + 1}次, 耗时: ${Date.now() - startTime}ms`)
-          return file
-        }
-      }
-      
-      // 5. 保底方案：获取非空桶列表，从多个桶中尝试
-      console.log(`⚠️ [快速未命中] 切换到保底方案`)
-      
-      let bucketSql = `SELECT DISTINCT (id % ${bucketCount}) as bucket FROM scan_files WHERE cache_id = ?`
-      const bucketParams: any[] = [cacheId]
-      
-      if (fileType) {
-        bucketSql += ' AND file_type = ?'
-        bucketParams.push(fileType)
-      }
-      if (isViewed !== undefined) {
-        bucketSql += ' AND is_viewed = ?'
-        bucketParams.push(isViewed ? 1 : 0)
-      }
-      
-      const buckets = db.prepare(bucketSql).all(...bucketParams) as Array<{ bucket: number }>
-      
-      if (buckets.length === 0) {
-        console.log(`❌ [无数据] 耗时: ${Date.now() - startTime}ms`)
-        return null
-      }
-      
-      // 打乱桶列表，从多个桶中尝试（最多尝试10个桶）
-      const shuffledBuckets = [...buckets].sort(() => Math.random() - 0.5)
-      const tryCount = Math.min(10, shuffledBuckets.length)
-      
-      for (let i = 0; i < tryCount; i++) {
-        const randomBucket = shuffledBuckets[i].bucket
-        
-        let sql = `SELECT * FROM scan_files WHERE (id % ${bucketCount}) = ? AND cache_id = ?`
-        const params: any[] = [randomBucket, cacheId]
-        
-        if (fileType) {
-          sql += ' AND file_type = ?'
-          params.push(fileType)
-        }
-        if (isViewed !== undefined) {
-          sql += ' AND is_viewed = ?'
-          params.push(isViewed ? 1 : 0)
-        }
-        
-        sql += ' ORDER BY RANDOM() LIMIT 1'
-        
-        const file = db.prepare(sql).get(...params)
-        if (file) {
-          console.log(`✅ [保底成功] 非空桶${buckets.length}个, 耗时: ${Date.now() - startTime}ms`)
-          return file
-        }
-      }
-      
-      console.log(`❌ [保底失败] 耗时: ${Date.now() - startTime}ms`)
-      return null
-    } catch (error) {
-      console.error('随机获取扫描文件失败:', error)
-      return null
-    }
-  },
+
 
   // 获取某目录下的所有文件（图组模式）
   getByParentPath: (cacheId: number, parentPath: string) => {
@@ -1744,154 +1617,7 @@ export const scanFiles = {
     }
   },
 
-  // 🚀 跨多个 cacheId 随机获取文件（动态分桶策略）
-  getRandomMultiple: (cacheIds: number[], options?: {
-    fileType?: 'image' | 'video'
-    isViewed?: boolean
-    excludeFilenames?: string[]
-  }) => {
-    const startTime = Date.now()
-    try {
-      ensureInitialized()
-      
-      if (cacheIds.length === 0) return null
-      
-      const { fileType, isViewed, excludeFilenames = [] } = options || {}
-      const placeholders = cacheIds.map(() => '?').join(',')
-      const excludeSet = new Set(excludeFilenames)
-      
-      // 1. 统计数据量，选择最优桶数
-      let countSql = `SELECT COUNT(*) as count FROM scan_files WHERE cache_id IN (${placeholders})`
-      const countParams: any[] = [...cacheIds]
-      
-      if (fileType) {
-        countSql += ' AND file_type = ?'
-        countParams.push(fileType)
-      }
-      if (isViewed !== undefined) {
-        countSql += ' AND is_viewed = ?'
-        countParams.push(isViewed ? 1 : 0)
-      }
-      
-      const { count } = db.prepare(countSql).get(...countParams) as { count: number }
-      
-      if (count === 0) return null
-      
-      // 2. 小数据集（< 10万）：直接随机
-      if (count < 100000) {
-        let sql = `SELECT * FROM scan_files WHERE cache_id IN (${placeholders})`
-        const params: any[] = [...cacheIds]
-        
-        if (fileType) {
-          sql += ' AND file_type = ?'
-          params.push(fileType)
-        }
-        if (isViewed !== undefined) {
-          sql += ' AND is_viewed = ?'
-          params.push(isViewed ? 1 : 0)
-        }
-        
-        sql += ' ORDER BY RANDOM() LIMIT 1'
-        
-        const file = db.prepare(sql).get(...params) as any
-        
-        if (file && !excludeSet.has(file.filename)) {
-          console.log(`⚡ [小数据集] 耗时: ${Date.now() - startTime}ms`)
-          return file
-        }
-        return null
-      }
-      
-      // 3. 大数据集：使用动态分桶
-      let bucketCount: number
-      if (count < 1000000) {
-        bucketCount = 1024
-      } else if (count < 10000000) {
-        bucketCount = 4096
-      } else {
-        bucketCount = 16384
-      }
-      
-      console.log(`📊 [跨缓存随机] count=${count}, bucketCount=${bucketCount}`)
-      
-      // 4. 快速尝试（5次随机桶，增加多样性）
-      for (let i = 0; i < 5; i++) {
-        const randomBucket = Math.floor(Math.random() * bucketCount)
-        
-        let sql = `SELECT * FROM scan_files WHERE (id % ${bucketCount}) = ? AND cache_id IN (${placeholders})`
-        const params: any[] = [randomBucket, ...cacheIds]
-        
-        if (fileType) {
-          sql += ' AND file_type = ?'
-          params.push(fileType)
-        }
-        if (isViewed !== undefined) {
-          sql += ' AND is_viewed = ?'
-          params.push(isViewed ? 1 : 0)
-        }
-        
-        sql += ' ORDER BY RANDOM() LIMIT 1'
-        
-        const file = db.prepare(sql).get(...params) as any
-        if (file && !excludeSet.has(file.filename)) {
-          console.log(`⚡ [快速命中] 第${i + 1}次, 耗时: ${Date.now() - startTime}ms`)
-          return file
-        }
-      }
-      
-      // 5. 保底方案：获取非空桶列表，从多个桶中尝试
-      console.log(`⚠️ [快速未命中] 切换到保底方案`)
-      
-      let bucketSql = `SELECT DISTINCT (id % ${bucketCount}) as bucket FROM scan_files WHERE cache_id IN (${placeholders})`
-      const bucketParams: any[] = [...cacheIds]
-      
-      if (fileType) {
-        bucketSql += ' AND file_type = ?'
-        bucketParams.push(fileType)
-      }
-      if (isViewed !== undefined) {
-        bucketSql += ' AND is_viewed = ?'
-        bucketParams.push(isViewed ? 1 : 0)
-      }
-      
-      const buckets = db.prepare(bucketSql).all(...bucketParams) as Array<{ bucket: number }>
-      
-      if (buckets.length === 0) return null
-      
-      // 打乱桶列表，从多个桶中尝试（最多尝试10个桶）
-      const shuffledBuckets = [...buckets].sort(() => Math.random() - 0.5)
-      const tryCount = Math.min(10, shuffledBuckets.length)
-      
-      for (let i = 0; i < tryCount; i++) {
-        const randomBucket = shuffledBuckets[i].bucket
-        
-        let sql = `SELECT * FROM scan_files WHERE (id % ${bucketCount}) = ? AND cache_id IN (${placeholders})`
-        const params: any[] = [randomBucket, ...cacheIds]
-        
-        if (fileType) {
-          sql += ' AND file_type = ?'
-          params.push(fileType)
-        }
-        if (isViewed !== undefined) {
-          sql += ' AND is_viewed = ?'
-          params.push(isViewed ? 1 : 0)
-        }
-        
-        sql += ' ORDER BY RANDOM() LIMIT 1'
-        
-        const file = db.prepare(sql).get(...params) as any
-        if (file && !excludeSet.has(file.filename)) {
-          console.log(`✅ [保底成功] 耗时: ${Date.now() - startTime}ms`)
-          return file
-        }
-      }
-      
-      return null
-    } catch (error) {
-      console.error('跨缓存随机获取文件失败:', error)
-      return null
-    }
-  },
+
 
   // 跨多个 cacheId 获取随机图组
   getRandomGroupMultiple: (cacheIds: number[], options?: {
@@ -2005,6 +1731,12 @@ export const scanFiles = {
     maxFileSize?: number        // 最大文件大小（字节），用于过滤大视频
     currentParentPath?: string  // 当前目录路径
     randomness?: number         // 随机性：0=优先当前目录，1=完全随机
+    // 高级过滤条件（仅已看过模式）
+    ratings?: number[]          // 评分星星：1-5星
+    evaluations?: string[]      // 评价标签
+    categories?: string[]       // 分类标签
+    reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword' // 评价理由过滤
+    reasonKeyword?: string      // 评价理由关键词
   }) => {
     const totalStartTime = Date.now()
     try {
@@ -2012,52 +1744,142 @@ export const scanFiles = {
       
       if (cacheIds.length === 0) return []
       
-      const { fileType, isViewed, excludeFilenames = [], minFileSize, maxFileSize, currentParentPath, randomness = 1 } = options || {}
+      const { 
+        fileType, isViewed, excludeFilenames = [], minFileSize, maxFileSize, 
+        currentParentPath, randomness = 1,
+        ratings, evaluations, categories, reasonFilter, reasonKeyword
+      } = options || {}
       const placeholders = cacheIds.map(() => '?').join(',')
       const excludeSet = new Set(excludeFilenames)
       
+      // 判断是否需要JOIN media_ratings表（有高级过滤条件时）
+      const needsRatingJoin = ratings?.length || evaluations?.length || categories?.length || 
+                              (reasonFilter && reasonFilter !== 'all')
+      
       // 构建基础 WHERE 条件
       const buildWhereClause = (includeParentPath?: string, excludeParentPath?: string) => {
-        let where = `cache_id IN (${placeholders})`
+        let where = needsRatingJoin 
+          ? `sf.cache_id IN (${placeholders})`
+          : `cache_id IN (${placeholders})`
         const params: any[] = [...cacheIds]
         
+        const prefix = needsRatingJoin ? 'sf.' : ''
+        
         if (includeParentPath) {
-          where += ` AND parent_path = ?`
+          where += ` AND ${prefix}parent_path = ?`
           params.push(includeParentPath)
         }
         if (excludeParentPath) {
-          where += ` AND parent_path != ?`
+          where += ` AND ${prefix}parent_path != ?`
           params.push(excludeParentPath)
         }
         if (fileType) {
-          where += ` AND file_type = ?`
+          where += ` AND ${prefix}file_type = ?`
           params.push(fileType)
         }
         if (isViewed !== undefined) {
-          where += ` AND is_viewed = ?`
+          where += ` AND ${prefix}is_viewed = ?`
           params.push(isViewed ? 1 : 0)
         }
         if (minFileSize !== undefined && minFileSize > 0) {
-          where += ` AND file_size >= ?`
+          where += ` AND ${prefix}file_size >= ?`
           params.push(minFileSize)
         }
         if (maxFileSize !== undefined && maxFileSize > 0) {
-          where += ` AND file_size <= ?`
+          where += ` AND ${prefix}file_size <= ?`
           params.push(maxFileSize)
         }
+        
+        // 高级过滤条件（需要JOIN media_ratings表）
+        if (needsRatingJoin) {
+          // 评分星星过滤
+          if (ratings && ratings.length > 0) {
+            const ratingPlaceholders = ratings.map(() => '?').join(',')
+            where += ` AND mr.rating IN (${ratingPlaceholders})`
+            params.push(...ratings)
+          }
+          
+          // 评价标签过滤（JSON数组包含）
+          if (evaluations && evaluations.length > 0) {
+            const evalConditions = evaluations.map(() => 
+              `(mr.custom_evaluation LIKE ? OR mr.custom_evaluation = ?)`
+            ).join(' OR ')
+            where += ` AND (${evalConditions})`
+            evaluations.forEach(evaluation => {
+              params.push(`%"${evaluation}"%`) // JSON数组包含
+              params.push(evaluation) // 或者是单个字符串
+            })
+          }
+          
+          // 分类标签过滤（JSON数组包含）
+          if (categories && categories.length > 0) {
+            const catConditions = categories.map(() => 
+              `(mr.category LIKE ? OR mr.category = ?)`
+            ).join(' OR ')
+            where += ` AND (${catConditions})`
+            categories.forEach(category => {
+              params.push(`%"${category}"%`) // JSON数组包含
+              params.push(category) // 或者是单个字符串
+            })
+          }
+          
+          // 评价理由过滤
+          if (reasonFilter === 'empty') {
+            where += ` AND (mr.recommendation_reason IS NULL OR mr.recommendation_reason = '')`
+          } else if (reasonFilter === 'nonempty') {
+            where += ` AND mr.recommendation_reason IS NOT NULL AND mr.recommendation_reason != ''`
+          } else if (reasonFilter === 'keyword' && reasonKeyword) {
+            where += ` AND mr.recommendation_reason LIKE ?`
+            params.push(`%${reasonKeyword}%`)
+          }
+        }
+        
         return { where, params }
+      }
+      
+      // 构建SELECT语句（根据是否需要JOIN决定）
+      const buildSelectSql = (whereClause: string, orderBy: string = 'RANDOM()', limit?: number) => {
+        if (needsRatingJoin) {
+          let sql = `
+            SELECT sf.* 
+            FROM scan_files sf
+            INNER JOIN media_ratings mr ON sf.filename = mr.file_path
+            WHERE ${whereClause}
+            ORDER BY ${orderBy}
+          `
+          if (limit) sql += ` LIMIT ${limit}`
+          return sql
+        } else {
+          let sql = `
+            SELECT * FROM scan_files 
+            WHERE ${whereClause}
+            ORDER BY ${orderBy}
+          `
+          if (limit) sql += ` LIMIT ${limit}`
+          return sql
+        }
+      }
+      
+      // 构建COUNT语句
+      const buildCountSql = (whereClause: string) => {
+        if (needsRatingJoin) {
+          return `
+            SELECT COUNT(*) as count 
+            FROM scan_files sf
+            INNER JOIN media_ratings mr ON sf.filename = mr.file_path
+            WHERE ${whereClause}
+          `
+        } else {
+          return `SELECT COUNT(*) as count FROM scan_files WHERE ${whereClause}`
+        }
       }
       
       // 统一的随机文件获取接口（使用动态分桶）
       const getRandomFile = (whereClause: string, params: any[], totalCount: number, bucketCount: number): any => {
         // 小数据集：直接随机
         if (totalCount < 100000) {
-          const file = db.prepare(`
-            SELECT * FROM scan_files 
-            WHERE ${whereClause}
-            ORDER BY RANDOM() 
-            LIMIT 1
-          `).get(...params) as any
+          const sql = buildSelectSql(whereClause, 'RANDOM()', 1)
+          const file = db.prepare(sql).get(...params) as any
           
           if (file && !excludeSet.has(file.filename)) {
             return file
@@ -2071,12 +1893,11 @@ export const scanFiles = {
           const randomBucket = Math.floor(Math.random() * bucketCount)
           
           // 从桶中随机选择一个文件（使用 ORDER BY RANDOM() 增加多样性）
-          const file = db.prepare(`
-            SELECT * FROM scan_files 
-            WHERE (id % ${bucketCount}) = ? AND ${whereClause}
-            ORDER BY RANDOM()
-            LIMIT 1
-          `).get(randomBucket, ...params) as any
+          const bucketWhere = needsRatingJoin 
+            ? `(sf.id % ${bucketCount}) = ? AND ${whereClause}`
+            : `(id % ${bucketCount}) = ? AND ${whereClause}`
+          const sql = buildSelectSql(bucketWhere, 'RANDOM()', 1)
+          const file = db.prepare(sql).get(randomBucket, ...params) as any
           
           if (file && !excludeSet.has(file.filename)) {
             return file
@@ -2084,11 +1905,15 @@ export const scanFiles = {
         }
         
         // 保底方案：获取非空桶列表，并从多个桶中尝试
-        const buckets = db.prepare(`
-          SELECT DISTINCT (id % ${bucketCount}) as bucket 
-          FROM scan_files 
-          WHERE ${whereClause}
-        `).all(...params) as Array<{ bucket: number }>
+        const bucketSql = needsRatingJoin
+          ? `SELECT DISTINCT (sf.id % ${bucketCount}) as bucket 
+             FROM scan_files sf
+             INNER JOIN media_ratings mr ON sf.filename = mr.file_path
+             WHERE ${whereClause}`
+          : `SELECT DISTINCT (id % ${bucketCount}) as bucket 
+             FROM scan_files 
+             WHERE ${whereClause}`
+        const buckets = db.prepare(bucketSql).all(...params) as Array<{ bucket: number }>
         
         if (buckets.length === 0) return null
         
@@ -2099,12 +1924,11 @@ export const scanFiles = {
         for (let i = 0; i < tryCount; i++) {
           const randomBucket = shuffledBuckets[i].bucket
           
-          const file = db.prepare(`
-            SELECT * FROM scan_files 
-            WHERE (id % ${bucketCount}) = ? AND ${whereClause}
-            ORDER BY RANDOM()
-            LIMIT 1
-          `).get(randomBucket, ...params) as any
+          const bucketWhere = needsRatingJoin 
+            ? `(sf.id % ${bucketCount}) = ? AND ${whereClause}`
+            : `(id % ${bucketCount}) = ? AND ${whereClause}`
+          const sql = buildSelectSql(bucketWhere, 'RANDOM()', 1)
+          const file = db.prepare(sql).get(randomBucket, ...params) as any
           
           if (file && !excludeSet.has(file.filename)) {
             return file
@@ -2125,7 +1949,8 @@ export const scanFiles = {
           const { where, params } = buildWhereClause(currentParentPath)
           
           // 统计当前目录文件数
-          const { count: totalCount } = db.prepare(`SELECT COUNT(*) as count FROM scan_files WHERE ${where}`).get(...params) as { count: number }
+          const countSql = buildCountSql(where)
+          const { count: totalCount } = db.prepare(countSql).get(...params) as { count: number }
           
           if (totalCount > 0) {
             // 选择桶数
@@ -2148,7 +1973,8 @@ export const scanFiles = {
         if (remainingCount > 0) {
           const { where, params } = buildWhereClause(undefined, currentParentPath)
           
-          const { count: totalCount } = db.prepare(`SELECT COUNT(*) as count FROM scan_files WHERE ${where}`).get(...params) as { count: number }
+          const countSql = buildCountSql(where)
+          const { count: totalCount } = db.prepare(countSql).get(...params) as { count: number }
           
           if (totalCount > 0) {
             let bucketCount = 1024
@@ -2174,7 +2000,8 @@ export const scanFiles = {
       
       // 统计总数
       const countStartTime = Date.now()
-      const { count: totalCount } = db.prepare(`SELECT COUNT(*) as count FROM scan_files WHERE ${where}`).get(...params) as { count: number }
+      const countSql = buildCountSql(where)
+      const { count: totalCount } = db.prepare(countSql).get(...params) as { count: number }
       console.log(`⏱️ [统计] ${Date.now() - countStartTime}ms, 总数: ${totalCount}`)
       
       if (totalCount === 0) return []

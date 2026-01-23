@@ -17,6 +17,13 @@ export async function POST(request: NextRequest) {
     const maxFileSize = body.maxFileSize // 最大文件大小（字节）
     const currentParentPath = body.currentParentPath // 当前目录路径（用于随机性控制）
     const randomness = parseFloat(body.randomness || '1') // 随机性：0=优先当前目录，1=完全随机
+    
+    // 高级过滤条件（仅已看过模式）
+    const ratings = body.ratings // 评分星星数组：[1,2,3,4,5]
+    const evaluations = body.evaluations // 评价标签数组
+    const categories = body.categories // 分类标签数组
+    const reasonFilter = body.reasonFilter // 评价理由过滤：'all' | 'empty' | 'nonempty' | 'keyword'
+    const reasonKeyword = body.reasonKeyword // 评价理由关键词
 
     console.log(`⏱️ [random] 开始处理请求`)
 
@@ -60,7 +67,7 @@ export async function POST(request: NextRequest) {
     }
     console.log(`⏱️ [random] hasDataMultiple完成: ${Date.now() - hasDataStartTime}ms`)
 
-    // 使用批量随机获取方法（支持随机性控制）
+    // 使用批量随机获取方法（支持随机性控制和高级过滤）
     const randomStartTime = Date.now()
     const files = scanFiles.getRandomBatchMultiple(cacheIds, count, {
       fileType: fileType || undefined,
@@ -69,7 +76,13 @@ export async function POST(request: NextRequest) {
       minFileSize: minFileSize ? parseInt(String(minFileSize)) : undefined,
       maxFileSize: maxFileSize ? parseInt(String(maxFileSize)) : undefined,
       currentParentPath: currentParentPath || undefined,
-      randomness: randomness
+      randomness: randomness,
+      // 高级过滤条件
+      ratings: ratings && Array.isArray(ratings) ? ratings : undefined,
+      evaluations: evaluations && Array.isArray(evaluations) ? evaluations : undefined,
+      categories: categories && Array.isArray(categories) ? categories : undefined,
+      reasonFilter: reasonFilter || undefined,
+      reasonKeyword: reasonKeyword || undefined
     })
     console.log(`⏱️ [random] getRandomBatchMultiple完成: ${Date.now() - randomStartTime}ms`)
     console.log(`⏱️ [random] 总耗时: ${Date.now() - startTime}ms`)

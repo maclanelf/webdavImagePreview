@@ -33,6 +33,7 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  TextField,
 } from '@mui/material'
 import {
   Shuffle as ShuffleIcon,
@@ -109,6 +110,15 @@ type ViewMode = 'random' | 'gallery' | 'large-video' // random: 随机模式, ga
 type ViewedFilter = 'all' | 'viewed' | 'unviewed' // 已看过筛选
 type MediaType = 'image' | 'small-video' | 'stream-video' // 媒体类型：图片、小视频、流式大视频
 
+// 高级过滤条件（仅已看过模式）
+interface AdvancedFilters {
+  ratings: number[] // 评分星星：1-5星
+  evaluations: string[] // 评价标签
+  categories: string[] // 分类标签
+  reasonFilter: 'all' | 'empty' | 'nonempty' | 'keyword' // 评价理由过滤
+  reasonKeyword?: string // 评价理由关键词
+}
+
 interface MediaGroup {
   folderPath: string
   files: MediaFile[]
@@ -154,6 +164,17 @@ export default function HomePage() {
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all')
   // 已看过筛选，默认只显示未看过的
   const [viewedFilter, setViewedFilter] = useState<ViewedFilter>('unviewed')
+  // 高级过滤条件（仅已看过模式）
+  const [advancedFilters, setAdvancedFilters] = useState<AdvancedFilters>({
+    ratings: [],
+    evaluations: [],
+    categories: [],
+    reasonFilter: 'all',
+    reasonKeyword: ''
+  })
+  // 可用的评价标签和分类（从数据库加载）
+  const [availableEvaluations, setAvailableEvaluations] = useState<string[]>([])
+  const [availableCategories, setAvailableCategories] = useState<string[]>([])
   // 抽屉打开状态
   const [drawerOpen, setDrawerOpen] = useState(false)
   // 全屏状态
@@ -162,7 +183,12 @@ export default function HomePage() {
   const [viewMode, setViewMode] = useState<ViewMode>('random')
   
   // 用于追踪配置变化，只在关闭抽屉时检查是否需要重新加载
-  const configSnapshotRef = useRef<{ mediaFilter: MediaFilter, viewedFilter: ViewedFilter, viewMode: ViewMode } | null>(null)
+  const configSnapshotRef = useRef<{ 
+    mediaFilter: MediaFilter
+    viewedFilter: ViewedFilter
+    viewMode: ViewMode
+    advancedFilters: AdvancedFilters
+  } | null>(null)
   // 当前图组的文件列表
   const [currentGroup, setCurrentGroup] = useState<MediaFile[]>([])
   // 当前图组中的索引
@@ -462,7 +488,34 @@ export default function HomePage() {
         setPreloadRandomness(randomness)
       }
     }
+
+    // 加载可用的评价标签和分类
+    loadAvailableFilters()
   }, [])
+
+  // 加载可用的评价标签和分类
+  const loadAvailableFilters = async () => {
+    try {
+      const [evalRes, catRes] = await Promise.all([
+        fetch('/api/ratings/evaluations'),
+        fetch('/api/ratings/categories')
+      ])
+
+      if (evalRes.ok) {
+        const evalData = await evalRes.json()
+        const labels = evalData.evaluations?.map((e: any) => e.label) || []
+        setAvailableEvaluations(labels)
+      }
+
+      if (catRes.ok) {
+        const catData = await catRes.json()
+        const names = catData.categories?.map((c: any) => c.name) || []
+        setAvailableCategories(names)
+      }
+    } catch (error) {
+      console.error('加载评价标签和分类失败:', error)
+    }
+  }
 
   // 当统计数据加载完成后，触发初始预加载
   // 注意：配置变化时的预加载由 toggleDrawer 处理
@@ -528,6 +581,9 @@ export default function HomePage() {
         setGalleryPreloadReady(true) // 随机模式不需要等待预加载完成
         setCachePreloadProgress({ current: 0, total: preloadCount })
         
+        // 准备高级过滤参数（仅已看过模式，随机模式下才有高级过滤）
+        const filters = viewedFilter === 'viewed' ? advancedFilters : undefined
+        
         databasePreloadManager.refillCache(
           config, 
           [], // 数据库模式不需要文件列表
@@ -542,7 +598,8 @@ export default function HomePage() {
           preloadRandomness,
           true, // isInitialLoad: 初始加载，不限制并发
           undefined, // currentParentPath
-          mediaFilter // 媒体类型筛选
+          mediaFilter, // 媒体类型筛选
+          filters // 高级过滤参数
         ).then(() => {
           // 预加载完成后，如果已切换到大视频模式则忽略结果（使用 ref）
           if (viewModeRef.current === 'large-video') {
@@ -571,7 +628,7 @@ export default function HomePage() {
         })
       }
     }
-  }, [stats.total, preloadEnabled, config, viewMode, viewedFilter, mediaFilter])
+  }, [stats.total, preloadEnabled, config, viewMode, viewedFilter, mediaFilter, advancedFilters])
 
   // 监听缓存状态变化，自动更新进度显示（仅图组模式和随机模式，大视频模式不显示）
   useEffect(() => {
@@ -675,7 +732,12 @@ export default function HomePage() {
       try {
         // 从配置中获取预加载数量，默认为10
         const preloadCount = config.scanSettings?.preloadCount || 10
-        await databasePreloadManager.smartPreload(config, [], currentFile, preloadCount, viewedFilter, preloadRandomness, mediaFilter)
+        // 准备高级过滤参数（仅已看过模式且非图组模式）
+        const filters = (viewedFilter === 'viewed' && viewMode !== 'gallery') ? advancedFilters : undefined
+        await databasePreloadManager.smartPreload(
+          config, [], currentFile, preloadCount, viewedFilter, 
+          preloadRandomness, mediaFilter, filters
+        )
         // 预加载完成后更新缓存状态显示
         setPreloadStatus(databasePreloadManager.getCacheStatus())
       } catch (error) {
@@ -1848,21 +1910,36 @@ export default function HomePage() {
   const toggleDrawer = (open: boolean) => () => {
     if (open) {
       // 打开抽屉时，保存当前配置快照
-      configSnapshotRef.current = { mediaFilter, viewedFilter, viewMode }
+      configSnapshotRef.current = { 
+        mediaFilter, 
+        viewedFilter, 
+        viewMode,
+        advancedFilters: { ...advancedFilters } // 深拷贝高级过滤条件
+      }
     } else {
       // 关闭抽屉时，检查配置是否变化
-      const hasConfigChanged = configSnapshotRef.current && (
+      const hasBasicConfigChanged = configSnapshotRef.current && (
         configSnapshotRef.current.mediaFilter !== mediaFilter ||
         configSnapshotRef.current.viewedFilter !== viewedFilter ||
         configSnapshotRef.current.viewMode !== viewMode
       )
+      
+      // 检查高级过滤条件是否变化（仅已看过模式）
+      const hasAdvancedFiltersChanged = viewedFilter === 'viewed' && configSnapshotRef.current && (
+        JSON.stringify(configSnapshotRef.current.advancedFilters) !== JSON.stringify(advancedFilters)
+      )
+      
+      const hasConfigChanged = hasBasicConfigChanged || hasAdvancedFiltersChanged
       
       if (hasConfigChanged) {
         console.log('配置已变化，准备重新加载', { 
           mediaFilter, 
           viewedFilter, 
           viewMode,
-          previousViewMode: configSnapshotRef.current?.viewMode 
+          advancedFilters,
+          previousViewMode: configSnapshotRef.current?.viewMode,
+          hasBasicConfigChanged,
+          hasAdvancedFiltersChanged
         })
         
         // 清空当前显示，页面回到初始化状态
@@ -1880,6 +1957,9 @@ export default function HomePage() {
           databasePreloadManager.cancelAllPreloads()
           databasePreloadManager.clearCache()
           databasePreloadManager.clearNextGroupCache()
+          
+          // 准备高级过滤参数（仅已看过模式且非图组模式）
+          const filters = (viewedFilter === 'viewed' && viewMode !== 'gallery') ? advancedFilters : undefined
           
           // 大视频模式：完全跳过预加载逻辑
           if (viewMode === 'large-video') {
@@ -1907,7 +1987,8 @@ export default function HomePage() {
                   setGalleryPreloadReady(true)
                   // 不设置为 null，保持显示完成状态
                 }
-              }
+              },
+              filters // 传递高级过滤参数
             ).then((result) => {
               const cacheStatus = databasePreloadManager.getCacheStatus()
               setPreloadStatus(cacheStatus)
@@ -1946,7 +2027,8 @@ export default function HomePage() {
               preloadRandomness,
               true, // isInitialLoad: 配置变化后重新加载，不限制并发
               undefined, // currentParentPath
-              mediaFilter // 媒体类型筛选
+              mediaFilter, // 媒体类型筛选
+              filters // 传递高级过滤参数
             ).then(() => {
               // 预加载完成后，如果已切换到大视频模式则忽略结果（使用 ref）
               if (viewModeRef.current === 'large-video') {
@@ -3761,6 +3843,197 @@ export default function HomePage() {
           </Box>
 
           <Divider sx={{ mb: 3 }} />
+
+          {/* 高级过滤条件（仅已看过模式且非图组模式） */}
+          {viewedFilter === 'viewed' && viewMode !== 'gallery' && (
+            <>
+              <Box sx={{ mb: 3 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+                  <FilterListIcon color="primary" />
+                  <Typography variant="subtitle1" fontWeight="medium">
+                    高级过滤
+                  </Typography>
+                </Box>
+
+                {/* 评分星星过滤 */}
+                <Box sx={{ mb: 2 }}>
+                  <Typography variant="body2" sx={{ mb: 1 }}>
+                    评分星星
+                  </Typography>
+                  <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                    {[1, 2, 3, 4, 5].map((rating) => (
+                      <Chip
+                        key={rating}
+                        label={`${rating}星`}
+                        icon={<StarIcon />}
+                        onClick={() => {
+                          setAdvancedFilters(prev => ({
+                            ...prev,
+                            ratings: prev.ratings.includes(rating)
+                              ? prev.ratings.filter(r => r !== rating)
+                              : [...prev.ratings, rating]
+                          }))
+                        }}
+                        color={advancedFilters.ratings.includes(rating) ? 'primary' : 'default'}
+                        variant={advancedFilters.ratings.includes(rating) ? 'filled' : 'outlined'}
+                        size="small"
+                      />
+                    ))}
+                  </Box>
+                  {advancedFilters.ratings.length > 0 && (
+                    <Button
+                      size="small"
+                      onClick={() => setAdvancedFilters(prev => ({ ...prev, ratings: [] }))}
+                      sx={{ mt: 0.5 }}
+                    >
+                      清除
+                    </Button>
+                  )}
+                </Box>
+
+                {/* 评价标签过滤 */}
+                <Box sx={{ mb: 2 }}>
+                  <Typography variant="body2" sx={{ mb: 1 }}>
+                    评价标签
+                  </Typography>
+                  <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                    {availableEvaluations.map((evaluation) => (
+                      <Chip
+                        key={evaluation}
+                        label={evaluation}
+                        onClick={() => {
+                          setAdvancedFilters(prev => ({
+                            ...prev,
+                            evaluations: prev.evaluations.includes(evaluation)
+                              ? prev.evaluations.filter(e => e !== evaluation)
+                              : [...prev.evaluations, evaluation]
+                          }))
+                        }}
+                        color={advancedFilters.evaluations.includes(evaluation) ? 'secondary' : 'default'}
+                        variant={advancedFilters.evaluations.includes(evaluation) ? 'filled' : 'outlined'}
+                        size="small"
+                      />
+                    ))}
+                  </Box>
+                  {availableEvaluations.length === 0 && (
+                    <Typography variant="caption" color="text.secondary">
+                      暂无评价标签
+                    </Typography>
+                  )}
+                  {advancedFilters.evaluations.length > 0 && (
+                    <Button
+                      size="small"
+                      onClick={() => setAdvancedFilters(prev => ({ ...prev, evaluations: [] }))}
+                      sx={{ mt: 0.5 }}
+                    >
+                      清除
+                    </Button>
+                  )}
+                </Box>
+
+                {/* 分类标签过滤 */}
+                <Box sx={{ mb: 2 }}>
+                  <Typography variant="body2" sx={{ mb: 1 }}>
+                    分类标签
+                  </Typography>
+                  <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                    {availableCategories.map((category) => (
+                      <Chip
+                        key={category}
+                        label={category}
+                        onClick={() => {
+                          setAdvancedFilters(prev => ({
+                            ...prev,
+                            categories: prev.categories.includes(category)
+                              ? prev.categories.filter(c => c !== category)
+                              : [...prev.categories, category]
+                          }))
+                        }}
+                        color={advancedFilters.categories.includes(category) ? 'success' : 'default'}
+                        variant={advancedFilters.categories.includes(category) ? 'filled' : 'outlined'}
+                        size="small"
+                      />
+                    ))}
+                  </Box>
+                  {availableCategories.length === 0 && (
+                    <Typography variant="caption" color="text.secondary">
+                      暂无分类标签
+                    </Typography>
+                  )}
+                  {advancedFilters.categories.length > 0 && (
+                    <Button
+                      size="small"
+                      onClick={() => setAdvancedFilters(prev => ({ ...prev, categories: [] }))}
+                      sx={{ mt: 0.5 }}
+                    >
+                      清除
+                    </Button>
+                  )}
+                </Box>
+
+                {/* 评价理由过滤 */}
+                <Box sx={{ mb: 2 }}>
+                  <Typography variant="body2" sx={{ mb: 1 }}>
+                    评价理由
+                  </Typography>
+                  <ToggleButtonGroup
+                    value={advancedFilters.reasonFilter}
+                    exclusive
+                    onChange={(e, newValue) => {
+                      if (newValue) {
+                        setAdvancedFilters(prev => ({ ...prev, reasonFilter: newValue }))
+                      }
+                    }}
+                    size="small"
+                    fullWidth
+                    sx={{ mb: 1 }}
+                  >
+                    <ToggleButton value="all">全部</ToggleButton>
+                    <ToggleButton value="empty">为空</ToggleButton>
+                    <ToggleButton value="nonempty">不为空</ToggleButton>
+                    <ToggleButton value="keyword">关键词</ToggleButton>
+                  </ToggleButtonGroup>
+                  {advancedFilters.reasonFilter === 'keyword' && (
+                    <TextField
+                      fullWidth
+                      size="small"
+                      placeholder="输入关键词"
+                      value={advancedFilters.reasonKeyword || ''}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                        setAdvancedFilters(prev => ({ ...prev, reasonKeyword: e.target.value }))
+                      }}
+                    />
+                  )}
+                </Box>
+
+                {/* 清除所有过滤 */}
+                {(advancedFilters.ratings.length > 0 || 
+                  advancedFilters.evaluations.length > 0 || 
+                  advancedFilters.categories.length > 0 || 
+                  advancedFilters.reasonFilter !== 'all') && (
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    fullWidth
+                    onClick={() => {
+                      setAdvancedFilters({
+                        ratings: [],
+                        evaluations: [],
+                        categories: [],
+                        reasonFilter: 'all',
+                        reasonKeyword: ''
+                      })
+                    }}
+                    startIcon={<CloseIcon />}
+                  >
+                    清除所有过滤
+                  </Button>
+                )}
+              </Box>
+
+              <Divider sx={{ mb: 3 }} />
+            </>
+          )}
 
           {/* 媒体类型筛选 */}
           <Box sx={{ mb: 3 }}>

@@ -788,7 +788,14 @@ class DatabasePreloadManager {
     config: any,
     count: number = 10,
     viewedFilter: string = 'unviewed',
-    onProgress?: (current: number, total: number) => void
+    onProgress?: (current: number, total: number) => void,
+    advancedFilters?: {
+      ratings?: number[]
+      evaluations?: string[]
+      categories?: string[]
+      reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword'
+      reasonKeyword?: string
+    }
   ): Promise<{
     successCount: number
     failedCount: number
@@ -833,7 +840,13 @@ class DatabasePreloadManager {
           count: count,
           isViewed: viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined,
           excludeFilenames: excludeList.length > 0 ? excludeList : undefined,
-          maxFileSize: this.maxVideoSize // 过滤大于100MB的视频
+          maxFileSize: this.maxVideoSize, // 过滤大于100MB的视频
+          // 高级过滤参数（仅已看过模式）
+          ratings: advancedFilters?.ratings,
+          evaluations: advancedFilters?.evaluations,
+          categories: advancedFilters?.categories,
+          reasonFilter: advancedFilters?.reasonFilter,
+          reasonKeyword: advancedFilters?.reasonKeyword
         })
       })
       if (!response.ok) {
@@ -922,7 +935,14 @@ class DatabasePreloadManager {
     count: number = 10,
     viewedFilter: string = 'unviewed',
     excludeParentPath?: string,
-    onProgress?: (current: number, total: number) => void
+    onProgress?: (current: number, total: number) => void,
+    advancedFilters?: { // 高级过滤参数（仅已看过模式）
+      ratings?: number[]
+      evaluations?: string[]
+      categories?: string[]
+      reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword'
+      reasonKeyword?: string
+    }
   ): Promise<{
     successCount: number
     failedCount: number
@@ -1139,7 +1159,14 @@ class DatabasePreloadManager {
     isInitialLoad: boolean = false,
     currentParentPath?: string,  // 当前目录路径
     randomness: number = 1,      // 随机性：0=优先当前目录，1=完全随机
-    mediaFilter: string = 'all'  // 媒体类型筛选：all/images/videos
+    mediaFilter: string = 'all', // 媒体类型筛选：all/images/videos
+    advancedFilters?: { // 高级过滤参数（仅已看过模式）
+      ratings?: number[]
+      evaluations?: string[]
+      categories?: string[]
+      reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword'
+      reasonKeyword?: string
+    }
   ): Promise<void> {
     // ✅ 智能判断：如果缓存为空，自动当作初始加载（切换模式后的场景）
     const isActuallyInitialLoad = isInitialLoad || this.cache.size === 0
@@ -1211,7 +1238,13 @@ class DatabasePreloadManager {
           fileType: mediaFilter === 'images' ? 'image' : mediaFilter === 'videos' ? 'video' : undefined,
           currentParentPath: currentParentPath || undefined,
           excludeFilenames: excludeList.length > 0 ? excludeList : undefined,
-          maxFileSize: this.maxVideoSize // 过滤大于100MB的视频
+          maxFileSize: this.maxVideoSize, // 过滤大于100MB的视频
+          // 高级过滤参数（仅已看过模式）
+          ratings: advancedFilters?.ratings,
+          evaluations: advancedFilters?.evaluations,
+          categories: advancedFilters?.categories,
+          reasonFilter: advancedFilters?.reasonFilter,
+          reasonKeyword: advancedFilters?.reasonKeyword
         })
       })
       if (!response.ok) {
@@ -1424,13 +1457,20 @@ class DatabasePreloadManager {
     _allFiles: any[], // 忽略，数据库模式不需要文件列表
     count: number = 10,
     viewedFilter: string = 'unviewed',
-    onProgress?: (current: number, total: number) => void
+    onProgress?: (current: number, total: number) => void,
+    advancedFilters?: { // 高级过滤参数（仅已看过模式）
+      ratings?: number[]
+      evaluations?: string[]
+      categories?: string[]
+      reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword'
+      reasonKeyword?: string
+    }
   ): Promise<{
     successCount: number
     failedCount: number
     message: string
   }> {
-    const result = await this.preloadGroupFromDatabase(config, count, viewedFilter, undefined, onProgress)
+    const result = await this.preloadGroupFromDatabase(config, count, viewedFilter, undefined, onProgress, advancedFilters)
     return {
       successCount: result.successCount,
       failedCount: result.failedCount,
@@ -1448,9 +1488,16 @@ class DatabasePreloadManager {
     randomness: number = 1, // 随机性：0=优先当前目录，1=完全随机
     isInitialLoad: boolean = false,
     currentParentPath?: string, // 当前目录路径（用于随机性控制）
-    mediaFilter: string = 'all' // 媒体类型筛选：all/images/videos
+    mediaFilter: string = 'all', // 媒体类型筛选：all/images/videos
+    advancedFilters?: { // 高级过滤参数（仅已看过模式）
+      ratings?: number[]
+      evaluations?: string[]
+      categories?: string[]
+      reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword'
+      reasonKeyword?: string
+    }
   ): Promise<void> {
-    return this.refillCacheFromDatabase(config, targetCount, viewedFilter, onProgress, isInitialLoad, currentParentPath, randomness, mediaFilter)
+    return this.refillCacheFromDatabase(config, targetCount, viewedFilter, onProgress, isInitialLoad, currentParentPath, randomness, mediaFilter, advancedFilters)
   }
 
   // 兼容 preloadManager.preloadNextGroup - 从数据库预加载下一个图组
@@ -1472,6 +1519,13 @@ class DatabasePreloadManager {
     viewedFilter: string = 'unviewed',
     randomness: number = 1, // 随机性：0=优先当前目录，1=完全随机
     mediaFilter: string = 'all', // 媒体类型筛选：all/images/videos
+    advancedFilters?: { // 高级过滤参数（仅已看过模式）
+      ratings?: number[]
+      evaluations?: string[]
+      categories?: string[]
+      reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword'
+      reasonKeyword?: string
+    },
     requestCount: number = 1 // ✅ 新增参数：需要预加载的数量（默认1）
   ): Promise<void> {
     if (!currentFile) return
@@ -1547,7 +1601,13 @@ class DatabasePreloadManager {
             fileType: mediaFilter === 'images' ? 'image' : mediaFilter === 'videos' ? 'video' : undefined,
             currentParentPath: currentParentPath || undefined,
             excludeFilenames: excludeList.length > 0 ? excludeList : undefined,
-            maxFileSize: this.maxVideoSize // 过滤大于100MB的视频
+            maxFileSize: this.maxVideoSize, // 过滤大于100MB的视频
+            // 高级过滤参数（仅已看过模式）
+            ratings: advancedFilters?.ratings,
+            evaluations: advancedFilters?.evaluations,
+            categories: advancedFilters?.categories,
+            reasonFilter: advancedFilters?.reasonFilter,
+            reasonKeyword: advancedFilters?.reasonKeyword
           })
         })
         
