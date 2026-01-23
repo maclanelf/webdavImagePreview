@@ -185,16 +185,18 @@ class DatabasePreloadManager {
 
     // ✅ 快速重试循环
     for (let attempt = 0; attempt <= maxQuickRetries; attempt++) {
-      await this.acquirePreloadSlot()
-      
-      // 再次检查是否已取消（等待期间可能被取消）
-      if (this.isPreloadCancelled()) {
-        this.releasePreloadSlot()
-        console.log(`[数据库模式] 预加载已取消，跳过: ${file.basename}`)
-        return
-      }
+      let slotAcquired = false  // 🔧 跟踪是否获取了许可
       
       try {
+        await this.acquirePreloadSlot()
+        slotAcquired = true  // 🔧 标记已获取许可
+        
+        // 再次检查是否已取消（等待期间可能被取消）
+        if (this.isPreloadCancelled()) {
+          console.log(`[数据库模式] 预加载已取消，跳过: ${file.basename}`)
+          return
+        }
+        
         // ✅ 获取许可后再次检查，如果已在缓存中，直接返回
         if (this.cache.has(filepath)) {
           console.log(`[数据库模式] 文件已在缓存中，跳过: ${file.basename}`)
@@ -267,7 +269,10 @@ class DatabasePreloadManager {
         }
       } finally {
         this.queue.delete(filepath)
-        this.releasePreloadSlot()
+        // 🔧 只有在成功获取许可后才释放
+        if (slotAcquired) {
+          this.releasePreloadSlot()
+        }
       }
     }
   }
@@ -288,16 +293,18 @@ class DatabasePreloadManager {
     
     // ✅ 快速重试循环
     for (let attempt = 0; attempt <= maxQuickRetries; attempt++) {
-      await this.acquirePreloadSlot()
-      
-      // 再次检查是否已取消
-      if (this.isPreloadCancelled()) {
-        this.releasePreloadSlot()
-        console.log(`[数据库模式] 预加载已取消，跳过: ${file.basename}`)
-        return
-      }
+      let slotAcquired = false  // 🔧 跟踪是否获取了许可
       
       try {
+        await this.acquirePreloadSlot()
+        slotAcquired = true  // 🔧 标记已获取许可
+        
+        // 再次检查是否已取消
+        if (this.isPreloadCancelled()) {
+          console.log(`[数据库模式] 预加载已取消，跳过: ${file.basename}`)
+          return
+        }
+        
         if (this.cache.has(filepath)) return
         
         this.queue.add(filepath)
@@ -377,7 +384,10 @@ class DatabasePreloadManager {
         }
       } finally {
         this.queue.delete(filepath)
-        this.releasePreloadSlot()
+        // 🔧 只有在成功获取许可后才释放
+        if (slotAcquired) {
+          this.releasePreloadSlot()
+        }
       }
     }
   }
