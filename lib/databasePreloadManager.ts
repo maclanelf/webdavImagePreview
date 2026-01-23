@@ -168,9 +168,10 @@ class DatabasePreloadManager {
     }
   }
 
-  // 预加载单个文件（带并发控制）
+  // 预加载单个文件（带并发控制和快速重试）
   private async preloadFile(config: any, file: any): Promise<void> {
     const filepath = file.filename
+    const maxQuickRetries = 1  // 快速重试1次
     
     // 检查是否已取消
     if (this.isPreloadCancelled()) {
@@ -182,87 +183,99 @@ class DatabasePreloadManager {
     if (this.cache.has(filepath)) return
     if (this.queue.has(filepath)) return
 
-    await this.acquirePreloadSlot()
-    
-    // 再次检查是否已取消（等待期间可能被取消）
-    if (this.isPreloadCancelled()) {
-      this.releasePreloadSlot()
-      console.log(`[数据库模式] 预加载已取消，跳过: ${file.basename}`)
-      return
-    }
-    
-    try {
-      // ✅ 获取许可后再次检查，如果已在缓存中，直接返回（会在finally中释放许可）
-      if (this.cache.has(filepath)) {
-        console.log(`[数据库模式] 文件已在缓存中，跳过: ${file.basename}`)
-        return
-      }
+    // ✅ 快速重试循环
+    for (let attempt = 0; attempt <= maxQuickRetries; attempt++) {
+      await this.acquirePreloadSlot()
       
-      this.queue.add(filepath)
-
-      const streamResponse = await fetch('/api/webdav/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...config,
-          filepath: file.filename,
-        }),
-        signal: this.getAbortSignal(),
-      })
-
-      // 检查是否已取消
+      // 再次检查是否已取消（等待期间可能被取消）
       if (this.isPreloadCancelled()) {
-        console.log(`[数据库模式] 预加载已取消，丢弃响应: ${file.basename}`)
-        return
-      }
-
-      if (!streamResponse.ok) {
-        throw new Error('获取文件流失败')
-      }
-
-      const blob = await streamResponse.blob()
-      
-      // 再次检查是否已取消
-      if (this.isPreloadCancelled()) {
-        console.log(`[数据库模式] 预加载已取消，丢弃blob: ${file.basename}`)
+        this.releasePreloadSlot()
+        console.log(`[数据库模式] 预加载已取消，跳过: ${file.basename}`)
         return
       }
       
-      const url = URL.createObjectURL(blob)
-      
-      this.cache.set(filepath, {
-        blob,
-        url,
-        timestamp: Date.now(),
-        filepath,
-        size: file.size || 0,
-        lastmod: file.lastmod || ''
-      })
+      try {
+        // ✅ 获取许可后再次检查，如果已在缓存中，直接返回
+        if (this.cache.has(filepath)) {
+          console.log(`[数据库模式] 文件已在缓存中，跳过: ${file.basename}`)
+          return
+        }
+        
+        this.queue.add(filepath)
 
-      if (this.cache.size > this.maxCacheSize) {
-        this.evictOldestCache()
+        const streamResponse = await fetch('/api/webdav/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...config,
+            filepath: file.filename,
+          }),
+          signal: this.getAbortSignal(),
+        })
+
+        // 检查是否已取消
+        if (this.isPreloadCancelled()) {
+          console.log(`[数据库模式] 预加载已取消，丢弃响应: ${file.basename}`)
+          return
+        }
+
+        if (!streamResponse.ok) {
+          throw new Error(`获取文件流失败: ${streamResponse.status}`)
+        }
+
+        const blob = await streamResponse.blob()
+        
+        // 再次检查是否已取消
+        if (this.isPreloadCancelled()) {
+          console.log(`[数据库模式] 预加载已取消，丢弃blob: ${file.basename}`)
+          return
+        }
+        
+        const url = URL.createObjectURL(blob)
+        
+        this.cache.set(filepath, {
+          blob,
+          url,
+          timestamp: Date.now(),
+          filepath,
+          size: file.size || 0,
+          lastmod: file.lastmod || ''
+        })
+
+        if (this.cache.size > this.maxCacheSize) {
+          this.evictOldestCache()
+        }
+
+        console.log(`[数据库模式] 预加载完成: ${file.basename}`)
+        return  // ✅ 成功，直接返回
+
+      } catch (error: any) {
+        // 如果是取消导致的错误，不记录为错误
+        if (error.name === 'AbortError' || this.isPreloadCancelled()) {
+          console.log(`[数据库模式] 预加载被取消: ${file.basename}`)
+          return
+        }
+        
+        // 如果还有重试机会，进行快速重试
+        if (attempt < maxQuickRetries) {
+          console.warn(`[数据库模式] 预加载失败，快速重试 ${attempt + 1}/${maxQuickRetries}: ${file.basename}`, error.message)
+          await new Promise(resolve => setTimeout(resolve, 500))  // 等待500ms后重试
+          // 继续下一次循环
+        } else {
+          console.error(`[数据库模式] 预加载失败，已达快速重试上限: ${file.basename}`, error)
+          throw error  // 重试失败，抛出错误
+        }
+      } finally {
+        this.queue.delete(filepath)
+        this.releasePreloadSlot()
       }
-
-      console.log(`[数据库模式] 预加载完成: ${file.basename}`)
-
-    } catch (error: any) {
-      // 如果是取消导致的错误，不记录为错误
-      if (error.name === 'AbortError' || this.isPreloadCancelled()) {
-        console.log(`[数据库模式] 预加载被取消: ${file.basename}`)
-        return
-      }
-      console.error(`[数据库模式] 预加载失败 ${file.basename}:`, error)
-      throw error
-    } finally {
-      this.queue.delete(filepath)
-      // ✅ 确保总是释放许可
-      this.releasePreloadSlot()
     }
   }
 
-  // 预加载文件但不限制缓存大小
+  // 预加载文件但不限制缓存大小（带快速重试）
   private async preloadFileWithoutLimit(config: any, file: any): Promise<void> {
     const filepath = file.filename
+    const maxQuickRetries = 1  // 快速重试1次
     
     // 检查是否已取消
     if (this.isPreloadCancelled()) {
@@ -273,94 +286,106 @@ class DatabasePreloadManager {
     if (this.cache.has(filepath)) return
     if (this.queue.has(filepath)) return
     
-    await this.acquirePreloadSlot()
-    
-    // 再次检查是否已取消
-    if (this.isPreloadCancelled()) {
-      this.releasePreloadSlot()
-      console.log(`[数据库模式] 预加载已取消，跳过: ${file.basename}`)
-      return
-    }
-    
-    try {
-      if (this.cache.has(filepath)) return
-      
-      this.queue.add(filepath)
-      
-      const streamResponse = await fetch('/api/webdav/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...config,
-          filepath: file.filename,
-        }),
-        signal: this.getAbortSignal(),
-      })
-      
-      // 检查是否已取消
-      if (this.isPreloadCancelled()) {
-        console.log(`[数据库模式] 预加载已取消，丢弃响应: ${file.basename}`)
-        return
-      }
-      
-      if (!streamResponse.ok) {
-        throw new Error('获取文件流失败')
-      }
-      
-      const blob = await streamResponse.blob()
+    // ✅ 快速重试循环
+    for (let attempt = 0; attempt <= maxQuickRetries; attempt++) {
+      await this.acquirePreloadSlot()
       
       // 再次检查是否已取消
       if (this.isPreloadCancelled()) {
-        console.log(`[数据库模式] 预加载已取消，丢弃blob: ${file.basename}`)
+        this.releasePreloadSlot()
+        console.log(`[数据库模式] 预加载已取消，跳过: ${file.basename}`)
         return
       }
       
-      const url = URL.createObjectURL(blob)
-      
-      // 只在图组模式下检查文件是否还属于当前图组
-      if (this.currentGroupFiles.length > 0) {
-        const isFileInCurrentGroup = this.currentGroupFiles.some(f => f.filename === filepath)
+      try {
+        if (this.cache.has(filepath)) return
         
-        if (!isFileInCurrentGroup) {
-          URL.revokeObjectURL(url)
-          console.log(`[数据库模式] 预加载完成但图组已切换，丢弃文件: ${file.basename}`)
+        this.queue.add(filepath)
+        
+        const streamResponse = await fetch('/api/webdav/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...config,
+            filepath: file.filename,
+          }),
+          signal: this.getAbortSignal(),
+        })
+        
+        // 检查是否已取消
+        if (this.isPreloadCancelled()) {
+          console.log(`[数据库模式] 预加载已取消，丢弃响应: ${file.basename}`)
           return
         }
+        
+        if (!streamResponse.ok) {
+          throw new Error(`获取文件流失败: ${streamResponse.status}`)
+        }
+        
+        const blob = await streamResponse.blob()
+        
+        // 再次检查是否已取消
+        if (this.isPreloadCancelled()) {
+          console.log(`[数据库模式] 预加载已取消，丢弃blob: ${file.basename}`)
+          return
+        }
+        
+        const url = URL.createObjectURL(blob)
+        
+        // 只在图组模式下检查文件是否还属于当前图组
+        if (this.currentGroupFiles.length > 0) {
+          const isFileInCurrentGroup = this.currentGroupFiles.some(f => f.filename === filepath)
+          
+          if (!isFileInCurrentGroup) {
+            URL.revokeObjectURL(url)
+            console.log(`[数据库模式] 预加载完成但图组已切换，丢弃文件: ${file.basename}`)
+            return
+          }
+        }
+        
+        if (this.cache.has(filepath)) {
+          URL.revokeObjectURL(url)
+          return
+        }
+        
+        this.cache.set(filepath, {
+          blob,
+          url,
+          timestamp: Date.now(),
+          filepath,
+          size: file.size || 0,
+          lastmod: file.lastmod || ''
+        })
+        
+        console.log(`[数据库模式] 预加载完成: ${file.basename}`)
+        return  // ✅ 成功，直接返回
+        
+      } catch (error: any) {
+        // 如果是取消导致的错误，不记录为错误
+        if (error.name === 'AbortError' || this.isPreloadCancelled()) {
+          console.log(`[数据库模式] 预加载被取消: ${file.basename}`)
+          return
+        }
+        
+        // 如果还有重试机会，进行快速重试
+        if (attempt < maxQuickRetries) {
+          console.warn(`[数据库模式] 预加载失败，快速重试 ${attempt + 1}/${maxQuickRetries}: ${file.basename}`, error.message)
+          await new Promise(resolve => setTimeout(resolve, 500))
+        } else {
+          console.error(`[数据库模式] 预加载失败，已达快速重试上限: ${file.basename}`, error)
+          throw error
+        }
+      } finally {
+        this.queue.delete(filepath)
+        this.releasePreloadSlot()
       }
-      
-      if (this.cache.has(filepath)) {
-        URL.revokeObjectURL(url)
-        return
-      }
-      
-      this.cache.set(filepath, {
-        blob,
-        url,
-        timestamp: Date.now(),
-        filepath,
-        size: file.size || 0,
-        lastmod: file.lastmod || ''
-      })
-      
-      console.log(`[数据库模式] 预加载完成: ${file.basename}`)
-      
-    } catch (error: any) {
-      // 如果是取消导致的错误，不记录为错误
-      if (error.name === 'AbortError' || this.isPreloadCancelled()) {
-        console.log(`[数据库模式] 预加载被取消: ${file.basename}`)
-        return
-      }
-      console.error(`[数据库模式] 预加载失败 ${file.basename}:`, error)
-      throw error
-    } finally {
-      this.queue.delete(filepath)
-      this.releasePreloadSlot()
     }
   }
 
-  // 预加载文件到下一组缓存
+  // 预加载文件到下一组缓存（带快速重试）
   private async preloadFileToNextGroup(config: any, file: any): Promise<void> {
     const filepath = file.filename
+    const maxQuickRetries = 1  // 快速重试1次
     
     // 检查是否已取消
     if (this.isPreloadCancelled()) {
@@ -371,75 +396,87 @@ class DatabasePreloadManager {
     if (this.nextGroupCache.has(filepath)) return
     if (this.queue.has(filepath)) return
     
-    await this.acquirePreloadSlot()
-    
-    // 再次检查是否已取消
-    if (this.isPreloadCancelled()) {
-      this.releasePreloadSlot()
-      console.log(`[数据库模式] 预加载已取消，跳过下一组: ${file.basename}`)
-      return
-    }
-    
-    try {
-      if (this.nextGroupCache.has(filepath)) return
-      
-      this.queue.add(filepath)
-      
-      const streamResponse = await fetch('/api/webdav/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...config,
-          filepath: file.filename,
-        }),
-        signal: this.getAbortSignal(),
-      })
-      
-      // 检查是否已取消
-      if (this.isPreloadCancelled()) {
-        console.log(`[数据库模式] 预加载已取消，丢弃下一组响应: ${file.basename}`)
-        return
-      }
-      
-      if (!streamResponse.ok) {
-        throw new Error('获取文件流失败')
-      }
-      
-      const blob = await streamResponse.blob()
+    // ✅ 快速重试循环
+    for (let attempt = 0; attempt <= maxQuickRetries; attempt++) {
+      await this.acquirePreloadSlot()
       
       // 再次检查是否已取消
       if (this.isPreloadCancelled()) {
-        console.log(`[数据库模式] 预加载已取消，丢弃下一组blob: ${file.basename}`)
+        this.releasePreloadSlot()
+        console.log(`[数据库模式] 预加载已取消，跳过下一组: ${file.basename}`)
         return
       }
       
-      const url = URL.createObjectURL(blob)
-      
-      this.nextGroupCache.set(filepath, {
-        blob,
-        url,
-        timestamp: Date.now(),
-        filepath,
-        size: file.size || 0,
-        lastmod: file.lastmod || ''
-      })
-      
-      if (this.nextGroupCache.size > this.maxCacheSize) {
-        this.evictOldestNextGroupCache()
+      try {
+        if (this.nextGroupCache.has(filepath)) return
+        
+        this.queue.add(filepath)
+        
+        const streamResponse = await fetch('/api/webdav/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...config,
+            filepath: file.filename,
+          }),
+          signal: this.getAbortSignal(),
+        })
+        
+        // 检查是否已取消
+        if (this.isPreloadCancelled()) {
+          console.log(`[数据库模式] 预加载已取消，丢弃下一组响应: ${file.basename}`)
+          return
+        }
+        
+        if (!streamResponse.ok) {
+          throw new Error(`获取文件流失败: ${streamResponse.status}`)
+        }
+        
+        const blob = await streamResponse.blob()
+        
+        // 再次检查是否已取消
+        if (this.isPreloadCancelled()) {
+          console.log(`[数据库模式] 预加载已取消，丢弃下一组blob: ${file.basename}`)
+          return
+        }
+        
+        const url = URL.createObjectURL(blob)
+        
+        this.nextGroupCache.set(filepath, {
+          blob,
+          url,
+          timestamp: Date.now(),
+          filepath,
+          size: file.size || 0,
+          lastmod: file.lastmod || ''
+        })
+        
+        if (this.nextGroupCache.size > this.maxCacheSize) {
+          this.evictOldestNextGroupCache()
+        }
+        
+        console.log(`[数据库模式] 下一组预加载完成: ${file.basename}`)
+        return  // ✅ 成功，直接返回
+        
+      } catch (error: any) {
+        // 如果是取消导致的错误，不记录为错误
+        if (error.name === 'AbortError' || this.isPreloadCancelled()) {
+          console.log(`[数据库模式] 下一组预加载被取消: ${file.basename}`)
+          return
+        }
+        
+        // 如果还有重试机会，进行快速重试
+        if (attempt < maxQuickRetries) {
+          console.warn(`[数据库模式] 下一组预加载失败，快速重试 ${attempt + 1}/${maxQuickRetries}: ${file.basename}`, error.message)
+          await new Promise(resolve => setTimeout(resolve, 500))
+        } else {
+          console.error(`[数据库模式] 下一组预加载失败，已达快速重试上限: ${file.basename}`, error)
+          throw error
+        }
+      } finally {
+        this.queue.delete(filepath)
+        this.releasePreloadSlot()
       }
-      
-      console.log(`[数据库模式] 下一组预加载完成: ${file.basename}`)
-    } catch (error: any) {
-      // 如果是取消导致的错误，不记录为错误
-      if (error.name === 'AbortError' || this.isPreloadCancelled()) {
-        console.log(`[数据库模式] 下一组预加载被取消: ${file.basename}`)
-        return
-      }
-      console.error(`[数据库模式] 下一组预加载失败 ${file.basename}:`, error)
-      throw error
-    } finally {
-      this.queue.delete(filepath)
-      this.releasePreloadSlot()
     }
   }
 
@@ -1399,7 +1436,7 @@ class DatabasePreloadManager {
     return this.preloadNextGroupFromDatabase(config, count, viewedFilter)
   }
 
-  // 兼容 preloadManager.smartPreload - 智能预加载（每次只预加载1个文件）
+  // 兼容 preloadManager.smartPreload - 智能预加载（支持一次预加载多个文件，带补充重试）
   async smartPreload(
     config: any,
     _allFiles: any[], // 忽略，数据库模式不需要文件列表
@@ -1407,7 +1444,8 @@ class DatabasePreloadManager {
     maxCount: number = 10,
     viewedFilter: string = 'unviewed',
     randomness: number = 1, // 随机性：0=优先当前目录，1=完全随机
-    mediaFilter: string = 'all' // 媒体类型筛选：all/images/videos
+    mediaFilter: string = 'all', // 媒体类型筛选：all/images/videos
+    requestCount: number = 1 // ✅ 新增参数：需要预加载的数量（默认1）
   ): Promise<void> {
     if (!currentFile) return
     
@@ -1430,72 +1468,121 @@ class DatabasePreloadManager {
       return
     }
     
-    // 每次只预加载1个文件，避免并发调用时重复计算
-    const needCount = 1
-    console.log(`[数据库模式] 智能预加载：当前缓存 ${currentCacheSize} 个，预加载 ${needCount} 个，筛选条件: ${viewedFilter}，随机性: ${randomness}，媒体类型: ${mediaFilter}`)
-    
     // 从当前文件提取父目录路径
     const currentParentPath = currentFile?.filename 
       ? currentFile.filename.substring(0, currentFile.filename.lastIndexOf('/'))
       : undefined
     
-    try {
-      // 构建排除列表：当前文件 + 缓存中的文件
-      const cachedPaths = this.getCachedFilepaths()
-      let excludeList = [...cachedPaths]
-      if (currentFile?.filename && !excludeList.includes(currentFile.filename)) {
-        excludeList.push(currentFile.filename)
+    // ✅ 补充重试逻辑：最多重试1次
+    const maxRetries = 1
+    let successCount = 0
+    
+    for (let retryAttempt = 0; retryAttempt <= maxRetries; retryAttempt++) {
+      // 计算本次需要预加载的数量
+      const currentCacheSize = this.cache.size
+      const needCount = Math.min(
+        requestCount - successCount,  // 还需要多少
+        maxCount - currentCacheSize   // 缓存还能放多少
+      )
+      
+      if (needCount <= 0) {
+        console.log('[数据库模式] 缓存已满或已达目标数量，停止预加载')
+        break
       }
       
-      // 已看过模式下，需要额外排除本地已看过的文件，避免短期内重复
-      if (viewedFilter === 'viewed') {
-        const localViewed = Array.from(this.localViewedFiles)
-        excludeList = [...new Set([...excludeList, ...localViewed])]
-      }
+      console.log(`[数据库模式] 智能预加载 (尝试 ${retryAttempt + 1}/${maxRetries + 1})：当前缓存 ${currentCacheSize} 个，本次预加载 ${needCount} 个，筛选条件: ${viewedFilter}，随机性: ${randomness}，媒体类型: ${mediaFilter}`)
       
-      // 使用 POST 请求避免 URL 过长导致 431 错误
-      const response = await fetch('/api/scan-files/random', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          webdavUrl: config.url,
-          webdavUsername: config.username,
-          paths: config.mediaPaths,
-          count: needCount,
-          randomness: randomness,
-          isViewed: viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined,
-          fileType: mediaFilter === 'images' ? 'image' : mediaFilter === 'videos' ? 'video' : undefined,
-          currentParentPath: currentParentPath || undefined,
-          excludeFilenames: excludeList.length > 0 ? excludeList : undefined,
-          maxFileSize: this.maxVideoSize // 过滤大于100MB的视频
+      try {
+        // 构建排除列表：当前文件 + 缓存中的文件
+        const cachedPaths = this.getCachedFilepaths()
+        let excludeList = [...cachedPaths]
+        if (currentFile?.filename && !excludeList.includes(currentFile.filename)) {
+          excludeList.push(currentFile.filename)
+        }
+        
+        // 已看过模式下，需要额外排除本地已看过的文件，避免短期内重复
+        if (viewedFilter === 'viewed') {
+          const localViewed = Array.from(this.localViewedFiles)
+          excludeList = [...new Set([...excludeList, ...localViewed])]
+        }
+        
+        // 使用 POST 请求避免 URL 过长导致 431 错误
+        const response = await fetch('/api/scan-files/random', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            webdavUrl: config.url,
+            webdavUsername: config.username,
+            paths: config.mediaPaths,
+            count: needCount,
+            randomness: randomness,
+            isViewed: viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined,
+            fileType: mediaFilter === 'images' ? 'image' : mediaFilter === 'videos' ? 'video' : undefined,
+            currentParentPath: currentParentPath || undefined,
+            excludeFilenames: excludeList.length > 0 ? excludeList : undefined,
+            maxFileSize: this.maxVideoSize // 过滤大于100MB的视频
+          })
         })
-      })
-      if (!response.ok) {
-        throw new Error('从数据库获取文件失败')
+        
+        if (!response.ok) {
+          throw new Error('从数据库获取文件失败')
+        }
+        
+        const data = await response.json()
+        
+        if (!data.hasData || data.files.length === 0) {
+          console.log('[数据库模式] 没有可用的文件进行智能预加载')
+          break
+        }
+        
+        // ✅ 将所有文件转换为预加载格式
+        const filesToPreload = data.files.map((f: any) => ({
+          filename: f.filename,
+          basename: f.basename,
+          size: f.file_size || 0,
+          type: f.file_type,
+          lastmod: f.lastmod || ''
+        }))
+        
+        console.log(`[数据库模式] 开始并行预加载 ${filesToPreload.length} 个文件（受并发控制，最多4个同时进行）`)
+        
+        // ✅ 并行预加载所有文件（受并发控制，最多4个）
+        // preloadFile 内部有 acquirePreloadSlot 控制，不会超过并发限制
+        // preloadFile 内部也有快速重试机制（最多重试1次）
+        const results = await Promise.allSettled(
+          filesToPreload.map((file: any) => this.preloadFile(config, file))
+        )
+        
+        // 统计本次结果
+        const batchSuccess = results.filter(r => r.status === 'fulfilled').length
+        const batchFailed = results.filter(r => r.status === 'rejected').length
+        successCount += batchSuccess
+        
+        console.log(`[数据库模式] 本批次预加载完成: 成功 ${batchSuccess} 个，失败 ${batchFailed} 个`)
+        
+        // 如果有失败且还有重试机会，进行补充重试
+        if (batchFailed > 0 && retryAttempt < maxRetries) {
+          console.warn(`[数据库模式] 检测到 ${batchFailed} 个失败，将重新获取替代文件 (补充重试 ${retryAttempt + 1}/${maxRetries})`)
+          await new Promise(resolve => setTimeout(resolve, 1000))  // 等待1秒后重试
+          // 继续下一次循环，重新获取失败数量的文件
+        } else {
+          // 没有失败或已达重试上限，结束循环
+          break
+        }
+        
+      } catch (error) {
+        console.error('[数据库模式] 智能预加载失败:', error)
+        // 如果还有重试机会，继续重试
+        if (retryAttempt < maxRetries) {
+          console.warn(`[数据库模式] 将进行补充重试 (${retryAttempt + 1}/${maxRetries})`)
+          await new Promise(resolve => setTimeout(resolve, 1000))
+        } else {
+          break
+        }
       }
-      
-      const data = await response.json()
-      
-      if (!data.hasData || data.files.length === 0) {
-        console.log('[数据库模式] 没有可用的文件进行智能预加载')
-        return
-      }
-      
-      const fileToPreload = {
-        filename: data.files[0].filename,
-        basename: data.files[0].basename,
-        size: data.files[0].file_size || 0,
-        type: data.files[0].file_type,
-        lastmod: data.files[0].lastmod || ''
-      }
-      
-      // ✅ 预加载单个文件（受并发控制，最多4个）
-      await this.preloadFile(config, fileToPreload)
-      console.log(`[数据库模式] 智能预加载完成: ${fileToPreload.basename}`)
-      
-    } catch (error) {
-      console.error('[数据库模式] 智能预加载失败:', error)
     }
+    
+    console.log(`[数据库模式] 智能预加载最终完成: 请求 ${requestCount} 个，成功 ${successCount} 个`)
   }
 }
 
