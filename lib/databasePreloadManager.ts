@@ -590,6 +590,11 @@ class DatabasePreloadManager {
     }
     this.cache.clear()
     this.queue.clear()
+    
+    // 🔧 重置并发控制计数器（修复切换模式时计数器错误的问题）
+    this.activePreloadCount = 0
+    this.pendingPreloadQueue = []
+    console.log('[数据库模式] 缓存已清空，并发控制已重置')
   }
 
   // 清理下一组缓存
