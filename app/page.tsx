@@ -203,6 +203,10 @@ export default function HomePage() {
   
   // 缓存预加载进度状态（图组模式和随机模式都使用）
   const [cachePreloadProgress, setCachePreloadProgress] = useState<{ current: number, total: number } | null>(null)
+  // 预加载数量不足状态（用于显示三段式进度）
+  const [preloadInsufficient, setPreloadInsufficient] = useState<boolean>(false)
+  // 实际找到的文件数量（用于三段式进度显示）
+  const [actualFoundCount, setActualFoundCount] = useState<number>(0)
 
   // 图组模式初始预加载状态（必须完成才能预览）
   const [galleryPreloadReady, setGalleryPreloadReady] = useState(false)
@@ -247,7 +251,7 @@ export default function HomePage() {
   // 提示消息内容
   const [snackbarMessage, setSnackbarMessage] = useState('')
   // 提示消息严重程度
-  const [snackbarSeverity, setSnackbarSeverity] = useState<'success' | 'error' | 'info'>('success')
+  const [snackbarSeverity, setSnackbarSeverity] = useState<'success' | 'error' | 'info' | 'warning'>('success')
   
   // 视频元素引用（普通模式，用于小视频）
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -529,6 +533,8 @@ export default function HomePage() {
         // 图组模式：重置预加载状态
         setGalleryPreloadReady(false)
         setCachePreloadProgress({ current: 0, total: preloadCount })
+        setPreloadInsufficient(false) // 重置数量不足状态
+        setActualFoundCount(0) // 重置实际找到的文件数量
         
         // 使用图组模式专用预加载，带进度回调
         databasePreloadManager.preloadForGalleryMode(
@@ -555,6 +561,13 @@ export default function HomePage() {
           })
           console.log(`图组模式初始预加载完成: ${result.message}`)
           
+          // 检查是否数量不足，显示提示
+          if (result.message && result.message.includes('未达到预加载目标')) {
+            setSnackbarMessage(result.message)
+            setSnackbarSeverity('warning')
+            setSnackbarOpen(true)
+          }
+          
           // 当前组加载完成后，异步预加载下一组（为切换做准备）
           databasePreloadManager.preloadNextGroup(config, [], preloadCount, viewedFilter).catch(error => {
             console.error('预加载下一组失败:', error)
@@ -580,6 +593,8 @@ export default function HomePage() {
         // 随机模式：初始化进度显示
         setGalleryPreloadReady(true) // 随机模式不需要等待预加载完成
         setCachePreloadProgress({ current: 0, total: preloadCount })
+        setPreloadInsufficient(false) // 重置数量不足状态
+        setActualFoundCount(0) // 重置实际找到的文件数量
         
         // 准备高级过滤参数（仅已看过模式，随机模式下才有高级过滤）
         const filters = viewedFilter === 'viewed' ? advancedFilters : undefined
@@ -600,7 +615,11 @@ export default function HomePage() {
           undefined, // currentParentPath
           mediaFilter, // 媒体类型筛选
           filters // 高级过滤参数
-        ).then(() => {
+        ).then(async (result) => {
+          // ✅ 设置数量不足状态和实际找到的文件数量
+          setPreloadInsufficient(result.isInsufficient)
+          setActualFoundCount(result.actualCount)
+          
           // 预加载完成后，如果已切换到大视频模式则忽略结果（使用 ref）
           if (viewModeRef.current === 'large-video') {
             console.log(`[预加载] 模式已切换到大视频模式，忽略预加载结果`)
@@ -614,6 +633,15 @@ export default function HomePage() {
             current: cacheStatus.cacheSize, 
             total: preloadCount 
           })
+          
+          // ✅ 使用 API 返回的实际数量判断
+          if (result.isInsufficient) {
+            const message = `仅找到 ${result.actualCount} 个符合条件的文件，未达到预加载目标 ${preloadCount} 个`
+            setSnackbarMessage(message)
+            setSnackbarSeverity('warning')
+            setSnackbarOpen(true)
+          }
+          
           console.log(`随机模式初始预加载完成，筛选条件: ${viewedFilter}, ${mediaFilter}`)
         }).catch(error => {
           console.warn('随机模式初始预加载失败:', error)
@@ -1973,6 +2001,8 @@ export default function HomePage() {
             // 图组模式：重置预加载状态
             setGalleryPreloadReady(false)
             setCachePreloadProgress({ current: 0, total: preloadCount })
+            setPreloadInsufficient(false) // 重置数量不足状态
+            setActualFoundCount(0) // 重置实际找到的文件数量
             
             // 使用图组模式专用预加载，带进度回调
             databasePreloadManager.preloadForGalleryMode(
@@ -1999,6 +2029,13 @@ export default function HomePage() {
                 total: preloadCount 
               })
               console.log(`配置变化后图组模式预加载完成: ${result.message}`)
+              
+              // 检查是否数量不足，显示提示
+              if (result.message && result.message.includes('未达到预加载目标')) {
+                setSnackbarMessage(result.message)
+                setSnackbarSeverity('warning')
+                setSnackbarOpen(true)
+              }
             }).catch(error => {
               console.warn('配置变化后图组模式预加载失败:', error)
               setGalleryPreloadReady(true) // 即使失败也允许预览
@@ -2013,6 +2050,8 @@ export default function HomePage() {
             // 随机模式：配置变化时重新预加载
             setGalleryPreloadReady(true) // 随机模式不需要等待预加载完成
             setCachePreloadProgress({ current: 0, total: preloadCount })
+            setPreloadInsufficient(false) // 重置数量不足状态
+            setActualFoundCount(0) // 重置实际找到的文件数量
             databasePreloadManager.refillCache(
               config, 
               [], // 数据库模式不需要文件列表
@@ -2029,7 +2068,11 @@ export default function HomePage() {
               undefined, // currentParentPath
               mediaFilter, // 媒体类型筛选
               filters // 传递高级过滤参数
-            ).then(() => {
+            ).then(async (result) => {
+              // ✅ 设置数量不足状态和实际找到的文件数量
+              setPreloadInsufficient(result.isInsufficient)
+              setActualFoundCount(result.actualCount)
+              
               // 预加载完成后，如果已切换到大视频模式则忽略结果（使用 ref）
               if (viewModeRef.current === 'large-video') {
                 console.log(`[预加载] 模式已切换到大视频模式，忽略配置变化后的预加载结果`)
@@ -2043,6 +2086,15 @@ export default function HomePage() {
                 current: cacheStatus.cacheSize, 
                 total: preloadCount 
               })
+              
+              // ✅ 使用 API 返回的实际数量判断
+              if (result.isInsufficient) {
+                const message = `仅找到 ${result.actualCount} 个符合条件的文件，未达到预加载目标 ${preloadCount} 个`
+                setSnackbarMessage(message)
+                setSnackbarSeverity('warning')
+                setSnackbarOpen(true)
+              }
+              
               console.log(`配置变化后随机模式预加载完成，筛选条件: ${viewedFilter}`)
             }).catch(error => {
               console.warn('配置变化后随机模式预加载失败:', error)
@@ -2692,10 +2744,13 @@ export default function HomePage() {
                 />
                 <Typography 
                   variant="body2" 
-                  color="text.secondary" 
+                  color="text.secondary"
                   sx={{ minWidth: '32px', fontWeight: 'bold' }}
                 >
-                  {cachePreloadProgress.current}/{cachePreloadProgress.total}
+                  {preloadInsufficient 
+                    ? `${actualFoundCount}/${cachePreloadProgress.current}/${cachePreloadProgress.total}`
+                    : `${cachePreloadProgress.current}/${cachePreloadProgress.total}`
+                  }
                 </Typography>
               </Box>
             )}
@@ -3437,7 +3492,10 @@ export default function HomePage() {
               <Box sx={{ mb: 3 }}>
                 <CircularProgress sx={{ mb: 2 }} />
                 <Typography variant="body1" color="text.secondary">
-                  正在加载 ({cachePreloadProgress.current}/{cachePreloadProgress.total})
+                  正在加载 ({preloadInsufficient 
+                    ? `${actualFoundCount}/${cachePreloadProgress.current}/${cachePreloadProgress.total}`
+                    : `${cachePreloadProgress.current}/${cachePreloadProgress.total}`
+                  })
                 </Typography>
               </Box>
             )}

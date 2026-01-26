@@ -87,9 +87,18 @@ export async function POST(request: NextRequest) {
     console.log(`⏱️ [random] getRandomBatchMultiple完成: ${Date.now() - randomStartTime}ms`)
     console.log(`⏱️ [random] 总耗时: ${Date.now() - startTime}ms`)
 
+    // 检查是否满足预加载数量要求
+    const isInsufficient = files.length < count
+    const message = isInsufficient 
+      ? `仅找到 ${files.length} 个符合条件的文件，未达到预加载目标 ${count} 个`
+      : undefined
+
     return NextResponse.json({ 
       files,
       count: files.length,
+      requestedCount: count,
+      isInsufficient,
+      message,
       hasData: true
     })
 

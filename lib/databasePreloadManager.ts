@@ -78,6 +78,7 @@ class DatabasePreloadManager {
 
   // 取消所有正在进行的预加载请求
   cancelAllPreloads(): void {
+    
     console.log('[数据库模式] 取消所有预加载请求')
     this.preloadCancelled = true
     
@@ -597,6 +598,7 @@ class DatabasePreloadManager {
 
   // 清理所有缓存
   clearCache() {
+    
     for (const cached of this.cache.values()) {
       URL.revokeObjectURL(cached.url)
     }
@@ -874,6 +876,12 @@ class DatabasePreloadManager {
         }
       }
       
+      // 检查是否数量不足
+      const isInsufficient = data.isInsufficient || files.length < count
+      const insufficientMessage = isInsufficient 
+        ? `仅找到 ${files.length} 个符合条件的文件，未达到预加载目标 ${count} 个` 
+        : ''
+      
       const filesToPreload = files.map((f: any) => ({
         filename: f.filename,
         basename: f.basename,
@@ -912,10 +920,16 @@ class DatabasePreloadManager {
       this.setConcurrencyLimitEnabled(true)
       console.log('[数据库模式] 初始/切换模式预加载完成，已启用并发限制（智能预加载将限制为4个）')
       
+      // 构建返回消息
+      let message = `数据库预加载完成：成功 ${successCount} 个，失败 ${failedCount} 个`
+      if (insufficientMessage) {
+        message = `${insufficientMessage}。${message}`
+      }
+      
       return {
         successCount,
         failedCount,
-        message: `数据库预加载完成：成功 ${successCount} 个，失败 ${failedCount} 个`
+        message
       }
       
     } catch (error: any) {
@@ -1167,7 +1181,11 @@ class DatabasePreloadManager {
       reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword'
       reasonKeyword?: string
     }
-  ): Promise<void> {
+  ): Promise<{
+    actualCount: number  // 实际找到的文件数量
+    requestedCount: number  // 请求的文件数量
+    isInsufficient: boolean  // 是否数量不足
+  }> {
     // ✅ 智能判断：如果缓存为空，自动当作初始加载（切换模式后的场景）
     const isActuallyInitialLoad = isInitialLoad || this.cache.size === 0
     
@@ -1188,7 +1206,11 @@ class DatabasePreloadManager {
     // 检查是否已取消
     if (this.isPreloadCancelled()) {
       console.log('[数据库模式] 预加载已取消，跳过缓存补齐')
-      return
+      return {
+        actualCount: 0,
+        requestedCount: targetCount,
+        isInsufficient: true
+      }
     }
     
     this.setMaxCacheSize(targetCount)
@@ -1203,7 +1225,11 @@ class DatabasePreloadManager {
       if (isActuallyInitialLoad) {
         this.setConcurrencyLimitEnabled(true)
       }
-      return
+      return {
+        actualCount: currentCacheSize,
+        requestedCount: targetCount,
+        isInsufficient: false
+      }
     }
     
     const needCount = targetCount - currentCacheSize
@@ -1259,7 +1285,19 @@ class DatabasePreloadManager {
         if (isActuallyInitialLoad) {
           this.setConcurrencyLimitEnabled(true)
         }
-        return
+        return {
+          actualCount: 0,
+          requestedCount: needCount,
+          isInsufficient: true
+        }
+      }
+      
+      // ✅ 关键：在这里就判断数量是否不足
+      const actualFileCount = data.files.length
+      const isInsufficient = data.isInsufficient || actualFileCount < needCount
+      
+      if (isInsufficient) {
+        console.warn(`⚠️ [数据库模式] 补齐数量不足：仅找到 ${actualFileCount} 个文件，需要 ${needCount} 个`)
       }
       
       const filesToPreload = data.files.map((f: any) => ({
@@ -1270,37 +1308,51 @@ class DatabasePreloadManager {
         lastmod: f.lastmod || ''
       }))
       
-      // 根据是否为初始加载，选择不同的预加载方法
-      const preloadPromises = filesToPreload.map((file: any) =>
-        (isActuallyInitialLoad 
-          ? this.preloadFileWithoutLimit(config, file)  // 初始加载：不限制，让浏览器控制
-          : this.preloadFile(config, file)              // 后续补充：限制4个并发
-        )
-          .then(() => {
-            if (onProgress) {
-              onProgress(this.cache.size, targetCount)
-            }
-          })
-          .catch((error) => {
-            console.error(`[数据库模式] 预加载文件失败: ${file.filename}`, error)
-            if (onProgress) {
-              onProgress(this.cache.size, targetCount)
-            }
-          })
-      )
-      
-      await Promise.allSettled(preloadPromises)
-      
-      // ✅ 初始/切换模式加载完成后，启用并发限制（后续的智能预加载会受到限制）
-      if (isActuallyInitialLoad) {
-        this.setConcurrencyLimitEnabled(true)
-        console.log('[数据库模式] 初始/切换模式加载完成，已启用并发限制（智能预加载将限制为4个）')
+      // ✅ 立即返回结果（不等待文件下载完成）
+      const result = {
+        actualCount: actualFileCount,
+        requestedCount: needCount,
+        isInsufficient
       }
+      
+      // 🔥 在后台异步下载文件（不阻塞返回）
+      Promise.allSettled(
+        filesToPreload.map((file: any) =>
+          (isActuallyInitialLoad 
+            ? this.preloadFileWithoutLimit(config, file)  // 初始加载：不限制，让浏览器控制
+            : this.preloadFile(config, file)              // 后续补充：限制4个并发
+          )
+            .then(() => {
+              if (onProgress) {
+                onProgress(this.cache.size, targetCount)
+              }
+            })
+            .catch((error) => {
+              console.error(`[数据库模式] 预加载文件失败: ${file.filename}`, error)
+              if (onProgress) {
+                onProgress(this.cache.size, targetCount)
+              }
+            })
+        )
+      ).then(() => {
+        // ✅ 初始/切换模式加载完成后，启用并发限制（后续的智能预加载会受到限制）
+        if (isActuallyInitialLoad) {
+          this.setConcurrencyLimitEnabled(true)
+          console.log('[数据库模式] 初始/切换模式加载完成，已启用并发限制（智能预加载将限制为4个）')
+        }
+      })
+      
+      return result
     } catch (error) {
       console.error('[数据库模式] 补充缓存失败:', error)
       // 恢复并发限制
       if (isActuallyInitialLoad) {
         this.setConcurrencyLimitEnabled(true)
+      }
+      return {
+        actualCount: 0,
+        requestedCount: targetCount,
+        isInsufficient: true
       }
     }
   }
@@ -1496,7 +1548,11 @@ class DatabasePreloadManager {
       reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword'
       reasonKeyword?: string
     }
-  ): Promise<void> {
+  ): Promise<{
+    actualCount: number
+    requestedCount: number
+    isInsufficient: boolean
+  }> {
     return this.refillCacheFromDatabase(config, targetCount, viewedFilter, onProgress, isInitialLoad, currentParentPath, randomness, mediaFilter, advancedFilters)
   }
 
@@ -1620,6 +1676,12 @@ class DatabasePreloadManager {
         if (!data.hasData || data.files.length === 0) {
           console.log('[数据库模式] 没有可用的文件进行智能预加载')
           break
+        }
+        
+        // 检查是否数量不足
+        const isInsufficient = data.isInsufficient || data.files.length < needCount
+        if (isInsufficient) {
+          console.warn(`⚠️ [数据库模式] 智能预加载数量不足：仅找到 ${data.files.length} 个文件，需要 ${needCount} 个`)
         }
         
         // ✅ 将所有文件转换为预加载格式
