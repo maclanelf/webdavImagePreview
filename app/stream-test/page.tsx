@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import {
   Container,
   Box,
@@ -87,8 +87,15 @@ export default function StreamTestPage() {
   const [apiResponse, setApiResponse] = useState<any>(null)
   const [loading, setLoading] = useState(false)
   const [ffmpegStatus, setFfmpegStatus] = useState<any>(null)
+  const [webdavConfig, setWebdavConfig] = useState<any>(null)
+  const [mounted, setMounted] = useState(false)
 
-  // 检查 FFmpeg 状态
+  // 避免 hydration 不匹配
+  useEffect(() => {
+    setMounted(true)
+  }, [])
+
+  // 检查 FFmpeg 状态和加载 WebDAV 配置
   useEffect(() => {
     fetch('/api/system/ffmpeg-check')
       .then(res => res.json())
@@ -102,6 +109,19 @@ export default function StreamTestPage() {
       })
       .catch(err => {
         setLogs(prev => [`[系统] ⚠️ 无法检测 FFmpeg 状态`, ...prev])
+      })
+    
+    // 加载 WebDAV 配置
+    fetch('/api/webdav-config/default')
+      .then(res => res.json())
+      .then(data => {
+        if (data.url && data.username) {
+          setWebdavConfig(data)
+          console.log('WebDAV 配置加载成功:', data)
+        }
+      })
+      .catch(err => {
+        console.error('加载 WebDAV 配置失败:', err)
       })
   }, [])
 
@@ -189,6 +209,67 @@ export default function StreamTestPage() {
   const addLog = (message: string) => {
     const timestamp = new Date().toLocaleTimeString('zh-CN', { hour12: false })
     setLogs(prev => [`[${timestamp}] ${message}`, ...prev.slice(0, 99)])
+  }
+  
+  // 检测输入是否为文件路径（而非完整URL）
+  const isFilePath = (input: string): boolean => {
+    const trimmed = input.trim()
+    // 如果以 / 开头且不包含 ? 或 http，则认为是文件路径
+    return trimmed.startsWith('/') && !trimmed.includes('?') && !trimmed.startsWith('http')
+  }
+  
+  // 路径转换为 WebDAV URL
+  const convertToWebdavUrl = (filepath: string): string | null => {
+    if (!webdavConfig) {
+      addLog('❌ WebDAV 配置未加载，请先配置 WebDAV')
+      return null
+    }
+    
+    try {
+      const params = new URLSearchParams({
+        url: webdavConfig.url,
+        username: webdavConfig.username,
+        password: webdavConfig.password,
+        filepath: filepath,
+        sourceType: webdavConfig.sourceType || 'clouddrive2',
+      })
+      
+      // 将 + 替换为 %20，确保路径中的 + 号不会被解码为空格
+      const webdavUrl = `/api/webdav/instant-stream?${params.toString().replace(/\+/g, '%20')}`
+      
+      addLog(`✅ 已转换为 WebDAV URL`)
+      addLog(`📝 文件路径: ${filepath}`)
+      return webdavUrl
+    } catch (error: any) {
+      addLog(`❌ 转换失败: ${error.message}`)
+      return null
+    }
+  }
+  
+  // 路径转换为 OpenList 直链 URL
+  const convertToOpenListUrl = (filepath: string): string | null => {
+    try {
+      let processedPath = filepath
+      
+      // OpenList 特殊处理：将文件名中的全角斜杠（／）替换为竖线（|）
+      // 因为 OpenList 不允许文件名中包含斜杠
+      processedPath = processedPath
+        .split('/')
+        .map(segment => segment.replace(/／/g, '|'))
+        .join('/')
+      
+      const openListUrl = `/d${processedPath}`
+      
+      addLog(`✅ 已转换为 OpenList 直链 URL`)
+      addLog(`📝 文件路径: ${filepath}`)
+      if (processedPath !== filepath) {
+        addLog(`🔄 已处理全角斜杠（／ → |）`)
+      }
+      return openListUrl
+    } catch (error: any) {
+      addLog(`❌ 转换失败: ${error.message}`)
+      return null
+    }
   }
 
   // 更新视频状态
@@ -315,49 +396,53 @@ export default function StreamTestPage() {
     const video = videoRef.current
     if (!video) return
     
-    const playUrl = getPlayUrl()
+    // 检查输入是否为文件路径，如果是则自动转换
+    let convertedUrl = testUrl
+    if (isFilePath(testUrl)) {
+      addLog('🔄 检测到文件路径，自动转换为播放链接...')
+      
+      if (testMode === 'webdav') {
+        const converted = convertToWebdavUrl(testUrl)
+        if (!converted) {
+          addLog('❌ 转换失败，无法播放')
+          return
+        }
+        convertedUrl = converted
+        setTestUrl(converted) // 更新输入框显示转换后的 URL
+      } else {
+        const converted = convertToOpenListUrl(testUrl)
+        if (!converted) {
+          addLog('❌ 转换失败，无法播放')
+          return
+        }
+        convertedUrl = converted
+        setTestUrl(converted) // 更新输入框显示转换后的 URL
+      }
+    }
+    
+    // 获取最终播放 URL
+    let playUrl = convertedUrl
+    if (testMode === 'webdav') {
+      // WebDAV 模式：添加 forceWebDAV 参数和转码参数
+      addLog(`🔍 [DEBUG] 转换后的 URL: ${convertedUrl.substring(0, 150)}...`)
+      let normalizedUrl = normalizeTestUrl(convertedUrl)
+      addLog(`🔍 [DEBUG] 规范化后的 URL: ${normalizedUrl.substring(0, 150)}...`)
+      normalizedUrl += normalizedUrl.includes('?') ? '&forceWebDAV=true' : '?forceWebDAV=true'
+      
+      if (useTranscode) {
+        // 转码模式：替换 API 路径并添加转码参数
+        normalizedUrl = normalizedUrl.replace('/api/webdav/instant-stream', '/api/webdav/transcode-stream')
+        normalizedUrl += `&format=${transcodeFormat}&quality=${transcodeQuality}`
+      }
+      
+      playUrl = normalizedUrl
+      addLog(`🔍 [DEBUG] 最终播放 URL: ${playUrl.substring(0, 150)}...`)
+    }
     
     addLog('🎬 开始播放测试...')
     
-    // 🔍 调试：打印 URL 详情
-    addLog(`🔍 [DEBUG] 原始输入 URL: ${testUrl.substring(0, 150)}...`)
-    
-    // 解析原始 URL 并检查 filepath
-    try {
-      const originalUrlObj = new URL(testUrl, window.location.origin)
-      const originalFilepath = originalUrlObj.searchParams.get('filepath')
-      addLog(`🔍 [DEBUG] 原始 URL 中的 filepath: ${originalFilepath?.substring(0, 80)}...`)
-      
-      // 检查原始 filepath 是否包含 + 号或空格
-      if (originalFilepath?.includes('+')) {
-        addLog(`✅ [DEBUG] 原始 filepath 包含 + 号`)
-      } else if (originalFilepath?.includes(' ')) {
-        addLog(`❌ [DEBUG] 原始 filepath 包含空格（可能是用户输入错误或浏览器自动解码）`)
-      }
-    } catch (e) {
-      addLog(`⚠️ [DEBUG] 无法解析原始 URL`)
-    }
-    
-    addLog(`🔍 [DEBUG] 规范化后的播放 URL: ${playUrl.substring(0, 150)}...`)
-    
-    // 解析规范化后的 URL 并检查 filepath
-    try {
-      const urlObj = new URL(playUrl, window.location.origin)
-      const filepath = urlObj.searchParams.get('filepath')
-      addLog(`🔍 [DEBUG] 规范化后的 filepath: ${filepath?.substring(0, 80)}...`)
-      
-      // 检查是否包含 + 号
-      if (filepath?.includes('+')) {
-        addLog(`✅ [DEBUG] 规范化后 filepath 包含 + 号`)
-      } else if (filepath?.includes(' ')) {
-        addLog(`❌ [DEBUG] 规范化后 filepath 包含空格`)
-      }
-    } catch (e) {
-      addLog(`⚠️ [DEBUG] 无法解析规范化后的 URL`)
-    }
-    
     if (testMode === 'direct') {
-      addLog(`📹 模式: OpenList 直链播放`)
+      addLog(`� [模式: OpenList 直链播放`)
       addLog(`📹 视频源: ${playUrl}`)
     } else {
       addLog(`📹 模式: WebDAV ${useTranscode ? `转码流 (${transcodeFormat}/${transcodeQuality})` : '原始流 (强制 WebDAV)'}`)
@@ -434,15 +519,18 @@ export default function StreamTestPage() {
     }
   }, [])
 
-  // 解析URL参数
-  const parseUrlParams = () => {
+  // 解析URL参数（使用 useMemo 避免 hydration 不匹配）
+  const urlParams = useMemo(() => {
+    // 只在客户端挂载后解析
+    if (!mounted) return null
+    
     // 直链模式：解析 /d/ 路径
     if (testMode === 'direct') {
       if (testUrl.startsWith('/d/')) {
         const path = testUrl.substring(2) // 去掉 /d
         const segments = path.split('/')
         return {
-          type: 'direct',
+          type: 'direct' as const,
           virtualPath: segments[0] || '',
           filepath: path,
           filename: segments[segments.length - 1] || '',
@@ -455,7 +543,7 @@ export default function StreamTestPage() {
     try {
       const url = new URL(testUrl, window.location.origin)
       return {
-        type: 'webdav',
+        type: 'webdav' as const,
         webdavUrl: url.searchParams.get('url'),
         username: url.searchParams.get('username'),
         password: url.searchParams.get('password') ? '***' : null,
@@ -464,9 +552,7 @@ export default function StreamTestPage() {
     } catch {
       return null
     }
-  }
-
-  const urlParams = parseUrlParams()
+  }, [mounted, testMode, testUrl])
 
   return (
     <Box sx={{ minHeight: '100vh', backgroundColor: '#1a1a2e' }}>
@@ -547,13 +633,11 @@ export default function StreamTestPage() {
                 onChange={(e) => setTestUrl(e.target.value)}
                 placeholder={
                   testMode === 'direct' 
-                    ? '输入 OpenList 直链 URL，例如: /d/115open/115/path/to/video.mp4' 
-                    : '输入 WebDAV 视频流 URL'
+                    ? '输入文件路径或 OpenList 直链 URL\n例如: /115open/115/path/to/video.mp4' 
+                    : '输入文件路径或 WebDAV 视频流 URL\n例如: /115open/115/700+网红大合集～～微密圈／觅圈／铁粉空间等机构/001-100/010/V (1).mp4'
                 }
                 helperText={
-                  testMode === 'webdav' 
-                    ? '⚠️ 注意：如果文件路径包含 + 号，请确保 filepath 参数已正确 URL 编码（+ 应编码为 %2B）' 
-                    : undefined
+                  '💡 支持直接输入文件路径，点击播放测试时会自动转换为对应的播放链接'
                 }
                 sx={{
                   '& .MuiOutlinedInput-root': {
@@ -567,6 +651,20 @@ export default function StreamTestPage() {
                   },
                 }}
               />
+              
+              {/* 自动转换提示 */}
+              {mounted && isFilePath(testUrl) && (
+                <Alert severity="info" sx={{ mt: 2, backgroundColor: '#2d2d44', color: '#4ade80' }}>
+                  <Typography variant="body2">
+                    🔄 检测到文件路径，点击"播放测试"时将自动转换为 {testMode === 'webdav' ? 'WebDAV' : 'OpenList'} 播放链接
+                  </Typography>
+                  {testMode === 'direct' && testUrl.includes('／') && (
+                    <Typography variant="body2" sx={{ mt: 0.5, color: '#fbbf24' }}>
+                      ⚠️ 检测到全角斜杠（／），将自动替换为竖线（|）
+                    </Typography>
+                  )}
+                </Alert>
+              )}
               
               {urlParams && (
                 <Box sx={{ mt: 2 }}>
@@ -695,7 +793,22 @@ export default function StreamTestPage() {
                 </Box>
               )}
               
-              <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
+              <Stack direction="row" spacing={2} sx={{ mt: 2 }} flexWrap="wrap">
+                <Button 
+                  variant="outlined" 
+                  onClick={() => {
+                    const examplePath = '/115open/115/700+网红大合集～～微密圈／觅圈／铁粉空间等机构/001-100/010/013-014/013-014/抖音 霸王龙 微密圈  NO.013期 [14P-2V 46.99 MB]/V (1).mp4'
+                    setTestUrl(examplePath)
+                    addLog('📝 已填充示例路径')
+                  }}
+                  sx={{ 
+                    borderColor: '#4ade80', 
+                    color: '#4ade80',
+                    '&:hover': { borderColor: '#22c55e', color: '#22c55e', backgroundColor: 'rgba(74, 222, 128, 0.1)' }
+                  }}
+                >
+                  填充示例路径
+                </Button>
                 <Button variant="contained" onClick={testApiHead} disabled={loading}
                   sx={{ backgroundColor: '#0f3460', '&:hover': { backgroundColor: '#1a4a7a' } }}>
                   HEAD 测试
@@ -867,13 +980,16 @@ export default function StreamTestPage() {
               💡 使用说明
             </Typography>
             <Typography variant="body2" sx={{ mb: 1 }}>
-              <strong>WebDAV 流式传输：</strong>通过 WebDAV 协议获取视频流，支持原始流和转码流两种模式
+              <strong>🔄 自动路径转换：</strong>支持直接输入文件路径（如 /115open/115/path/to/video.mp4），点击播放测试时会自动转换为对应的播放链接
             </Typography>
             <Typography variant="body2" sx={{ mb: 1 }}>
-              <strong>OpenList 直链播放：</strong>通过 Nginx 反向代理直接访问 OpenList 的 /d/ 直链，性能更好，无需转码
+              <strong>WebDAV 流式传输：</strong>通过 WebDAV 协议获取视频流，支持原始流和转码流两种模式，路径中的 + 号会自动编码
+            </Typography>
+            <Typography variant="body2" sx={{ mb: 1 }}>
+              <strong>OpenList 直链播放：</strong>通过 Nginx 反向代理直接访问 OpenList 的 /d/ 直链，性能更好，会自动处理全角斜杠（／ → |）
             </Typography>
             <Typography variant="body2" sx={{ color: '#4ade80' }}>
-              ✅ 直链播放需要配置 Nginx 反向代理，将 /d/ 路径代理到 OpenList 服务器
+              ✅ 转换后的链接会自动显示在输入框中，方便复制使用
             </Typography>
             <Typography variant="body2" sx={{ color: '#fbbf24' }}>
               ⚠️ 转码模式需要服务器安装 FFmpeg，首次播放可能有几秒延迟
