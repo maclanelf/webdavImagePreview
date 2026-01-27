@@ -2044,8 +2044,11 @@ export const scanFiles = {
       // 统计总数
       const countStartTime = Date.now()
       const countSql = buildCountSql(where)
+      console.log(`🔍 [SQL执行] COUNT查询`)
+      console.log(`   SQL:`, countSql.trim().replace(/\s+/g, ' '))
+      console.log(`   参数:`, JSON.stringify(params))
       const { count: totalCount } = db.prepare(countSql).get(...params) as { count: number }
-      console.log(`⏱️ [统计] ${Date.now() - countStartTime}ms, 总数: ${totalCount}`)
+      console.log(`⏱️ [统计] ${Date.now() - countStartTime}ms, 总数: ${totalCount}, 请求数量: ${count}`)
       
       if (totalCount === 0) return []
       
