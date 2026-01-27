@@ -207,6 +207,8 @@ export default function HomePage() {
   const [preloadInsufficient, setPreloadInsufficient] = useState<boolean>(false)
   // 实际找到的文件数量（用于三段式进度显示）
   const [actualFoundCount, setActualFoundCount] = useState<number>(0)
+  // 已看完所有文件对话框
+  const [showRestartDialog, setShowRestartDialog] = useState<boolean>(false)
 
   // 图组模式初始预加载状态（必须完成才能预览）
   const [galleryPreloadReady, setGalleryPreloadReady] = useState(false)
@@ -619,6 +621,13 @@ export default function HomePage() {
           // ✅ 设置数量不足状态和实际找到的文件数量
           setPreloadInsufficient(result.isInsufficient)
           setActualFoundCount(result.actualCount)
+          
+          // ✅ 检查是否已看完所有文件
+          if (result.allViewed) {
+            console.log('[预加载] 已看完所有符合条件的文件')
+            setShowRestartDialog(true)
+            return
+          }
           
           // 预加载完成后，如果已切换到大视频模式则忽略结果（使用 ref）
           if (viewModeRef.current === 'large-video') {
@@ -1389,7 +1398,16 @@ export default function HomePage() {
         lastmod: randomFile.lastmod
       }
       console.log(`[DEBUG] 从预加载缓存中选择文件: ${fileToLoad?.basename}`)
-    } else {//通常是在浏览预加载指定数量的文件没有可以预览的数量了,那么就会从这个方法走
+    } else {
+      // ✅ 检查是否因为已看完所有文件导致无文件可用
+      if (viewedFilter === 'viewed' && databasePreloadManager.getLocalViewedCount() > 0) {
+        console.log(`[DEBUG] 缓存中没有可用文件，已看过 ${databasePreloadManager.getLocalViewedCount()} 个文件`)
+        console.log(`[DEBUG] 可能已看完所有符合条件的文件，显示重新开始对话框`)
+        setShowRestartDialog(true)
+        setLoading(false)
+        return
+      }
+      
       console.log(`[DEBUG] 缓存中没有可用文件，从数据库随机获取`)
       // 如果缓存中没有可用文件，从数据库随机获取一个文件
       try {
@@ -1428,6 +1446,15 @@ export default function HomePage() {
       }
       
       if (!fileToLoad) {
+        // ✅ 再次检查是否因为已看完所有文件
+        if (viewedFilter === 'viewed' && databasePreloadManager.getLocalViewedCount() > 0) {
+          console.log(`[DEBUG] 数据库也无法获取文件，已看过 ${databasePreloadManager.getLocalViewedCount()} 个文件`)
+          console.log(`[DEBUG] 确认已看完所有符合条件的文件，显示重新开始对话框`)
+          setShowRestartDialog(true)
+          setLoading(false)
+          return
+        }
+        
         const filterMsg = viewedFilter === 'viewed' ? '已看过' : 
                          viewedFilter === 'unviewed' ? '未看过' : '全部'
         const mediaMsg = mediaFilter === 'images' ? '图片' : 
@@ -2073,6 +2100,13 @@ export default function HomePage() {
               setPreloadInsufficient(result.isInsufficient)
               setActualFoundCount(result.actualCount)
               
+              // ✅ 检查是否已看完所有文件
+              if (result.allViewed) {
+                console.log('[预加载] 已看完所有符合条件的文件（配置变化）')
+                setShowRestartDialog(true)
+                return
+              }
+              
               // 预加载完成后，如果已切换到大视频模式则忽略结果（使用 ref）
               if (viewModeRef.current === 'large-video') {
                 console.log(`[预加载] 模式已切换到大视频模式，忽略配置变化后的预加载结果`)
@@ -2425,6 +2459,88 @@ export default function HomePage() {
   // 关闭提示
   const handleCloseSnackbar = () => {
     setSnackbarOpen(false)
+  }
+
+  // 处理重新开始观看
+  const handleRestartViewing = async () => {
+    setShowRestartDialog(false)
+    
+    if (!config) return
+    
+    // 清空本地已看过的文件列表
+    databasePreloadManager.clearLocalViewedFiles()
+    console.log('[重新开始] 已清空本地已看过文件列表')
+    
+    // 清空缓存
+    databasePreloadManager.clearCache()
+    console.log('[重新开始] 已清空缓存')
+    
+    // 重新加载
+    const preloadCount = config.scanSettings?.preloadCount || 10
+    const filters = viewedFilter === 'viewed' ? advancedFilters : undefined
+    
+    setLoading(true)
+    setCachePreloadProgress({ current: 0, total: preloadCount })
+    
+    try {
+      // ✅ 等待预加载完成（API返回，文件在后台下载）
+      const result = await databasePreloadManager.refillCache(
+        config,
+        [],
+        preloadCount,
+        viewedFilter,
+        (current, total) => {
+          setCachePreloadProgress({ current, total })
+        },
+        preloadRandomness,
+        true,
+        undefined,
+        mediaFilter,
+        filters
+      )
+      
+      // ✅ 更新数量信息（保持三段式显示）
+      setPreloadInsufficient(result.isInsufficient)
+      setActualFoundCount(result.actualCount)
+      
+      console.log('[重新开始] API 返回，实际找到:', result.actualCount, '个文件')
+      
+      // ✅ 等待至少一个文件下载到缓存（最多等待5秒）
+      let waitCount = 0
+      const maxWait = 50 // 50 * 100ms = 5秒
+      while (databasePreloadManager.getCachedFilepaths().length === 0 && waitCount < maxWait) {
+        await new Promise(resolve => setTimeout(resolve, 100))
+        waitCount++
+      }
+      
+      console.log('[重新开始] 等待完成，缓存文件数:', databasePreloadManager.getCachedFilepaths().length)
+      
+      // ✅ 确保缓存中有文件后再加载
+      if (databasePreloadManager.getCachedFilepaths().length > 0) {
+        await loadRandomFile()
+        setSnackbarMessage('🔄 已重新开始，文件顺序已重新随机')
+        setSnackbarSeverity('success')
+        setSnackbarOpen(true)
+      } else {
+        console.error('[重新开始] 等待超时，缓存仍为空')
+        setError('重新开始失败：文件加载超时')
+        setSnackbarMessage('重新开始失败：文件加载超时')
+        setSnackbarSeverity('error')
+        setSnackbarOpen(true)
+      }
+    } catch (error) {
+      console.error('[重新开始] 失败:', error)
+      setSnackbarMessage('重新开始失败')
+      setSnackbarSeverity('error')
+      setSnackbarOpen(true)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // 取消重新开始
+  const handleCancelRestart = () => {
+    setShowRestartDialog(false)
   }
 
   // 执行自动评分
@@ -4300,6 +4416,34 @@ export default function HomePage() {
           {snackbarMessage}
         </Alert>
       </Snackbar>
+
+      {/* 已看完所有文件对话框 */}
+      <Dialog
+        open={showRestartDialog}
+        onClose={handleCancelRestart}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>
+          🎉 已看完所有符合条件的文件
+        </DialogTitle>
+        <DialogContent>
+          <Typography variant="body1" sx={{ mb: 2 }}>
+            您已经浏览完所有符合当前筛选条件的文件。
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            是否重新开始？文件顺序将重新随机排列。
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCancelRestart} color="inherit">
+            取消
+          </Button>
+          <Button onClick={handleRestartViewing} variant="contained" color="primary">
+            重新开始
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* 全屏过渡遮罩 - 用于图片全屏切换到视频全屏时的平滑过渡 */}
       {fullscreenTransitionOverlay && (

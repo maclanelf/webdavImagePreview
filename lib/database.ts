@@ -2013,8 +2013,39 @@ export const scanFiles = {
       
       console.log(`📊 [批量随机] 总数: ${totalCount}, 桶数: ${bucketCount}, 需要: ${count}个`)
       
-      // 批量获取
       const fetchStartTime = Date.now()
+      
+      // ✅ 优化：当总数接近请求数量时，一次性获取所有文件再随机选择
+      if (totalCount <= count * 2) {
+        console.log(`📊 [批量随机] 小数据集优化：一次性获取所有文件`)
+        
+        // ✅ 修复：只获取需要的数量，而不是全部
+        // 考虑到排除列表，多获取一些以确保有足够的文件
+        const fetchCount = Math.min(totalCount, count + excludeSet.size)
+        const sql = buildSelectSql(where, 'RANDOM()', fetchCount)
+        console.log(`🔍 [SQL调试] SELECT查询（小数据集）:`)
+        console.log('SQL:', sql.trim().replace(/\s+/g, ' '))
+        console.log('参数:', params)
+        console.log(`📊 [批量随机] 获取数量: ${fetchCount}（总数: ${totalCount}, 需要: ${count}, 排除: ${excludeSet.size}）`)
+        
+        const allFiles = db.prepare(sql).all(...params) as any[]
+        
+        // 过滤掉排除列表中的文件
+        const availableFiles = allFiles.filter(f => !excludeSet.has(f.filename))
+        
+        // 随机选择需要的数量
+        const selectedCount = Math.min(count, availableFiles.length)
+        for (let i = 0; i < selectedCount; i++) {
+          results.push(availableFiles[i])
+        }
+        
+        console.log(`⏱️ [批量随机] 获取耗时: ${Date.now() - fetchStartTime}ms, 获取: ${results.length}/${count}, 可用: ${availableFiles.length}`)
+        console.log(`⏱️ [批量随机] 总耗时: ${Date.now() - totalStartTime}ms`)
+        
+        return results
+      }
+      
+      // 批量获取（大数据集）
       const maxAttempts = count * 3  // 最多尝试3倍次数
       let attempts = 0
       

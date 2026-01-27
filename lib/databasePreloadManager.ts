@@ -1185,6 +1185,7 @@ class DatabasePreloadManager {
     actualCount: number  // 实际找到的文件数量
     requestedCount: number  // 请求的文件数量
     isInsufficient: boolean  // 是否数量不足
+    allViewed?: boolean  // 是否已看完所有文件（需要重新开始）
   }> {
     // ✅ 智能判断：如果缓存为空，自动当作初始加载（切换模式后的场景）
     const isActuallyInitialLoad = isInitialLoad || this.cache.size === 0
@@ -1281,6 +1282,19 @@ class DatabasePreloadManager {
       
       if (!data.hasData || data.files.length === 0) {
         console.log('[数据库模式] 没有可用的文件进行补齐')
+        
+        // ✅ 检查是否因为已看完所有文件导致无文件可加载
+        if (viewedFilter === 'viewed' && this.localViewedFiles.size > 0) {
+          console.log(`[数据库模式] 已看过 ${this.localViewedFiles.size} 个文件，可能已看完所有符合条件的文件`)
+          // 返回特殊标志，表示已看完一圈
+          return {
+            actualCount: 0,
+            requestedCount: needCount,
+            isInsufficient: true,
+            allViewed: true  // 新增标志：已看完所有文件
+          }
+        }
+        
         // 恢复并发限制
         if (isActuallyInitialLoad) {
           this.setConcurrencyLimitEnabled(true)
@@ -1552,6 +1566,7 @@ class DatabasePreloadManager {
     actualCount: number
     requestedCount: number
     isInsufficient: boolean
+    allViewed?: boolean
   }> {
     return this.refillCacheFromDatabase(config, targetCount, viewedFilter, onProgress, isInitialLoad, currentParentPath, randomness, mediaFilter, advancedFilters)
   }
@@ -1630,7 +1645,7 @@ class DatabasePreloadManager {
       console.log(`[数据库模式] 智能预加载 (尝试 ${retryAttempt + 1}/${maxRetries + 1})：当前缓存 ${currentCacheSize} 个，本次预加载 ${needCount} 个，筛选条件: ${viewedFilter}，随机性: ${randomness}，媒体类型: ${mediaFilter}`)
       
       try {
-        // 构建排除列表：当前文件 + 缓存中的文件
+        // 构建排除列表：当前文件 + 缓存中的文件 + 已看过模式下的本地已看过文件
         const cachedPaths = this.getCachedFilepaths()
         let excludeList = [...cachedPaths]
         if (currentFile?.filename && !excludeList.includes(currentFile.filename)) {
