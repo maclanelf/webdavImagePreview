@@ -117,6 +117,9 @@ interface AdvancedFilters {
   categories: string[] // 分类标签
   reasonFilter: 'all' | 'empty' | 'nonempty' | 'keyword' // 评价理由过滤
   reasonKeyword?: string // 评价理由关键词
+  includeEmptyRating?: boolean // 包含星级为空的
+  includeEmptyEvaluation?: boolean // 包含评价为空的
+  includeEmptyCategory?: boolean // 包含分类为空的
 }
 
 interface MediaGroup {
@@ -170,7 +173,10 @@ export default function HomePage() {
     evaluations: [],
     categories: [],
     reasonFilter: 'all',
-    reasonKeyword: ''
+    reasonKeyword: '',
+    includeEmptyRating: false,
+    includeEmptyEvaluation: false,
+    includeEmptyCategory: false
   })
   // 可用的评价标签和分类（从数据库加载）
   const [availableEvaluations, setAvailableEvaluations] = useState<string[]>([])
@@ -1424,7 +1430,18 @@ export default function HomePage() {
             paths: config.mediaPaths,
             count: 1,
             fileType: fileTypeParam || undefined,
-            isViewed: isViewedParam
+            isViewed: isViewedParam,
+            // 高级过滤条件（仅已看过模式）
+            ...(viewedFilter === 'viewed' && {
+              ratings: advancedFilters.ratings.length > 0 ? advancedFilters.ratings : undefined,
+              evaluations: advancedFilters.evaluations.length > 0 ? advancedFilters.evaluations : undefined,
+              categories: advancedFilters.categories.length > 0 ? advancedFilters.categories : undefined,
+              reasonFilter: advancedFilters.reasonFilter !== 'all' ? advancedFilters.reasonFilter : undefined,
+              reasonKeyword: advancedFilters.reasonKeyword || undefined,
+              includeEmptyRating: advancedFilters.includeEmptyRating || undefined,
+              includeEmptyEvaluation: advancedFilters.includeEmptyEvaluation || undefined,
+              includeEmptyCategory: advancedFilters.includeEmptyCategory || undefined
+            })
           })
         })
         if (response.ok) {
@@ -1650,7 +1667,18 @@ export default function HomePage() {
           randomness: preloadRandomness,
           isViewed: isViewedParam,
           currentParentPath: (currentParentPath && preloadRandomness < 1) ? currentParentPath : undefined,
-          excludeFilenames: localViewedFiles.length > 0 ? localViewedFiles : undefined
+          excludeFilenames: localViewedFiles.length > 0 ? localViewedFiles : undefined,
+          // 高级过滤条件（仅已看过模式）
+          ...(viewedFilter === 'viewed' && {
+            ratings: advancedFilters.ratings.length > 0 ? advancedFilters.ratings : undefined,
+            evaluations: advancedFilters.evaluations.length > 0 ? advancedFilters.evaluations : undefined,
+            categories: advancedFilters.categories.length > 0 ? advancedFilters.categories : undefined,
+            reasonFilter: advancedFilters.reasonFilter !== 'all' ? advancedFilters.reasonFilter : undefined,
+            reasonKeyword: advancedFilters.reasonKeyword || undefined,
+            includeEmptyRating: advancedFilters.includeEmptyRating || undefined,
+            includeEmptyEvaluation: advancedFilters.includeEmptyEvaluation || undefined,
+            includeEmptyCategory: advancedFilters.includeEmptyCategory || undefined
+          })
         })
       })
       
@@ -4053,11 +4081,23 @@ export default function HomePage() {
                         size="small"
                       />
                     ))}
+                    <Chip
+                      label="为空"
+                      onClick={() => {
+                        setAdvancedFilters(prev => ({
+                          ...prev,
+                          includeEmptyRating: !prev.includeEmptyRating
+                        }))
+                      }}
+                      color={advancedFilters.includeEmptyRating ? 'primary' : 'default'}
+                      variant={advancedFilters.includeEmptyRating ? 'filled' : 'outlined'}
+                      size="small"
+                    />
                   </Box>
-                  {advancedFilters.ratings.length > 0 && (
+                  {(advancedFilters.ratings.length > 0 || advancedFilters.includeEmptyRating) && (
                     <Button
                       size="small"
-                      onClick={() => setAdvancedFilters(prev => ({ ...prev, ratings: [] }))}
+                      onClick={() => setAdvancedFilters(prev => ({ ...prev, ratings: [], includeEmptyRating: false }))}
                       sx={{ mt: 0.5 }}
                     >
                       清除
@@ -4088,16 +4128,28 @@ export default function HomePage() {
                         size="small"
                       />
                     ))}
+                    <Chip
+                      label="为空"
+                      onClick={() => {
+                        setAdvancedFilters(prev => ({
+                          ...prev,
+                          includeEmptyEvaluation: !prev.includeEmptyEvaluation
+                        }))
+                      }}
+                      color={advancedFilters.includeEmptyEvaluation ? 'secondary' : 'default'}
+                      variant={advancedFilters.includeEmptyEvaluation ? 'filled' : 'outlined'}
+                      size="small"
+                    />
                   </Box>
                   {availableEvaluations.length === 0 && (
                     <Typography variant="caption" color="text.secondary">
                       暂无评价标签
                     </Typography>
                   )}
-                  {advancedFilters.evaluations.length > 0 && (
+                  {(advancedFilters.evaluations.length > 0 || advancedFilters.includeEmptyEvaluation) && (
                     <Button
                       size="small"
-                      onClick={() => setAdvancedFilters(prev => ({ ...prev, evaluations: [] }))}
+                      onClick={() => setAdvancedFilters(prev => ({ ...prev, evaluations: [], includeEmptyEvaluation: false }))}
                       sx={{ mt: 0.5 }}
                     >
                       清除
@@ -4128,16 +4180,28 @@ export default function HomePage() {
                         size="small"
                       />
                     ))}
+                    <Chip
+                      label="为空"
+                      onClick={() => {
+                        setAdvancedFilters(prev => ({
+                          ...prev,
+                          includeEmptyCategory: !prev.includeEmptyCategory
+                        }))
+                      }}
+                      color={advancedFilters.includeEmptyCategory ? 'success' : 'default'}
+                      variant={advancedFilters.includeEmptyCategory ? 'filled' : 'outlined'}
+                      size="small"
+                    />
                   </Box>
                   {availableCategories.length === 0 && (
                     <Typography variant="caption" color="text.secondary">
                       暂无分类标签
                     </Typography>
                   )}
-                  {advancedFilters.categories.length > 0 && (
+                  {(advancedFilters.categories.length > 0 || advancedFilters.includeEmptyCategory) && (
                     <Button
                       size="small"
-                      onClick={() => setAdvancedFilters(prev => ({ ...prev, categories: [] }))}
+                      onClick={() => setAdvancedFilters(prev => ({ ...prev, categories: [], includeEmptyCategory: false }))}
                       sx={{ mt: 0.5 }}
                     >
                       清除
@@ -4184,6 +4248,9 @@ export default function HomePage() {
                 {(advancedFilters.ratings.length > 0 || 
                   advancedFilters.evaluations.length > 0 || 
                   advancedFilters.categories.length > 0 || 
+                  advancedFilters.includeEmptyRating ||
+                  advancedFilters.includeEmptyEvaluation ||
+                  advancedFilters.includeEmptyCategory ||
                   advancedFilters.reasonFilter !== 'all') && (
                   <Button
                     variant="outlined"
@@ -4195,7 +4262,10 @@ export default function HomePage() {
                         evaluations: [],
                         categories: [],
                         reasonFilter: 'all',
-                        reasonKeyword: ''
+                        reasonKeyword: '',
+                        includeEmptyRating: false,
+                        includeEmptyEvaluation: false,
+                        includeEmptyCategory: false
                       })
                     }}
                     startIcon={<CloseIcon />}

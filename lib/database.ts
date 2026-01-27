@@ -1737,6 +1737,9 @@ export const scanFiles = {
     categories?: string[]       // 分类标签
     reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword' // 评价理由过滤
     reasonKeyword?: string      // 评价理由关键词
+    includeEmptyRating?: boolean // 包含星级为空的
+    includeEmptyEvaluation?: boolean // 包含评价为空的
+    includeEmptyCategory?: boolean // 包含分类为空的
   }) => {
     const totalStartTime = Date.now()
     try {
@@ -1747,14 +1750,16 @@ export const scanFiles = {
       const { 
         fileType, isViewed, excludeFilenames = [], minFileSize, maxFileSize, 
         currentParentPath, randomness = 1,
-        ratings, evaluations, categories, reasonFilter, reasonKeyword
+        ratings, evaluations, categories, reasonFilter, reasonKeyword,
+        includeEmptyRating, includeEmptyEvaluation, includeEmptyCategory
       } = options || {}
       const placeholders = cacheIds.map(() => '?').join(',')
       const excludeSet = new Set(excludeFilenames)
       
       // 判断是否需要JOIN media_ratings表（有高级过滤条件时）
       const needsRatingJoin = ratings?.length || evaluations?.length || categories?.length || 
-                              (reasonFilter && reasonFilter !== 'all')
+                              (reasonFilter && reasonFilter !== 'all') ||
+                              includeEmptyRating || includeEmptyEvaluation || includeEmptyCategory
       
       // 构建基础 WHERE 条件
       const buildWhereClause = (includeParentPath?: string, excludeParentPath?: string) => {
@@ -1794,9 +1799,20 @@ export const scanFiles = {
         if (needsRatingJoin) {
           // 评分星星过滤
           if (ratings && ratings.length > 0) {
-            const ratingPlaceholders = ratings.map(() => '?').join(',')
-            where += ` AND mr.rating IN (${ratingPlaceholders})`
-            params.push(...ratings)
+            if (includeEmptyRating) {
+              // 包含为空：rating IN (选中的值) OR rating IS NULL
+              const ratingPlaceholders = ratings.map(() => '?').join(',')
+              where += ` AND (mr.rating IN (${ratingPlaceholders}) OR mr.rating IS NULL)`
+              params.push(...ratings)
+            } else {
+              // 不包含为空：rating IN (选中的值)
+              const ratingPlaceholders = ratings.map(() => '?').join(',')
+              where += ` AND mr.rating IN (${ratingPlaceholders})`
+              params.push(...ratings)
+            }
+          } else if (includeEmptyRating) {
+            // 只勾选了为空：rating IS NULL
+            where += ` AND mr.rating IS NULL`
           }
           
           // 评价标签过滤（JSON数组包含）
@@ -1804,11 +1820,20 @@ export const scanFiles = {
             const evalConditions = evaluations.map(() => 
               `(mr.custom_evaluation LIKE ? OR mr.custom_evaluation = ?)`
             ).join(' OR ')
-            where += ` AND (${evalConditions})`
+            if (includeEmptyEvaluation) {
+              // 包含为空：(条件) OR custom_evaluation IS NULL OR custom_evaluation = ''
+              where += ` AND ((${evalConditions}) OR mr.custom_evaluation IS NULL OR mr.custom_evaluation = '')`
+            } else {
+              // 不包含为空：(条件)
+              where += ` AND (${evalConditions})`
+            }
             evaluations.forEach(evaluation => {
               params.push(`%"${evaluation}"%`) // JSON数组包含
               params.push(evaluation) // 或者是单个字符串
             })
+          } else if (includeEmptyEvaluation) {
+            // 只勾选了为空：custom_evaluation IS NULL OR custom_evaluation = ''
+            where += ` AND (mr.custom_evaluation IS NULL OR mr.custom_evaluation = '')`
           }
           
           // 分类标签过滤（JSON数组包含）
@@ -1816,11 +1841,20 @@ export const scanFiles = {
             const catConditions = categories.map(() => 
               `(mr.category LIKE ? OR mr.category = ?)`
             ).join(' OR ')
-            where += ` AND (${catConditions})`
+            if (includeEmptyCategory) {
+              // 包含为空：(条件) OR category IS NULL OR category = ''
+              where += ` AND ((${catConditions}) OR mr.category IS NULL OR mr.category = '')`
+            } else {
+              // 不包含为空：(条件)
+              where += ` AND (${catConditions})`
+            }
             categories.forEach(category => {
               params.push(`%"${category}"%`) // JSON数组包含
               params.push(category) // 或者是单个字符串
             })
+          } else if (includeEmptyCategory) {
+            // 只勾选了为空：category IS NULL OR category = ''
+            where += ` AND (mr.category IS NULL OR mr.category = '')`
           }
           
           // 评价理由过滤
