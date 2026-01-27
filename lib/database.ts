@@ -1981,10 +1981,14 @@ export const scanFiles = {
         // 1. 从当前目录获取文件
         if (samePathCount > 0) {
           const { where, params } = buildWhereClause(currentParentPath)
+          console.log(`🔍 [混合策略] 步骤1: 从当前目录获取 ${samePathCount} 个文件`)
+          console.log(`   WHERE条件:`, where)
+          console.log(`   参数:`, JSON.stringify(params))
           
           // 统计当前目录文件数
           const countSql = buildCountSql(where)
           const { count: totalCount } = db.prepare(countSql).get(...params) as { count: number }
+          console.log(`   当前目录文件总数: ${totalCount}`)
           
           if (totalCount > 0) {
             // 选择桶数
@@ -1999,6 +2003,7 @@ export const scanFiles = {
                 excludeSet.add(file.filename)
               }
             }
+            console.log(`   从当前目录获取了 ${results.length} 个文件`)
           }
         }
         
@@ -2006,9 +2011,13 @@ export const scanFiles = {
         const remainingCount = count - results.length
         if (remainingCount > 0) {
           const { where, params } = buildWhereClause(undefined, currentParentPath)
+          console.log(`🔍 [混合策略] 步骤2: 从其他目录获取 ${remainingCount} 个文件`)
+          console.log(`   WHERE条件:`, where)
+          console.log(`   参数:`, JSON.stringify(params))
           
           const countSql = buildCountSql(where)
           const { count: totalCount } = db.prepare(countSql).get(...params) as { count: number }
+          console.log(`   其他目录文件总数: ${totalCount}`)
           
           if (totalCount > 0) {
             let bucketCount = 1024
@@ -2057,12 +2066,13 @@ export const scanFiles = {
         // 考虑到排除列表，多获取一些以确保有足够的文件
         const fetchCount = Math.min(totalCount, count + excludeSet.size)
         const sql = buildSelectSql(where, 'RANDOM()', fetchCount)
-        console.log(`🔍 [SQL调试] SELECT查询（小数据集）:`)
-        console.log('SQL:', sql.trim().replace(/\s+/g, ' '))
-        console.log('参数:', params)
+        console.log(`🔍 [SQL执行] 小数据集一次性查询`)
+        console.log(`   SQL:`, sql.trim().replace(/\s+/g, ' '))
+        console.log(`   参数:`, JSON.stringify(params))
         console.log(`📊 [批量随机] 获取数量: ${fetchCount}（总数: ${totalCount}, 需要: ${count}, 排除: ${excludeSet.size}）`)
         
         const allFiles = db.prepare(sql).all(...params) as any[]
+        console.log(`📊 [批量随机] SQL返回: ${allFiles.length} 条记录`)
         
         // 过滤掉排除列表中的文件
         const availableFiles = allFiles.filter(f => !excludeSet.has(f.filename))
