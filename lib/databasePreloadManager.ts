@@ -172,7 +172,7 @@ class DatabasePreloadManager {
   // 预加载单个文件（带并发控制和快速重试）
   private async preloadFile(config: any, file: any): Promise<void> {
     const filepath = file.filename
-    const maxQuickRetries = 1  // 快速重试1次
+    const maxQuickRetries = 2  // 快速重试2次
     
     // 检查是否已取消
     if (this.isPreloadCancelled()) {
@@ -282,7 +282,7 @@ class DatabasePreloadManager {
   // 预加载文件但不限制缓存大小（带快速重试）
   private async preloadFileWithoutLimit(config: any, file: any): Promise<void> {
     const filepath = file.filename
-    const maxQuickRetries = 1  // 快速重试1次
+    const maxQuickRetries = 2  // 快速重试2次
     
     // 检查是否已取消
     if (this.isPreloadCancelled()) {
@@ -398,7 +398,7 @@ class DatabasePreloadManager {
   // 预加载文件到下一组缓存（带快速重试）
   private async preloadFileToNextGroup(config: any, file: any): Promise<void> {
     const filepath = file.filename
-    const maxQuickRetries = 1  // 快速重试1次
+    const maxQuickRetries = 2  // 快速重试2次
     
     // 检查是否已取消
     if (this.isPreloadCancelled()) {
