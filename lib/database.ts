@@ -23,6 +23,90 @@ if (!fs.existsSync(dataDir)) {
 declare global {
   var __db: Database.Database | undefined
   var __dbInitialized: boolean | undefined
+  var __checkpointTimer: NodeJS.Timeout | undefined
+}
+
+// 🔧 通用函数：执行 WAL checkpoint
+export function performCheckpoint(mode: 'PASSIVE' | 'FULL' | 'RESTART' | 'TRUNCATE' = 'RESTART'): any {
+  try {
+    const result = db.pragma(`wal_checkpoint(${mode})`, { simple: true })
+    console.log(`✅ [Checkpoint] 执行 ${mode} checkpoint 成功:`, result)
+    return result
+  } catch (error) {
+    console.warn(`⚠️ [Checkpoint] 执行 ${mode} checkpoint 失败:`, error)
+    return null
+  }
+}
+
+// 🔧 通用函数：获取数据库状态信息
+export function getDatabaseStatus() {
+  try {
+    const journalMode = db.pragma('journal_mode', { simple: true })
+    const walCheckpoint = db.pragma('wal_checkpoint')
+    const pageCount = db.pragma('page_count', { simple: true })
+    const pageSize = db.pragma('page_size', { simple: true })
+    
+    return {
+      journalMode,
+      walCheckpoint,
+      pageCount,
+      pageSize,
+      dbSize: `${((pageCount as number) * (pageSize as number) / 1024 / 1024).toFixed(2)} MB`
+    }
+  } catch (error) {
+    console.warn('⚠️ [Database] 获取数据库状态失败:', error)
+    return null
+  }
+}
+
+// 🔧 启动定时 checkpoint 任务
+function startCheckpointTimer() {
+  // 如果已经有定时器在运行，先清除
+  if (globalThis.__checkpointTimer) {
+    clearInterval(globalThis.__checkpointTimer)
+  }
+  
+  // 每 1 分钟执行一次 PASSIVE checkpoint
+  const intervalMinutes = 1
+  const intervalMs = intervalMinutes * 60 * 1000
+  
+  console.log(`🕐 [Checkpoint] 启动定时 checkpoint 任务（每 ${intervalMinutes} 分钟）`)
+  
+  globalThis.__checkpointTimer = setInterval(() => {
+    console.log(`🕐 [Checkpoint] 定时任务触发（间隔 ${intervalMinutes} 分钟）`)
+    const result = performCheckpoint('PASSIVE')
+    
+    if (result) {
+      // 获取 WAL 文件大小（如果可能）
+      try {
+        const fs = require('fs')
+        const walPath = `${dbPath}-wal`
+        if (fs.existsSync(walPath)) {
+          const walSize = fs.statSync(walPath).size
+          console.log(`📊 [Checkpoint] WAL 文件大小: ${(walSize / 1024).toFixed(2)} KB`)
+        }
+      } catch (e) {
+        // 忽略错误
+      }
+    }
+  }, intervalMs)
+  
+  // 确保进程退出时清理定时器
+  process.on('beforeExit', () => {
+    if (globalThis.__checkpointTimer) {
+      clearInterval(globalThis.__checkpointTimer)
+      console.log('🛑 [Checkpoint] 清理定时 checkpoint 任务')
+    }
+  })
+}
+
+// 🔧 停止定时 checkpoint 任务
+export function stopCheckpointTimer() {
+  if (globalThis.__checkpointTimer) {
+    clearInterval(globalThis.__checkpointTimer)
+    globalThis.__checkpointTimer = undefined
+    console.log('🛑 [Checkpoint] 停止定时 checkpoint 任务')
+  }
 }
 
 // 创建数据库连接（使用缓存）
@@ -53,13 +137,24 @@ if (globalThis.__db) {
         console.log('新日志模式:', newMode)
       }
       
-      // 设置同步模式为NORMAL以提高性能
+      // 设置同步模式为 NORMAL 以平衡性能和安全性
+      // FULL: 每次写入都等待磁盘完全同步（最安全，最慢）
+      // NORMAL: 关键时刻同步（平衡，推荐）✅
+      // OFF: 不等待同步（最快，断电可能丢失数据）
       db.pragma('synchronous = NORMAL')
       
       // 设置缓存大小
       db.pragma('cache_size = -64000') // 64MB
       
+      // 🔧 设置 WAL 自动 checkpoint 阈值（每 100 页自动 checkpoint，约 400KB）
+      // 更频繁的 checkpoint 可以减少 WAL 文件大小，提高数据一致性
+      // 默认值是 1000，我们设置为 100 以更频繁地同步数据
+      db.pragma('wal_autocheckpoint = 100')
+      
       console.log('数据库配置完成')
+      
+      // 🔧 启动定时 checkpoint 任务
+      startCheckpointTimer()
     } catch (pragmaError) {
       console.warn('设置数据库pragma失败，使用默认配置:', pragmaError)
       // 即使 pragma 失败，也继续使用数据库
@@ -1744,6 +1839,15 @@ export const scanFiles = {
     const totalStartTime = Date.now()
     try {
       ensureInitialized()
+      
+      // 🔧 查询前执行 checkpoint，确保读取最新数据
+      performCheckpoint('RESTART')
+      
+      // 🔍 调试：检查数据库状态
+      const dbStatus = getDatabaseStatus()
+      if (dbStatus) {
+        console.log('📊 [数据库状态]', dbStatus)
+      }
       
       if (cacheIds.length === 0) return []
       
