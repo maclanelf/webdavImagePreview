@@ -2533,9 +2533,9 @@ export default function HomePage() {
       
       console.log('[重新开始] API 返回，实际找到:', result.actualCount, '个文件')
       
-      // ✅ 等待至少一个文件下载到缓存（最多等待5秒）
+      // ✅ 等待至少一个文件下载到缓存（最多等待50秒）
       let waitCount = 0
-      const maxWait = 50 // 50 * 100ms = 5秒
+      const maxWait = 500 // 500 * 100ms = 50秒
       while (databasePreloadManager.getCachedFilepaths().length === 0 && waitCount < maxWait) {
         await new Promise(resolve => setTimeout(resolve, 100))
         waitCount++
