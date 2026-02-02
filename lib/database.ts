@@ -1832,9 +1832,9 @@ export const scanFiles = {
     categories?: string[]       // 分类标签
     reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword' // 评价理由过滤
     reasonKeyword?: string      // 评价理由关键词
-    includeEmptyRating?: boolean // 包含星级为空的
-    includeEmptyEvaluation?: boolean // 包含评价为空的
-    includeEmptyCategory?: boolean // 包含分类为空的
+    ratingEmptyFilter?: boolean // 星级为空筛选：undefined=不筛选, true=为空, false=不为空
+    evaluationEmptyFilter?: boolean // 评价为空筛选：undefined=不筛选, true=为空, false=不为空
+    categoryEmptyFilter?: boolean // 分类为空筛选：undefined=不筛选, true=为空, false=不为空
   }) => {
     const totalStartTime = Date.now()
     try {
@@ -1855,7 +1855,7 @@ export const scanFiles = {
         fileType, isViewed, excludeFilenames = [], minFileSize, maxFileSize, 
         currentParentPath, randomness = 1,
         ratings, evaluations, categories, reasonFilter, reasonKeyword,
-        includeEmptyRating, includeEmptyEvaluation, includeEmptyCategory
+        ratingEmptyFilter, evaluationEmptyFilter, categoryEmptyFilter
       } = options || {}
       const placeholders = cacheIds.map(() => '?').join(',')
       const excludeSet = new Set(excludeFilenames)
@@ -1863,7 +1863,7 @@ export const scanFiles = {
       // 判断是否需要JOIN media_ratings表（有高级过滤条件时）
       const needsRatingJoin = ratings?.length || evaluations?.length || categories?.length || 
                               (reasonFilter && reasonFilter !== 'all') ||
-                              includeEmptyRating || includeEmptyEvaluation || includeEmptyCategory
+                              ratingEmptyFilter !== undefined || evaluationEmptyFilter !== undefined || categoryEmptyFilter !== undefined
       
       // 构建基础 WHERE 条件
       const buildWhereClause = (includeParentPath?: string, excludeParentPath?: string) => {
@@ -1903,20 +1903,28 @@ export const scanFiles = {
         if (needsRatingJoin) {
           // 评分星星过滤
           if (ratings && ratings.length > 0) {
-            if (includeEmptyRating) {
+            if (ratingEmptyFilter === true) {
               // 包含为空：rating IN (选中的值) OR rating IS NULL
               const ratingPlaceholders = ratings.map(() => '?').join(',')
               where += ` AND (mr.rating IN (${ratingPlaceholders}) OR mr.rating IS NULL)`
               params.push(...ratings)
+            } else if (ratingEmptyFilter === false) {
+              // 包含不为空：rating IN (选中的值) OR (rating IS NOT NULL AND rating NOT IN (选中的值))
+              const ratingPlaceholders = ratings.map(() => '?').join(',')
+              where += ` AND (mr.rating IN (${ratingPlaceholders}) OR (mr.rating IS NOT NULL AND mr.rating NOT IN (${ratingPlaceholders})))`
+              params.push(...ratings, ...ratings)
             } else {
               // 不包含为空：rating IN (选中的值)
               const ratingPlaceholders = ratings.map(() => '?').join(',')
               where += ` AND mr.rating IN (${ratingPlaceholders})`
               params.push(...ratings)
             }
-          } else if (includeEmptyRating) {
+          } else if (ratingEmptyFilter === true) {
             // 只勾选了为空：rating IS NULL
             where += ` AND mr.rating IS NULL`
+          } else if (ratingEmptyFilter === false) {
+            // 只勾选了不为空：rating IS NOT NULL
+            where += ` AND mr.rating IS NOT NULL`
           }
           
           // 评价标签过滤（JSON数组包含）
@@ -1924,9 +1932,12 @@ export const scanFiles = {
             const evalConditions = evaluations.map(() => 
               `(mr.custom_evaluation LIKE ? OR mr.custom_evaluation = ?)`
             ).join(' OR ')
-            if (includeEmptyEvaluation) {
+            if (evaluationEmptyFilter === true) {
               // 包含为空：(条件) OR custom_evaluation IS NULL OR custom_evaluation = ''
               where += ` AND ((${evalConditions}) OR mr.custom_evaluation IS NULL OR mr.custom_evaluation = '')`
+            } else if (evaluationEmptyFilter === false) {
+              // 包含不为空：(条件) OR (custom_evaluation IS NOT NULL AND custom_evaluation != '')
+              where += ` AND ((${evalConditions}) OR (mr.custom_evaluation IS NOT NULL AND mr.custom_evaluation != ''))`
             } else {
               // 不包含为空：(条件)
               where += ` AND (${evalConditions})`
@@ -1935,9 +1946,12 @@ export const scanFiles = {
               params.push(`%"${evaluation}"%`) // JSON数组包含
               params.push(evaluation) // 或者是单个字符串
             })
-          } else if (includeEmptyEvaluation) {
+          } else if (evaluationEmptyFilter === true) {
             // 只勾选了为空：custom_evaluation IS NULL OR custom_evaluation = ''
             where += ` AND (mr.custom_evaluation IS NULL OR mr.custom_evaluation = '')`
+          } else if (evaluationEmptyFilter === false) {
+            // 只勾选了不为空：custom_evaluation IS NOT NULL AND custom_evaluation != ''
+            where += ` AND (mr.custom_evaluation IS NOT NULL AND mr.custom_evaluation != '')`
           }
           
           // 分类标签过滤（JSON数组包含）
@@ -1945,9 +1959,12 @@ export const scanFiles = {
             const catConditions = categories.map(() => 
               `(mr.category LIKE ? OR mr.category = ?)`
             ).join(' OR ')
-            if (includeEmptyCategory) {
+            if (categoryEmptyFilter === true) {
               // 包含为空：(条件) OR category IS NULL OR category = ''
               where += ` AND ((${catConditions}) OR mr.category IS NULL OR mr.category = '')`
+            } else if (categoryEmptyFilter === false) {
+              // 包含不为空：(条件) OR (category IS NOT NULL AND category != '')
+              where += ` AND ((${catConditions}) OR (mr.category IS NOT NULL AND mr.category != ''))`
             } else {
               // 不包含为空：(条件)
               where += ` AND (${catConditions})`
@@ -1956,9 +1973,12 @@ export const scanFiles = {
               params.push(`%"${category}"%`) // JSON数组包含
               params.push(category) // 或者是单个字符串
             })
-          } else if (includeEmptyCategory) {
+          } else if (categoryEmptyFilter === true) {
             // 只勾选了为空：category IS NULL OR category = ''
             where += ` AND (mr.category IS NULL OR mr.category = '')`
+          } else if (categoryEmptyFilter === false) {
+            // 只勾选了不为空：category IS NOT NULL AND category != ''
+            where += ` AND (mr.category IS NOT NULL AND mr.category != '')`
           }
           
           // 评价理由过滤

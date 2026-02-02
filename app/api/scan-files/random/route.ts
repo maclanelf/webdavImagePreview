@@ -24,9 +24,9 @@ export async function POST(request: NextRequest) {
     const categories = body.categories // 分类标签数组
     const reasonFilter = body.reasonFilter // 评价理由过滤：'all' | 'empty' | 'nonempty' | 'keyword'
     const reasonKeyword = body.reasonKeyword // 评价理由关键词
-    const includeEmptyRating = body.includeEmptyRating // 包含星级为空的
-    const includeEmptyEvaluation = body.includeEmptyEvaluation // 包含评价为空的
-    const includeEmptyCategory = body.includeEmptyCategory // 包含分类为空的
+    const ratingEmptyFilter = body.ratingEmptyFilter // 星级为空筛选：undefined=不筛选, true=为空, false=不为空
+    const evaluationEmptyFilter = body.evaluationEmptyFilter // 评价为空筛选：undefined=不筛选, true=为空, false=不为空
+    const categoryEmptyFilter = body.categoryEmptyFilter // 分类为空筛选：undefined=不筛选, true=为空, false=不为空
 
     console.log(`⏱️ [random] 开始处理请求`)
 
@@ -86,9 +86,9 @@ export async function POST(request: NextRequest) {
       categories: categories && Array.isArray(categories) ? categories : undefined,
       reasonFilter: reasonFilter || undefined,
       reasonKeyword: reasonKeyword || undefined,
-      includeEmptyRating: includeEmptyRating || undefined,
-      includeEmptyEvaluation: includeEmptyEvaluation || undefined,
-      includeEmptyCategory: includeEmptyCategory || undefined
+      ratingEmptyFilter: ratingEmptyFilter,
+      evaluationEmptyFilter: evaluationEmptyFilter,
+      categoryEmptyFilter: categoryEmptyFilter
     })
     console.log(`⏱️ [random] getRandomBatchMultiple完成: ${Date.now() - randomStartTime}ms`)
     console.log(`⏱️ [random] 总耗时: ${Date.now() - startTime}ms`)

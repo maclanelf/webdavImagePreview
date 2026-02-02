@@ -117,9 +117,9 @@ interface AdvancedFilters {
   categories: string[] // 分类标签
   reasonFilter: 'all' | 'empty' | 'nonempty' | 'keyword' // 评价理由过滤
   reasonKeyword?: string // 评价理由关键词
-  includeEmptyRating?: boolean // 包含星级为空的
-  includeEmptyEvaluation?: boolean // 包含评价为空的
-  includeEmptyCategory?: boolean // 包含分类为空的
+  ratingEmptyFilter?: boolean // 星级为空筛选：undefined=不筛选, true=为空, false=不为空
+  evaluationEmptyFilter?: boolean // 评价为空筛选：undefined=不筛选, true=为空, false=不为空
+  categoryEmptyFilter?: boolean // 分类为空筛选：undefined=不筛选, true=为空, false=不为空
 }
 
 interface MediaGroup {
@@ -174,9 +174,9 @@ export default function HomePage() {
     categories: [],
     reasonFilter: 'all',
     reasonKeyword: '',
-    includeEmptyRating: false,
-    includeEmptyEvaluation: false,
-    includeEmptyCategory: false
+    ratingEmptyFilter: undefined,
+    evaluationEmptyFilter: undefined,
+    categoryEmptyFilter: undefined
   })
   // 可用的评价标签和分类（从数据库加载）
   const [availableEvaluations, setAvailableEvaluations] = useState<string[]>([])
@@ -1463,9 +1463,9 @@ export default function HomePage() {
               categories: advancedFilters.categories.length > 0 ? advancedFilters.categories : undefined,
               reasonFilter: advancedFilters.reasonFilter !== 'all' ? advancedFilters.reasonFilter : undefined,
               reasonKeyword: advancedFilters.reasonKeyword || undefined,
-              includeEmptyRating: advancedFilters.includeEmptyRating || undefined,
-              includeEmptyEvaluation: advancedFilters.includeEmptyEvaluation || undefined,
-              includeEmptyCategory: advancedFilters.includeEmptyCategory || undefined
+              ratingEmptyFilter: advancedFilters.ratingEmptyFilter,
+              evaluationEmptyFilter: advancedFilters.evaluationEmptyFilter,
+              categoryEmptyFilter: advancedFilters.categoryEmptyFilter
             })
           })
         })
@@ -1700,9 +1700,9 @@ export default function HomePage() {
             categories: advancedFilters.categories.length > 0 ? advancedFilters.categories : undefined,
             reasonFilter: advancedFilters.reasonFilter !== 'all' ? advancedFilters.reasonFilter : undefined,
             reasonKeyword: advancedFilters.reasonKeyword || undefined,
-            includeEmptyRating: advancedFilters.includeEmptyRating || undefined,
-            includeEmptyEvaluation: advancedFilters.includeEmptyEvaluation || undefined,
-            includeEmptyCategory: advancedFilters.includeEmptyCategory || undefined
+            ratingEmptyFilter: advancedFilters.ratingEmptyFilter,
+            evaluationEmptyFilter: advancedFilters.evaluationEmptyFilter,
+            categoryEmptyFilter: advancedFilters.categoryEmptyFilter
           })
         })
       })
@@ -4111,18 +4111,30 @@ export default function HomePage() {
                       onClick={() => {
                         setAdvancedFilters(prev => ({
                           ...prev,
-                          includeEmptyRating: !prev.includeEmptyRating
+                          ratingEmptyFilter: prev.ratingEmptyFilter === true ? undefined : true
                         }))
                       }}
-                      color={advancedFilters.includeEmptyRating ? 'primary' : 'default'}
-                      variant={advancedFilters.includeEmptyRating ? 'filled' : 'outlined'}
+                      color={advancedFilters.ratingEmptyFilter === true ? 'primary' : 'default'}
+                      variant={advancedFilters.ratingEmptyFilter === true ? 'filled' : 'outlined'}
+                      size="small"
+                    />
+                    <Chip
+                      label="不为空"
+                      onClick={() => {
+                        setAdvancedFilters(prev => ({
+                          ...prev,
+                          ratingEmptyFilter: prev.ratingEmptyFilter === false ? undefined : false
+                        }))
+                      }}
+                      color={advancedFilters.ratingEmptyFilter === false ? 'primary' : 'default'}
+                      variant={advancedFilters.ratingEmptyFilter === false ? 'filled' : 'outlined'}
                       size="small"
                     />
                   </Box>
-                  {(advancedFilters.ratings.length > 0 || advancedFilters.includeEmptyRating) && (
+                  {(advancedFilters.ratings.length > 0 || advancedFilters.ratingEmptyFilter !== undefined) && (
                     <Button
                       size="small"
-                      onClick={() => setAdvancedFilters(prev => ({ ...prev, ratings: [], includeEmptyRating: false }))}
+                      onClick={() => setAdvancedFilters(prev => ({ ...prev, ratings: [], ratingEmptyFilter: undefined }))}
                       sx={{ mt: 0.5 }}
                     >
                       清除
@@ -4158,11 +4170,23 @@ export default function HomePage() {
                       onClick={() => {
                         setAdvancedFilters(prev => ({
                           ...prev,
-                          includeEmptyEvaluation: !prev.includeEmptyEvaluation
+                          evaluationEmptyFilter: prev.evaluationEmptyFilter === true ? undefined : true
                         }))
                       }}
-                      color={advancedFilters.includeEmptyEvaluation ? 'secondary' : 'default'}
-                      variant={advancedFilters.includeEmptyEvaluation ? 'filled' : 'outlined'}
+                      color={advancedFilters.evaluationEmptyFilter === true ? 'secondary' : 'default'}
+                      variant={advancedFilters.evaluationEmptyFilter === true ? 'filled' : 'outlined'}
+                      size="small"
+                    />
+                    <Chip
+                      label="不为空"
+                      onClick={() => {
+                        setAdvancedFilters(prev => ({
+                          ...prev,
+                          evaluationEmptyFilter: prev.evaluationEmptyFilter === false ? undefined : false
+                        }))
+                      }}
+                      color={advancedFilters.evaluationEmptyFilter === false ? 'secondary' : 'default'}
+                      variant={advancedFilters.evaluationEmptyFilter === false ? 'filled' : 'outlined'}
                       size="small"
                     />
                   </Box>
@@ -4171,10 +4195,10 @@ export default function HomePage() {
                       暂无评价标签
                     </Typography>
                   )}
-                  {(advancedFilters.evaluations.length > 0 || advancedFilters.includeEmptyEvaluation) && (
+                  {(advancedFilters.evaluations.length > 0 || advancedFilters.evaluationEmptyFilter !== undefined) && (
                     <Button
                       size="small"
-                      onClick={() => setAdvancedFilters(prev => ({ ...prev, evaluations: [], includeEmptyEvaluation: false }))}
+                      onClick={() => setAdvancedFilters(prev => ({ ...prev, evaluations: [], evaluationEmptyFilter: undefined }))}
                       sx={{ mt: 0.5 }}
                     >
                       清除
@@ -4210,11 +4234,23 @@ export default function HomePage() {
                       onClick={() => {
                         setAdvancedFilters(prev => ({
                           ...prev,
-                          includeEmptyCategory: !prev.includeEmptyCategory
+                          categoryEmptyFilter: prev.categoryEmptyFilter === true ? undefined : true
                         }))
                       }}
-                      color={advancedFilters.includeEmptyCategory ? 'success' : 'default'}
-                      variant={advancedFilters.includeEmptyCategory ? 'filled' : 'outlined'}
+                      color={advancedFilters.categoryEmptyFilter === true ? 'success' : 'default'}
+                      variant={advancedFilters.categoryEmptyFilter === true ? 'filled' : 'outlined'}
+                      size="small"
+                    />
+                    <Chip
+                      label="不为空"
+                      onClick={() => {
+                        setAdvancedFilters(prev => ({
+                          ...prev,
+                          categoryEmptyFilter: prev.categoryEmptyFilter === false ? undefined : false
+                        }))
+                      }}
+                      color={advancedFilters.categoryEmptyFilter === false ? 'success' : 'default'}
+                      variant={advancedFilters.categoryEmptyFilter === false ? 'filled' : 'outlined'}
                       size="small"
                     />
                   </Box>
@@ -4223,10 +4259,10 @@ export default function HomePage() {
                       暂无分类标签
                     </Typography>
                   )}
-                  {(advancedFilters.categories.length > 0 || advancedFilters.includeEmptyCategory) && (
+                  {(advancedFilters.categories.length > 0 || advancedFilters.categoryEmptyFilter !== undefined) && (
                     <Button
                       size="small"
-                      onClick={() => setAdvancedFilters(prev => ({ ...prev, categories: [], includeEmptyCategory: false }))}
+                      onClick={() => setAdvancedFilters(prev => ({ ...prev, categories: [], categoryEmptyFilter: undefined }))}
                       sx={{ mt: 0.5 }}
                     >
                       清除
@@ -4273,9 +4309,9 @@ export default function HomePage() {
                 {(advancedFilters.ratings.length > 0 || 
                   advancedFilters.evaluations.length > 0 || 
                   advancedFilters.categories.length > 0 || 
-                  advancedFilters.includeEmptyRating ||
-                  advancedFilters.includeEmptyEvaluation ||
-                  advancedFilters.includeEmptyCategory ||
+                  advancedFilters.ratingEmptyFilter !== undefined ||
+                  advancedFilters.evaluationEmptyFilter !== undefined ||
+                  advancedFilters.categoryEmptyFilter !== undefined ||
                   advancedFilters.reasonFilter !== 'all') && (
                   <Button
                     variant="outlined"
@@ -4288,9 +4324,9 @@ export default function HomePage() {
                         categories: [],
                         reasonFilter: 'all',
                         reasonKeyword: '',
-                        includeEmptyRating: false,
-                        includeEmptyEvaluation: false,
-                        includeEmptyCategory: false
+                        ratingEmptyFilter: undefined,
+                        evaluationEmptyFilter: undefined,
+                        categoryEmptyFilter: undefined
                       })
                     }}
                     startIcon={<CloseIcon />}

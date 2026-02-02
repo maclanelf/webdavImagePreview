@@ -799,9 +799,9 @@ class DatabasePreloadManager {
       categories?: string[]
       reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword'
       reasonKeyword?: string
-      includeEmptyRating?: boolean
-      includeEmptyEvaluation?: boolean
-      includeEmptyCategory?: boolean
+      ratingEmptyFilter?: boolean // undefined=不筛选, true=为空, false=不为空
+      evaluationEmptyFilter?: boolean // undefined=不筛选, true=为空, false=不为空
+      categoryEmptyFilter?: boolean // undefined=不筛选, true=为空, false=不为空
     }
   ): Promise<{
     successCount: number
@@ -854,9 +854,9 @@ class DatabasePreloadManager {
           categories: advancedFilters?.categories,
           reasonFilter: advancedFilters?.reasonFilter,
           reasonKeyword: advancedFilters?.reasonKeyword,
-          includeEmptyRating: advancedFilters?.includeEmptyRating,
-          includeEmptyEvaluation: advancedFilters?.includeEmptyEvaluation,
-          includeEmptyCategory: advancedFilters?.includeEmptyCategory
+          ratingEmptyFilter: advancedFilters?.ratingEmptyFilter,
+          evaluationEmptyFilter: advancedFilters?.evaluationEmptyFilter,
+          categoryEmptyFilter: advancedFilters?.categoryEmptyFilter
         })
       })
       if (!response.ok) {
@@ -964,9 +964,9 @@ class DatabasePreloadManager {
       categories?: string[]
       reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword'
       reasonKeyword?: string
-      includeEmptyRating?: boolean
-      includeEmptyEvaluation?: boolean
-      includeEmptyCategory?: boolean
+      ratingEmptyFilter?: boolean
+      evaluationEmptyFilter?: boolean
+      categoryEmptyFilter?: boolean
     }
   ): Promise<{
     successCount: number
@@ -1191,9 +1191,9 @@ class DatabasePreloadManager {
       categories?: string[]
       reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword'
       reasonKeyword?: string
-      includeEmptyRating?: boolean
-      includeEmptyEvaluation?: boolean
-      includeEmptyCategory?: boolean
+      ratingEmptyFilter?: boolean
+      evaluationEmptyFilter?: boolean
+      categoryEmptyFilter?: boolean
     }
   ): Promise<{
     actualCount: number  // 实际找到的文件数量
@@ -1286,9 +1286,9 @@ class DatabasePreloadManager {
           categories: advancedFilters?.categories,
           reasonFilter: advancedFilters?.reasonFilter,
           reasonKeyword: advancedFilters?.reasonKeyword,
-          includeEmptyRating: advancedFilters?.includeEmptyRating,
-          includeEmptyEvaluation: advancedFilters?.includeEmptyEvaluation,
-          includeEmptyCategory: advancedFilters?.includeEmptyCategory
+          ratingEmptyFilter: advancedFilters?.ratingEmptyFilter,
+          evaluationEmptyFilter: advancedFilters?.evaluationEmptyFilter,
+          categoryEmptyFilter: advancedFilters?.categoryEmptyFilter
         })
       })
       if (!response.ok) {
@@ -1547,9 +1547,9 @@ class DatabasePreloadManager {
       categories?: string[]
       reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword'
       reasonKeyword?: string
-      includeEmptyRating?: boolean
-      includeEmptyEvaluation?: boolean
-      includeEmptyCategory?: boolean
+      ratingEmptyFilter?: boolean
+      evaluationEmptyFilter?: boolean
+      categoryEmptyFilter?: boolean
     }
   ): Promise<{
     successCount: number
@@ -1581,9 +1581,9 @@ class DatabasePreloadManager {
       categories?: string[]
       reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword'
       reasonKeyword?: string
-      includeEmptyRating?: boolean
-      includeEmptyEvaluation?: boolean
-      includeEmptyCategory?: boolean
+      ratingEmptyFilter?: boolean
+      evaluationEmptyFilter?: boolean
+      categoryEmptyFilter?: boolean
     }
   ): Promise<{
     actualCount: number
@@ -1619,9 +1619,9 @@ class DatabasePreloadManager {
       categories?: string[]
       reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword'
       reasonKeyword?: string
-      includeEmptyRating?: boolean
-      includeEmptyEvaluation?: boolean
-      includeEmptyCategory?: boolean
+      ratingEmptyFilter?: boolean
+      evaluationEmptyFilter?: boolean
+      categoryEmptyFilter?: boolean
     },
     requestCount: number = 1 // ✅ 新增参数：需要预加载的数量（默认1）
   ): Promise<void> {
@@ -1705,9 +1705,9 @@ class DatabasePreloadManager {
             categories: advancedFilters?.categories,
             reasonFilter: advancedFilters?.reasonFilter,
             reasonKeyword: advancedFilters?.reasonKeyword,
-            includeEmptyRating: advancedFilters?.includeEmptyRating,
-            includeEmptyEvaluation: advancedFilters?.includeEmptyEvaluation,
-            includeEmptyCategory: advancedFilters?.includeEmptyCategory
+            ratingEmptyFilter: advancedFilters?.ratingEmptyFilter,
+            evaluationEmptyFilter: advancedFilters?.evaluationEmptyFilter,
+            categoryEmptyFilter: advancedFilters?.categoryEmptyFilter
           })
         })
         
