@@ -775,11 +775,36 @@ export default function HomePage() {
       try {
         // 从配置中获取预加载数量，默认为10
         const preloadCount = config.scanSettings?.preloadCount || 10
+        
+        // ✅ 动态计算需要预加载的数量
+        // 公式：需要预加载数量 = 预加载总数 - 当前缓存数 - 正在下载数 - 等待许可数
+        const cacheStatus = databasePreloadManager.getCacheStatus()
+        
+        const currentCacheSize = cacheStatus.cacheSize  // 当前缓存中的文件数（已加载完成）
+        const queueSize = cacheStatus.queueSize  // 正在下载的文件数（已获得许可）
+        const pendingQueueSize = cacheStatus.pendingQueueSize || 0  // 等待许可的文件数
+        
+        // 计算需要预加载的数量
+        // 注意：需要同时考虑正在下载和等待许可的文件
+        const needCount = Math.max(0, preloadCount - currentCacheSize - queueSize - pendingQueueSize)
+        
+        console.log(`[智能预加载] 动态计算：预加载总数=${preloadCount}, 当前缓存=${currentCacheSize}, 正在下载=${queueSize}, 等待许可=${pendingQueueSize}, 需要预加载=${needCount}`)
+        console.log(`[智能预加载] 缓存详情：`, cacheStatus.cachedFiles.map(f => f.substring(f.lastIndexOf('/') + 1)))
+        
+        // 如果不需要预加载，直接返回
+        if (needCount <= 0) {
+          console.log('[智能预加载] 无需预加载，缓存充足')
+          setPreloadStatus(cacheStatus)
+          return
+        }
+        
         // 准备高级过滤参数（仅已看过模式且非图组模式）
         const filters = (viewedFilter === 'viewed' && viewMode !== 'gallery') ? advancedFilters : undefined
+        
+        // ✅ 使用动态计算的数量进行预加载
         await databasePreloadManager.smartPreload(
           config, [], currentFile, preloadCount, viewedFilter, 
-          preloadRandomness, mediaFilter, filters
+          preloadRandomness, mediaFilter, filters, needCount  // 传入动态计算的数量
         )
         // 预加载完成后更新缓存状态显示
         setPreloadStatus(databasePreloadManager.getCacheStatus())

@@ -249,7 +249,7 @@ class DatabasePreloadManager {
           this.evictOldestCache()
         }
 
-        console.log(`[数据库模式] 预加载完成: ${file.basename}`)
+        console.log(`[数据库模式] 预加载完成: ${file.basename}，当前缓存=${this.cache.size}，队列=${this.queue.size}`)
         return  // ✅ 成功，直接返回
 
       } catch (error: any) {
@@ -271,6 +271,7 @@ class DatabasePreloadManager {
         }
       } finally {
         this.queue.delete(filepath)
+        console.log(`[数据库模式][preloadFile] finally块执行: ${file.basename}，删除队列后队列大小=${this.queue.size}`)
         // 🔧 只有在成功获取许可且未被取消时才释放
         if (slotAcquired) {
           this.releasePreloadSlot()
@@ -625,6 +626,7 @@ class DatabasePreloadManager {
       cacheSize: this.cache.size,
       maxCacheSize: this.maxCacheSize,
       queueSize: this.queue.size,
+      pendingQueueSize: this.pendingPreloadQueue.length,  // 新增：等待许可的任务数
       cachedFiles: Array.from(this.cache.keys())
     }
   }
