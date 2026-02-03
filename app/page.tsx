@@ -207,6 +207,13 @@ export default function HomePage() {
   // 预加载状态（缓存大小信息）
   const [preloadStatus, setPreloadStatus] = useState<{ cacheSize: number, maxCacheSize: number } | null>(null)
   
+  // 乐观更新功能开关（默认开启）
+  const [optimisticUpdateEnabled, setOptimisticUpdateEnabled] = useState(() => {
+    // 从 localStorage 读取设置，默认为 true
+    const saved = localStorage.getItem('optimistic_update_enabled')
+    return saved === null ? true : saved === 'true'
+  })
+  
   // 缓存预加载进度状态（图组模式和随机模式都使用）
   const [cachePreloadProgress, setCachePreloadProgress] = useState<{ current: number, total: number } | null>(null)
   // 预加载数量不足状态（用于显示三段式进度）
@@ -2385,13 +2392,21 @@ export default function HomePage() {
     }
   }, [currentFile, ratingType, currentGroup])
 
-  const saveRating = useCallback(async (data: MediaRating | GroupRating, file?: MediaFile) => {
+  const saveRating = useCallback(async (data: MediaRating | GroupRating, file?: MediaFile, optimistic: boolean = false) => {
     try {
       const targetFile = file || currentFile
       
+      // ✅ 乐观更新：如果启用且请求乐观更新，立即更新本地状态
+      if (optimistic && optimisticUpdateEnabled && targetFile) {
+        setCurrentRating(data)
+      }
+      
       // 如果有传入文件，优先使用媒体评分
       if (targetFile) {
-        const response = await fetch('/api/ratings/media', {
+        // 选择 API 端点：启用乐观更新且请求乐观更新时使用乐观 API
+        const apiUrl = (optimistic && optimisticUpdateEnabled) ? '/api/ratings/optimistic' : '/api/ratings/media'
+        
+        const response = await fetch(apiUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -2417,8 +2432,10 @@ export default function HomePage() {
           throw new Error(errorMessage)
         }
         
-        // 保存成功后重新从服务器获取最新评分数据
-        await loadMediaRating(targetFile.filename)
+        // 非乐观模式：保存成功后重新从服务器获取最新评分数据
+        if (!optimistic || !optimisticUpdateEnabled) {
+          await loadMediaRating(targetFile.filename)
+        }
       } else if (ratingType === 'group' && currentGroup.length > 0) {
         const groupPath = getGroupPath(currentGroup[0].filename)
         const groupName = getGroupName(groupPath)
@@ -2455,11 +2472,12 @@ export default function HomePage() {
     } catch (error: any) {
       throw new Error(error.message)
     }
-  }, [currentFile, ratingType, currentGroup, loadMediaRating, loadCurrentRating])
+  }, [currentFile, ratingType, currentGroup, loadMediaRating, loadCurrentRating, optimisticUpdateEnabled])
 
   // 手动评分包装函数（用于评分对话框，保存后阻止自动评分覆盖）
   const saveRatingManual = useCallback(async (data: MediaRating | GroupRating, file?: MediaFile) => {
-    await saveRating(data, file)
+    // 弹窗评分也使用乐观更新（如果开启）
+    await saveRating(data, file, true)
     // 手动评分后标记，防止自动评分覆盖
     hasAutoRatedRef.current = true
   }, [saveRating])
@@ -2492,7 +2510,8 @@ export default function HomePage() {
         recommendationReason: currentRating?.recommendationReason
       }
 
-      await saveRating(ratingData)
+      // ✅ 使用乐观更新（立即显示结果，后台保存）
+      await saveRating(ratingData, currentFile, true)
       
       // 手动评分后标记，防止自动评分覆盖
       hasAutoRatedRef.current = true
@@ -2637,7 +2656,8 @@ export default function HomePage() {
         isViewed: true
       }
 
-      await saveRating(autoRatingData, targetFile)
+      // ✅ 使用乐观更新（立即显示结果，后台保存）
+      await saveRating(autoRatingData, targetFile, true)
       
       // 只有首次标记时才更新统计数据中的已看过计数
       if (!wasAlreadyViewed) {
@@ -2651,8 +2671,7 @@ export default function HomePage() {
       }
       
       // 确保评分状态已更新
-      console.log(`自动评分完成: ${targetFile.basename}`)
-      console.log('当前评分状态:', currentRating)
+      console.log(`⚡ 自动评分完成（乐观更新）: ${targetFile.basename}`)
     } catch (error) {
       console.error('自动标记已看过失败:', error)
     }
@@ -3952,6 +3971,27 @@ export default function HomePage() {
                   onClick={() => setPreloadEnabled(!preloadEnabled)}
                 >
                   {preloadEnabled ? '已启用' : '已禁用'}
+                </Button>
+              </Box>
+              
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <Box>
+                  <Typography variant="body2">乐观更新</Typography>
+                  <Typography variant="caption" color="text.secondary" display="block">
+                    评分立即显示，后台保存
+                  </Typography>
+                </Box>
+                <Button
+                  size="small"
+                  variant={optimisticUpdateEnabled ? "contained" : "outlined"}
+                  color="primary"
+                  onClick={() => {
+                    const newValue = !optimisticUpdateEnabled
+                    setOptimisticUpdateEnabled(newValue)
+                    localStorage.setItem('optimistic_update_enabled', newValue.toString())
+                  }}
+                >
+                  {optimisticUpdateEnabled ? '已启用' : '已禁用'}
                 </Button>
               </Box>
               
