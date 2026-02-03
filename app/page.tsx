@@ -208,11 +208,7 @@ export default function HomePage() {
   const [preloadStatus, setPreloadStatus] = useState<{ cacheSize: number, maxCacheSize: number } | null>(null)
   
   // 乐观更新功能开关（默认开启）
-  const [optimisticUpdateEnabled, setOptimisticUpdateEnabled] = useState(() => {
-    // 从 localStorage 读取设置，默认为 true
-    const saved = localStorage.getItem('optimistic_update_enabled')
-    return saved === null ? true : saved === 'true'
-  })
+  const [optimisticUpdateEnabled, setOptimisticUpdateEnabled] = useState(true)
   
   // 缓存预加载进度状态（图组模式和随机模式都使用）
   const [cachePreloadProgress, setCachePreloadProgress] = useState<{ current: number, total: number } | null>(null)
@@ -506,6 +502,12 @@ export default function HomePage() {
       if (!isNaN(randomness) && randomness >= 0 && randomness <= 1) {
         setPreloadRandomness(randomness)
       }
+    }
+
+    // 加载保存的乐观更新设置
+    const savedOptimistic = localStorage.getItem('optimistic_update_enabled')
+    if (savedOptimistic !== null) {
+      setOptimisticUpdateEnabled(savedOptimistic === 'true')
     }
 
     // 加载可用的评价标签和分类
