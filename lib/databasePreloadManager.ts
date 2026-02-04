@@ -245,7 +245,9 @@ class DatabasePreloadManager {
           lastmod: file.lastmod || ''
         })
 
-        if (this.cache.size > this.maxCacheSize) {
+        // 图组模式下不驱逐缓存（允许缓存整个图组）
+        // 只在随机模式下才限制缓存大小
+        if (this.cache.size > this.maxCacheSize && this.currentGroupFiles.length === 0) {
           this.evictOldestCache()
         }
 

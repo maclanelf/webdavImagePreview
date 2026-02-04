@@ -1440,7 +1440,14 @@ export const scanFiles = {
         WHERE cache_id = ? AND parent_path = ?
         ORDER BY basename
       `)
-      return stmt.all(cacheId, parentPath)
+      const files = stmt.all(cacheId, parentPath)
+      
+      // 使用自然排序对文件进行排序（解决 "1 (10).jpeg" 排在 "1 (2).jpeg" 前面的问题）
+      const sortedFiles = files.sort((a: any, b: any) => {
+        return a.basename.localeCompare(b.basename, undefined, { numeric: true, sensitivity: 'base' })
+      })
+      
+      return sortedFiles
     } catch (error) {
       console.error('获取目录文件失败:', error)
       return []
@@ -1789,8 +1796,13 @@ export const scanFiles = {
       
       const files = db.prepare(filesSql).all(...filesParams)
       
+      // 使用自然排序对文件进行排序（解决 "1 (10).jpeg" 排在 "1 (2).jpeg" 前面的问题）
+      const sortedFiles = files.sort((a: any, b: any) => {
+        return a.basename.localeCompare(b.basename, undefined, { numeric: true, sensitivity: 'base' })
+      })
+      
       return {
-        files,
+        files: sortedFiles,
         parentPath: selectedParentPath,
         totalGroups: groups.length
       }
