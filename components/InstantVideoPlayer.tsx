@@ -781,36 +781,58 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   // 横竖屏切换
   const toggleOrientation = async () => {
     try {
+      // 检查是否在全屏模式下
+      const isInFullscreen = !!document.fullscreenElement
+      
       // 尝试使用 Screen Orientation API
       if ('orientation' in screen && 'lock' in (screen.orientation as any)) {
+        // Screen Orientation API 只在全屏模式下可用
+        if (!isInFullscreen) {
+          console.log('🔄 [屏幕旋转] 需要先进入全屏才能锁定屏幕方向')
+          // 先进入全屏
+          await toggleFullscreen()
+          // 等待全屏完成后再尝试锁定方向
+          setTimeout(async () => {
+            try {
+              const currentOrientation = screen.orientation.type
+              if (currentOrientation.includes('portrait')) {
+                await (screen.orientation as any).lock('landscape')
+                console.log('🔄 [屏幕旋转] 已切换到横屏')
+              } else {
+                await (screen.orientation as any).lock('portrait')
+                console.log('🔄 [屏幕旋转] 已切换到竖屏')
+              }
+            } catch (err) {
+              console.error('🔄 [屏幕旋转] 方向锁定失败:', err)
+            }
+          }, 300)
+          return
+        }
+        
+        // 已经在全屏模式下，直接切换方向
         const currentOrientation = screen.orientation.type
         if (currentOrientation.includes('portrait')) {
           // 当前竖屏，切换到横屏
           await (screen.orientation as any).lock('landscape')
+          console.log('🔄 [屏幕旋转] 已切换到横屏')
         } else {
           // 当前横屏，切换到竖屏
           await (screen.orientation as any).lock('portrait')
+          console.log('🔄 [屏幕旋转] 已切换到竖屏')
         }
       } else {
         // 如果不支持方向锁定，尝试进入全屏（移动端的替代方案）
-        if (!document.fullscreenElement) {
+        console.log('🔄 [屏幕旋转] 浏览器不支持 Screen Orientation API，使用全屏切换')
+        if (!isInFullscreen) {
           await toggleFullscreen()
         } else {
           await document.exitFullscreen()
         }
       }
     } catch (error) {
-      console.error('屏幕方向切换失败:', error)
-      // 如果锁定失败，尝试进入/退出全屏
-      try {
-        if (!document.fullscreenElement) {
-          await toggleFullscreen()
-        } else {
-          await document.exitFullscreen()
-        }
-      } catch (e) {
-        console.error('全屏切换也失败:', e)
-      }
+      console.error('🔄 [屏幕旋转] 屏幕方向切换失败:', error)
+      // 如果锁定失败，提示用户
+      console.log('🔄 [屏幕旋转] 请尝试手动旋转设备或检查浏览器权限')
     }
   }
 
