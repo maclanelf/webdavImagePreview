@@ -3123,6 +3123,7 @@ export default function HomePage() {
                     src={mediaUrl}
                     autoPlay={true}
                     playIntent={playIntentRef.current} // 传递播放意图，用于安卓浏览器自动播放
+                    isParentFullscreen={fullscreen} // 传递父组件的全屏状态
                     transcodeUrl={transcodeUrl || undefined} // 转码流 URL，用于自动降级
                     onTranscodeFallback={() => {
                       console.log('[大视频模式] 已降级到转码流播放')

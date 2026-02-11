@@ -26,6 +26,7 @@ interface InstantVideoPlayerProps {
   className?: string
   autoPlay?: boolean
   playIntent?: boolean // 标记用户是否有播放意图（用于安卓浏览器自动播放）
+  isParentFullscreen?: boolean // 父组件的全屏状态（用于 CSS 全屏）
   // 转码降级相关
   transcodeUrl?: string // 转码流 URL（当原始流播放失败时使用）
   onTranscodeFallback?: () => void // 降级到转码时的回调
@@ -80,6 +81,7 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   className,
   autoPlay = false,
   playIntent = false,
+  isParentFullscreen = false,
   transcodeUrl,
   onTranscodeFallback,
 }, ref) => {
@@ -1422,11 +1424,12 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
         </Box>
       )}
       
-      {/* 倍速菜单 */}
+      {/* 倍速菜单 - 使用 Portal 确保在全屏状态下也能显示 */}
       <Menu
         anchorEl={speedMenuAnchor}
         open={Boolean(speedMenuAnchor)}
         onClose={handleSpeedMenuClose}
+        container={isParentFullscreen || isFullscreen ? containerRef.current : undefined}
         anchorOrigin={{
           vertical: 'top',
           horizontal: 'center',
@@ -1435,8 +1438,17 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
           vertical: 'bottom',
           horizontal: 'center',
         }}
+        slotProps={{
+          paper: {
+            sx: {
+              backgroundColor: 'rgba(0, 0, 0, 0.9)',
+              backdropFilter: 'blur(10px)',
+              zIndex: isParentFullscreen || isFullscreen ? 2002 : undefined,
+            }
+          }
+        }}
       >
-        {[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((speed) => (
+        {[0.5, 1, 1.5, 1.75, 2, 3, 5].map((speed) => (
           <MenuItem
             key={speed}
             selected={playbackRate === speed}
@@ -1445,6 +1457,16 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
               fontSize: '0.875rem',
               minWidth: 100,
               justifyContent: 'center',
+              color: playbackRate === speed ? '#4caf50' : '#fff',
+              '&:hover': {
+                backgroundColor: 'rgba(255, 255, 255, 0.1)',
+              },
+              '&.Mui-selected': {
+                backgroundColor: 'rgba(76, 175, 80, 0.2)',
+                '&:hover': {
+                  backgroundColor: 'rgba(76, 175, 80, 0.3)',
+                },
+              },
             }}
           >
             {speed}x
