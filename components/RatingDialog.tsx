@@ -37,6 +37,7 @@ interface RatingDialogProps {
   open: boolean
   onClose: () => void
   onSave: (data: RatingData) => Promise<void>
+  onSaveSuccess?: () => void  // 保存成功后的回调
   title: string
   subtitle?: string
   initialData?: RatingData
@@ -48,6 +49,7 @@ export default function RatingDialog({
   open,
   onClose,
   onSave,
+  onSaveSuccess,
   title,
   subtitle,
   initialData,
@@ -149,6 +151,10 @@ export default function RatingDialog({
       
       await onSave(data)
       onClose()
+      // 保存成功后调用回调
+      if (onSaveSuccess) {
+        onSaveSuccess()
+      }
     } catch (error: any) {
       setError(error.message || '保存失败')
     } finally {

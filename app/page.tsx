@@ -2484,6 +2484,13 @@ export default function HomePage() {
     hasAutoRatedRef.current = true
   }, [saveRating])
 
+  // 评分保存成功回调
+  const handleRatingSaveSuccess = useCallback(() => {
+    setSnackbarMessage('✅ 评分保存成功')
+    setSnackbarSeverity('success')
+    setSnackbarOpen(true)
+  }, [])
+
 
   // 获取图组路径
   const getGroupPath = (filePath: string): string => {
@@ -3473,6 +3480,7 @@ export default function HomePage() {
                     open={ratingDialogOpen}
                     onClose={closeRatingDialog}
                     onSave={saveRatingManual}
+                    onSaveSuccess={handleRatingSaveSuccess}
                     title={ratingType === 'media' ? '评分媒体文件' : '评分图组'}
                     subtitle={
                       ratingType === 'media' 
@@ -4560,6 +4568,7 @@ export default function HomePage() {
         open={ratingDialogOpen}
         onClose={closeRatingDialog}
         onSave={saveRatingManual}
+        onSaveSuccess={handleRatingSaveSuccess}
         title={ratingType === 'media' ? '评分媒体文件' : '评分图组'}
         subtitle={
           ratingType === 'media' 
