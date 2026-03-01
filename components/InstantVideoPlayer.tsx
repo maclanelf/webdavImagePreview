@@ -98,6 +98,7 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   const [isMuted, setIsMuted] = useState(false) // 静音状态
   const [playbackRate, setPlaybackRate] = useState(1) // 播放速度
   const [speedMenuAnchor, setSpeedMenuAnchor] = useState<null | HTMLElement>(null) // 倍速菜单锚点
+  const [isRotated, setIsRotated] = useState(false) // 视频旋转状态（90度）
   
   // 转码降级状态
   const [isUsingTranscode, setIsUsingTranscode] = useState(false) // 是否正在使用转码流
@@ -175,6 +176,7 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     setIsMutedForAutoplay(false) // 重置静音状态
     setIsUsingTranscode(false) // 重置转码状态
     setHasTriedTranscode(false) // 重置转码尝试标记
+    setIsRotated(false) // 重置旋转状态
     lastBufferedEndRef.current = 0
     lastUpdateTimeRef.current = Date.now()
     
@@ -778,61 +780,44 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     }
   }
 
-  // 横竖屏切换
+  // 横竖屏切换 - 使用 CSS transform 旋转视频
   const toggleOrientation = async () => {
     try {
-      // 检查是否在全屏模式下
       const isInFullscreen = !!document.fullscreenElement
       
-      // 尝试使用 Screen Orientation API
+      // 如果不在全屏，先进入全屏
+      if (!isInFullscreen) {
+        console.log('🔄 [屏幕旋转] 进入全屏模式')
+        await toggleFullscreen()
+        // 等待全屏完成
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+      
+      // 切换旋转状态
+      setIsRotated(prev => {
+        const newRotated = !prev
+        console.log('🔄 [屏幕旋转] 旋转状态:', newRotated ? '90度' : '0度')
+        return newRotated
+      })
+      
+      // 尝试使用 Screen Orientation API（如果支持）
       if ('orientation' in screen && 'lock' in (screen.orientation as any)) {
-        // Screen Orientation API 只在全屏模式下可用
-        if (!isInFullscreen) {
-          console.log('🔄 [屏幕旋转] 需要先进入全屏才能锁定屏幕方向')
-          // 先进入全屏
-          await toggleFullscreen()
-          // 等待全屏完成后再尝试锁定方向
-          setTimeout(async () => {
-            try {
-              const currentOrientation = screen.orientation.type
-              if (currentOrientation.includes('portrait')) {
-                await (screen.orientation as any).lock('landscape')
-                console.log('🔄 [屏幕旋转] 已切换到横屏')
-              } else {
-                await (screen.orientation as any).lock('portrait')
-                console.log('🔄 [屏幕旋转] 已切换到竖屏')
-              }
-            } catch (err) {
-              console.error('🔄 [屏幕旋转] 方向锁定失败:', err)
-            }
-          }, 300)
-          return
-        }
-        
-        // 已经在全屏模式下，直接切换方向
-        const currentOrientation = screen.orientation.type
-        if (currentOrientation.includes('portrait')) {
-          // 当前竖屏，切换到横屏
-          await (screen.orientation as any).lock('landscape')
-          console.log('🔄 [屏幕旋转] 已切换到横屏')
-        } else {
-          // 当前横屏，切换到竖屏
-          await (screen.orientation as any).lock('portrait')
-          console.log('🔄 [屏幕旋转] 已切换到竖屏')
-        }
-      } else {
-        // 如果不支持方向锁定，尝试进入全屏（移动端的替代方案）
-        console.log('🔄 [屏幕旋转] 浏览器不支持 Screen Orientation API，使用全屏切换')
-        if (!isInFullscreen) {
-          await toggleFullscreen()
-        } else {
-          await document.exitFullscreen()
+        try {
+          if (isRotated) {
+            // 当前已旋转，解锁方向
+            await (screen.orientation as any).unlock()
+            console.log('🔄 [屏幕旋转] 已解锁屏幕方向')
+          } else {
+            // 尝试锁定为横屏
+            await (screen.orientation as any).lock('landscape')
+            console.log('🔄 [屏幕旋转] 已锁定为横屏')
+          }
+        } catch (err) {
+          console.log('🔄 [屏幕旋转] Screen Orientation API 不可用，使用 CSS 旋转:', err)
         }
       }
     } catch (error) {
-      console.error('🔄 [屏幕旋转] 屏幕方向切换失败:', error)
-      // 如果锁定失败，提示用户
-      console.log('🔄 [屏幕旋转] 请尝试手动旋转设备或检查浏览器权限')
+      console.error('🔄 [屏幕旋转] 切换失败:', error)
     }
   }
 
@@ -1062,13 +1047,16 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
         playsInline // 移动设备内联播放
         muted={isMutedForAutoplay} // 只有在静音降级后才设置静音
         style={{
-          maxWidth: '100%',
-          maxHeight: '100%',
-          width: '100%',
-          height: '100%',
+          maxWidth: isRotated ? '100vh' : '100%',
+          maxHeight: isRotated ? '100vw' : '100%',
+          width: isRotated ? '100vh' : '100%',
+          height: isRotated ? '100vw' : '100%',
           objectFit: 'contain',
           display: 'block',
           pointerEvents: 'none', // 防止视频元素拦截点击事件
+          transform: isRotated ? 'rotate(90deg)' : 'none',
+          transformOrigin: 'center center',
+          transition: 'transform 0.3s ease-out',
         }}
         onLoadStart={handleLoadStart}
         onLoadedMetadata={handleLoadedMetadata}
