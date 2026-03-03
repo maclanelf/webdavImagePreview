@@ -9,7 +9,6 @@ import {
   VolumeOff as VolumeOffIcon,
   Fullscreen as FullscreenIcon,
   FullscreenExit as FullscreenExitIcon,
-  ScreenRotation as ScreenRotationIcon,
   Speed as SpeedIcon,
   Replay as ReplayIcon,
 } from '@mui/icons-material'
@@ -30,6 +29,8 @@ interface InstantVideoPlayerProps {
   // 转码降级相关
   transcodeUrl?: string // 转码流 URL（当原始流播放失败时使用）
   onTranscodeFallback?: () => void // 降级到转码时的回调
+  // 全屏覆盖层（用于在全屏模式下显示额外的 UI 组件）
+  fullscreenOverlay?: React.ReactNode
 }
 
 export interface InstantVideoPlayerRef {
@@ -84,6 +85,7 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   isParentFullscreen = false,
   transcodeUrl,
   onTranscodeFallback,
+  fullscreenOverlay,
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement>(null) // 视频元素引用
   const [loading, setLoading] = useState(true) // 加载状态
@@ -98,7 +100,6 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   const [isMuted, setIsMuted] = useState(false) // 静音状态
   const [playbackRate, setPlaybackRate] = useState(1) // 播放速度
   const [speedMenuAnchor, setSpeedMenuAnchor] = useState<null | HTMLElement>(null) // 倍速菜单锚点
-  const [isRotated, setIsRotated] = useState(false) // 视频旋转状态（90度）
   
   // 转码降级状态
   const [isUsingTranscode, setIsUsingTranscode] = useState(false) // 是否正在使用转码流
@@ -176,7 +177,6 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     setIsMutedForAutoplay(false) // 重置静音状态
     setIsUsingTranscode(false) // 重置转码状态
     setHasTriedTranscode(false) // 重置转码尝试标记
-    setIsRotated(false) // 重置旋转状态
     lastBufferedEndRef.current = 0
     lastUpdateTimeRef.current = Date.now()
     
@@ -780,47 +780,6 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     }
   }
 
-  // 横竖屏切换 - 使用 CSS transform 旋转视频
-  const toggleOrientation = async () => {
-    try {
-      const isInFullscreen = !!document.fullscreenElement
-      
-      // 如果不在全屏，先进入全屏
-      if (!isInFullscreen) {
-        console.log('🔄 [屏幕旋转] 进入全屏模式')
-        await toggleFullscreen()
-        // 等待全屏完成
-        await new Promise(resolve => setTimeout(resolve, 100))
-      }
-      
-      // 切换旋转状态
-      setIsRotated(prev => {
-        const newRotated = !prev
-        console.log('🔄 [屏幕旋转] 旋转状态:', newRotated ? '90度' : '0度')
-        return newRotated
-      })
-      
-      // 尝试使用 Screen Orientation API（如果支持）
-      if ('orientation' in screen && 'lock' in (screen.orientation as any)) {
-        try {
-          if (isRotated) {
-            // 当前已旋转，解锁方向
-            await (screen.orientation as any).unlock()
-            console.log('🔄 [屏幕旋转] 已解锁屏幕方向')
-          } else {
-            // 尝试锁定为横屏
-            await (screen.orientation as any).lock('landscape')
-            console.log('🔄 [屏幕旋转] 已锁定为横屏')
-          }
-        } catch (err) {
-          console.log('🔄 [屏幕旋转] Screen Orientation API 不可用，使用 CSS 旋转:', err)
-        }
-      }
-    } catch (error) {
-      console.error('🔄 [屏幕旋转] 切换失败:', error)
-    }
-  }
-
   // 切换静音
   const toggleMute = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -854,7 +813,9 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   useEffect(() => {
     const handleFullscreenChange = () => {
       const isNowFullscreen = !!document.fullscreenElement
+      console.log('📺 [全屏监听] 全屏状态变化:', isNowFullscreen)
       setIsFullscreen(isNowFullscreen)
+      
       // 进入全屏时隐藏自定义控件，与原生控件同步
       if (isNowFullscreen) {
         setShowControls(false)
@@ -1047,16 +1008,13 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
         playsInline // 移动设备内联播放
         muted={isMutedForAutoplay} // 只有在静音降级后才设置静音
         style={{
-          maxWidth: isRotated ? '100vh' : '100%',
-          maxHeight: isRotated ? '100vw' : '100%',
-          width: isRotated ? '100vh' : '100%',
-          height: isRotated ? '100vw' : '100%',
+          maxWidth: '100%',
+          maxHeight: '100%',
+          width: '100%',
+          height: '100%',
           objectFit: 'contain',
           display: 'block',
           pointerEvents: 'none', // 防止视频元素拦截点击事件
-          transform: isRotated ? 'rotate(90deg)' : 'none',
-          transformOrigin: 'center center',
-          transition: 'transform 0.3s ease-out',
         }}
         onLoadStart={handleLoadStart}
         onLoadedMetadata={handleLoadedMetadata}
@@ -1246,9 +1204,6 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
                 <IconButton size="small" disableRipple sx={{ color: '#fff', p: 0.5 }} onClick={handleSpeedMenuOpen}>
                   <SpeedIcon fontSize="small" />
                 </IconButton>
-                <IconButton size="small" disableRipple sx={{ color: '#fff', p: 0.5 }} onClick={(e) => { e.stopPropagation(); toggleOrientation(); }}>
-                  <ScreenRotationIcon fontSize="small" />
-                </IconButton>
                 <IconButton size="small" disableRipple sx={{ color: '#fff', p: 0.5 }} onClick={(e) => { e.stopPropagation(); toggleFullscreen(); }}>
                   {isFullscreen ? <FullscreenExitIcon fontSize="small" /> : <FullscreenIcon fontSize="small" />}
                 </IconButton>
@@ -1396,23 +1351,6 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
                 <SpeedIcon fontSize="small" />
               </IconButton>
               
-              {/* 横竖屏切换按钮 */}
-              <IconButton
-                size="small"
-                disableRipple
-                sx={{ 
-                  color: '#fff', 
-                  p: 0.5,
-                  '&:active': { opacity: 0.7 },
-                }}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  toggleOrientation()
-                }}
-              >
-                <ScreenRotationIcon fontSize="small" />
-              </IconButton>
-              
               {/* 全屏按钮 */}
               <IconButton
                 size="small"
@@ -1431,6 +1369,27 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
               </IconButton>
             </Box>
           </Box>
+        </Box>
+      )}
+      
+      {/* 全屏覆盖层 - 用于在全屏模式下显示额外的 UI 组件（如评分组件） */}
+      {/* 原生全屏（isFullscreen）或 CSS 全屏（isParentFullscreen）时都显示 */}
+      {(isFullscreen || isParentFullscreen) && fullscreenOverlay && (
+        <Box
+          sx={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            pointerEvents: 'none', // 默认不拦截事件，让子元素自己控制
+            zIndex: 2100, // 提高 z-index，确保在控制栏之上
+            '& > *': {
+              pointerEvents: 'auto', // 子元素可以接收事件
+            },
+          }}
+        >
+          {fullscreenOverlay}
         </Box>
       )}
       

@@ -3133,6 +3133,142 @@ export default function HomePage() {
                     onEnded={handleVideoEnded}
                     onNext={loadRandomMedia} // 换一个按钮
                     // 不再使用 onError 回调，InstantVideoPlayer 内部已有错误 UI
+                    // 全屏覆盖层 - 在原生全屏模式下显示评分组件
+                    fullscreenOverlay={
+                      <>
+                        {/* 左侧边：星星等级设置 - 纵向显示，可拖动 */}
+                        <DraggableBox
+                          storageKey="fullscreen_rating_stream"
+                          defaultSx={{
+                            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+                            backdropFilter: 'blur(8px)',
+                            px: 1,
+                            py: 1.5,
+                            borderRadius: 1.5,
+                            zIndex: 2001,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            gap: 0.5,
+                            opacity: 0.5,
+                            '&:hover': {
+                              opacity: 1,
+                            },
+                          }}
+                          sx={({ position }: { position: { x: number; y: number } | null; isDragging: boolean }) => ({
+                            ...(!position && {
+                              left: 8,
+                              top: viewMode === 'gallery' && currentGroup.length > 0 ? '65%' : '75%',
+                              transform: 'translateY(-50%)',
+                            }),
+                          })}
+                        >
+                          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5 }}>
+                            {QUICK_RATING_CONFIG.map((config) => {
+                              const isLit = currentRating?.rating && currentRating.rating >= config.rating
+                              
+                              return (
+                                <Tooltip
+                                  key={config.rating}
+                                  title={`${config.rating}星 - ${config.evaluation}`}
+                                  placement="right"
+                                >
+                                  <IconButton
+                                    size="small"
+                                    onClick={() => handleQuickRate(config.rating, config.evaluation)}
+                                    disabled={loading || isSwitching}
+                                    sx={{
+                                      color: isLit ? 'warning.main' : 'rgba(255, 255, 255, 0.7)',
+                                      transition: 'all 0.2s',
+                                      padding: '4px',
+                                      '&:hover': {
+                                        backgroundColor: 'rgba(255, 255, 255, 0.2)',
+                                        color: 'warning.main',
+                                        transform: 'scale(1.1)',
+                                      },
+                                    }}
+                                  >
+                                    {isLit ? (
+                                      <StarIcon fontSize="small" />
+                                    ) : (
+                                      <StarBorderIcon fontSize="small" />
+                                    )}
+                                  </IconButton>
+                                </Tooltip>
+                              )
+                            })}
+                          </Box>
+                          
+                          {/* 详情评分按钮 */}
+                          <Tooltip title="详细评分 (R)" placement="right">
+                            <IconButton
+                              size="small"
+                              onClick={() => openRatingDialog('media')}
+                              disabled={loading || isSwitching || !currentFile}
+                              sx={{
+                                color: 'rgba(255, 255, 255, 0.7)',
+                                mt: 0.5,
+                                '&:hover': {
+                                  backgroundColor: 'rgba(255, 255, 255, 0.2)',
+                                  color: 'primary.main',
+                                },
+                                transition: 'all 0.2s ease-in-out',
+                                p: 0.5,
+                              }}
+                            >
+                              <RateReviewIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+                        </DraggableBox>
+
+                        {/* 右下角：换一个按钮（可拖动） */}
+                        {/* 注意：在全屏模式下，需要包装一层来转换定位方式 */}
+                        <Box
+                          sx={{
+                            position: 'absolute',
+                            bottom: 0,
+                            right: 0,
+                            width: '100%',
+                            height: '100%',
+                            pointerEvents: 'none', // 不拦截事件
+                            '& > *': {
+                              pointerEvents: 'auto', // 子元素可以接收事件
+                            },
+                          }}
+                        >
+                          <DraggableFab
+                            storageKey="fullscreen_shuffle_stream"
+                            onClick={loadRandomMedia}
+                            disabled={isSwitching}
+                            defaultSx={{
+                              // 在包装器内使用 absolute 定位
+                              position: 'absolute',
+                            }}
+                          >
+                            <ShuffleIcon />
+                          </DraggableFab>
+                        </Box>
+
+                        {/* 评分对话框 - 原生全屏模式 */}
+                        <RatingDialog
+                          open={ratingDialogOpen}
+                          onClose={closeRatingDialog}
+                          onSave={saveRatingManual}
+                          onSaveSuccess={handleRatingSaveSuccess}
+                          title={ratingType === 'media' ? '评分媒体文件' : '评分图组'}
+                          subtitle={
+                            ratingType === 'media' 
+                              ? currentFile?.basename 
+                              : currentGroup.length > 0 
+                                ? `${getGroupName(getGroupPath(currentGroup[0].filename))} (${currentGroup.length} 个文件)`
+                                : undefined
+                          }
+                          initialData={currentRating || undefined}
+                          type={ratingType}
+                          container={instantVideoRef.current?.getContainerElement()}
+                        />
+                      </>
+                    }
                   />
                   
                   {/* 播放方式选择器 - 在视频框中央显示 */}
@@ -3256,8 +3392,8 @@ export default function HomePage() {
                 </Box>
               )}
 
-              {/* 全屏时的 UI 覆盖层（图片和视频通用） */}
-              {currentFile && fullscreen && (
+              {/* 全屏时的 UI 覆盖层（图片和小视频使用 CSS 全屏） */}
+              {currentFile && fullscreen && mediaType !== 'stream-video' && (
                 <>
                   {/* 左上角：文件信息 */}
                   <Box
@@ -3495,6 +3631,26 @@ export default function HomePage() {
                     container={videoPlayerContainerRef.current}
                   />
                 </>
+              )}
+              
+              {/* 流式视频 CSS 全屏时的退出全屏按钮 */}
+              {currentFile && fullscreen && mediaType === 'stream-video' && (
+                <IconButton
+                  onClick={toggleFullscreen}
+                  sx={{
+                    position: 'fixed',
+                    top: 24,
+                    right: 24,
+                    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+                    color: 'white',
+                    zIndex: 2001,
+                    '&:hover': {
+                      backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                    },
+                  }}
+                >
+                  <FullscreenExitIcon />
+                </IconButton>
               )}
               
             </Box>
