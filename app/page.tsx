@@ -149,6 +149,17 @@ export default function HomePage() {
   const [config, setConfig] = useState<WebDAVConfig | null>(null)
   // 当前显示的文件
   const [currentFile, setCurrentFile] = useState<MediaFile | null>(null)
+  // 随机模式历史记录（用于回看功能，最多保存4个(包含一个当前文件,实际效果是回看前3个文件)）
+  const [randomHistory, setRandomHistory] = useState<MediaFile[]>([])
+  // 随机模式当前位置（-1表示最新，-2表示倒数第二个，以此类推）
+  const [randomHistoryIndex, setRandomHistoryIndex] = useState<number>(-1)
+  // 随机模式历史文件的 blob URL 缓存（用于快速回看，key: filename, value: {url, blob, mediaType, originalStreamUrl}）
+  const randomHistoryCache = useRef<Map<string, {
+    url: string
+    blob: Blob
+    mediaType: MediaType
+    originalStreamUrl: string | null
+  }>>(new Map())
   // 加载状态
   const [loading, setLoading] = useState(false)
   // 错误信息
@@ -1399,12 +1410,14 @@ export default function HomePage() {
 
     // 随机模式
     console.log('[loadRandomMedia] 进入随机模式分支')
+    
+    // 加载新的随机文件（不处理历史导航逻辑）
     saveAndSwitch(() => {
-      loadRandomFile()
+      loadRandomFile(false)
     })
   }
 
-  const loadRandomFile = async () => {
+  const loadRandomFile = async (isNavigatingHistory: boolean = false) => {
     if (!config) {
       setError('请先配置WebDAV连接')
       return
@@ -1413,10 +1426,12 @@ export default function HomePage() {
     console.log(`[DEBUG] loadRandomFile 开始，筛选条件: viewedFilter=${viewedFilter}, mediaFilter=${mediaFilter}`)
     console.log(`[DEBUG] 缓存文件数量: ${databasePreloadManager.getCachedFilepaths().length}`)
     console.log(`[DEBUG] 本地已看过文件数量: ${databasePreloadManager.getLocalViewedCount()}`)
+    console.log(`[DEBUG] 历史导航模式: ${isNavigatingHistory}`)
     
     // 从预加载缓存中获取文件（缓存中的文件已经过数据库层面的 viewedFilter 和 mediaFilter 筛选）
     // 只需要排除本地已看过的文件（当前会话中看过但数据库可能还没同步的）
     const cachedFiles = databasePreloadManager.getCachedFiles()
+    //这里可能不需要,因为预加载已经将需要排除的文件给到接口去进行排查处理了,暂时标记为//TODO
     const availableCachedFiles = cachedFiles.filter(file => {
       // 排除本地已看过的文件（所有模式都适用）
       if (databasePreloadManager.isLocalViewed(file.filename)) return false
@@ -1561,9 +1576,61 @@ export default function HomePage() {
 
       const url = URL.createObjectURL(blob)
       
-      // 清理旧的URL
-      if (mediaUrl) {
-        URL.revokeObjectURL(mediaUrl)
+      // ✅ 整合步骤：保存当前文件到历史缓存并更新历史记录（仅在非历史导航模式下）
+      if (!isNavigatingHistory) {
+        // 1. 保存当前文件的 blob 到历史缓存
+        const currentMediaType = isVideo(fileToLoad.filename) ? 'small-video' : 'image'
+        const currentOriginalStreamUrl = isVideo(fileToLoad.filename) 
+          ? (config && config.enableDirectLink && config.directLinkUrl
+              ? new URL(`/d${fileToLoad.filename.split('/').map(segment => segment.replace(/／/g, '|')).join('/')}`, window.location.origin).href
+              : (config 
+                  ? new URL(`/api/webdav/instant-stream?${new URLSearchParams({
+                      url: config.url,
+                      username: config.username,
+                      password: config.password,
+                      filepath: fileToLoad.filename,
+                      sourceType: config.sourceType || 'clouddrive2',
+                    }).toString().replace(/\+/g, '%20')}`, window.location.origin).href
+                  : null))
+          : null
+        
+        randomHistoryCache.current.set(fileToLoad.filename, {
+          url: url,
+          blob: blob,
+          mediaType: currentMediaType,
+          originalStreamUrl: currentOriginalStreamUrl
+        })
+        console.log(`[历史缓存] 保存当前文件: ${fileToLoad.basename}`)
+        
+        // 2. 清理旧的 URL
+        if (mediaUrl) {
+          URL.revokeObjectURL(mediaUrl)
+          console.log(`[URL清理] 释放旧URL`)
+        }
+        
+        // 3. 更新历史记录数组
+        setRandomHistory(prev => {
+          const newHistory = [...prev, fileToLoad]
+          if (newHistory.length > 4) {
+            return newHistory.slice(-4)
+          }
+          return newHistory
+        })
+        setRandomHistoryIndex(-1) // 重置到最新位置
+        
+        // 4. 清理超过4个的旧缓存
+        const cacheKeys = Array.from(randomHistoryCache.current.keys())
+        if (cacheKeys.length > 4) {
+          const keysToRemove = cacheKeys.slice(0, cacheKeys.length - 4)
+          keysToRemove.forEach(key => {
+            const cached = randomHistoryCache.current.get(key)
+            if (cached) {
+              URL.revokeObjectURL(cached.url)
+              randomHistoryCache.current.delete(key)
+              console.log(`[历史缓存] 清理旧缓存: ${key}`)
+            }
+          })
+        }
       }
       
       setMediaUrl(url)
@@ -1628,6 +1695,146 @@ export default function HomePage() {
 
       // 智能预加载下一个可能查看的文件（立即执行，不延迟）
       smartPreload(fileToLoad)
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+  
+  // 随机模式：回看上一个文件
+  const loadPreviousRandomFile = () => {
+    if (randomHistory.length === 0) {
+      console.log('[回看] 没有历史记录')
+      return
+    }
+    
+    // 计算新的索引位置
+    const newIndex = randomHistoryIndex - 1
+    const targetIndex = randomHistory.length + newIndex
+    
+    if (targetIndex < 0) {
+      console.log('[回看] 已经是最早的记录')
+      return
+    }
+    
+    const fileToLoad = randomHistory[targetIndex]
+    console.log(`[回看] 加载历史文件: ${fileToLoad.basename}, 索引: ${newIndex}`)
+    
+    // 标记播放意图
+    playIntentRef.current = true
+    
+    // 更新索引
+    setRandomHistoryIndex(newIndex)
+    
+    // 加载文件（不触发保存和切换逻辑）
+    loadFileDirectly(fileToLoad, true)
+  }
+  
+  // 随机模式：前进到下一个文件
+  const loadNextRandomFile = () => {
+    if (randomHistoryIndex === -1) {
+      // 已经在最新位置，加载新的随机文件
+      console.log('[前进] 已在最新位置，加载新文件')
+      saveAndSwitch(() => {
+        loadRandomFile(false)
+      })
+      return
+    }
+    
+    // 计算新的索引位置
+    const newIndex = randomHistoryIndex + 1
+    
+    // 检查是否到达最新位置
+    if (newIndex === -1) {
+      // 到达最新位置，从历史记录加载最新文件
+      const fileToLoad = randomHistory[randomHistory.length - 1]
+      console.log(`[前进] 回到最新位置，加载文件: ${fileToLoad.basename}`)
+      
+      // 标记播放意图
+      playIntentRef.current = true
+      
+      // 更新索引
+      setRandomHistoryIndex(-1)
+      
+      // 从缓存加载文件
+      loadFileDirectly(fileToLoad, true)
+      return
+    }
+    
+    // 还在历史记录中，继续前进
+    const targetIndex = randomHistory.length + newIndex
+    const fileToLoad = randomHistory[targetIndex]
+    console.log(`[前进] 加载历史文件: ${fileToLoad.basename}, 索引: ${newIndex}`)
+    
+    // 标记播放意图
+    playIntentRef.current = true
+    
+    // 更新索引
+    setRandomHistoryIndex(newIndex)
+    
+    // 加载文件（不触发保存和切换逻辑）
+    loadFileDirectly(fileToLoad, true)
+  }
+  
+  // 直接加载文件（用于历史导航，不触发保存逻辑）
+  const loadFileDirectly = async (fileToLoad: MediaFile, isNavigatingHistory: boolean = false) => {
+    // 切换文件时立即重置自动评分标志
+    hasAutoRatedRef.current = false
+    
+    // 清除保存的视频状态，确保新视频可以自动播放
+    videoStateRef.current = null
+    
+    // 检测媒体类型变化并处理全屏切换
+    const shouldEnterVideoFullscreen = handleMediaTypeChangeInFullscreen(fileToLoad)
+    
+    setLoading(true)
+    setError(null)
+
+    try {
+      setCurrentFile(fileToLoad)
+
+      // 从历史缓存中获取（loadFileDirectly 只用于历史导航）
+      const cachedData = randomHistoryCache.current.get(fileToLoad.filename)
+      
+      if (!cachedData) {
+        // 缓存中没有数据，说明出现了逻辑错误
+        console.error(`[历史回看错误] 缓存中没有找到文件: ${fileToLoad.basename}`)
+        setError('历史缓存丢失，无法回看此文件')
+        setLoading(false)
+        return
+      }
+      
+      // 从内存缓存的 blob 重新创建 URL
+      console.log(`[历史回看] 从内存缓存加载: ${fileToLoad.basename}`)
+      
+      const url = URL.createObjectURL(cachedData.blob)
+      
+      // ✅ 清理旧的 URL（历史导航时也需要清理，避免内存泄漏）
+      if (mediaUrl) {
+        URL.revokeObjectURL(mediaUrl)
+        console.log(`[URL清理] 历史导航时释放旧URL`)
+      }
+      
+      setMediaUrl(url)
+      setMediaType(cachedData.mediaType)
+      setOriginalStreamUrl(cachedData.originalStreamUrl)
+      
+      if (shouldEnterVideoFullscreen && cachedData.mediaType !== 'image') {
+        setTimeout(() => {
+          enterVideoFullscreen()
+        }, 100)
+      }
+      
+      setRatingType('media')
+      
+      // 加载评分（历史文件肯定已经被观看过，直接加载评分）
+      await loadCurrentRating(fileToLoad, 'media')
+      
+      // 清除之前的自动标记定时器，但不启动新的（历史文件已有评分）
+      startAutoMarkTimer(fileToLoad, true)
+      
+      setLoading(false)
     } catch (e: any) {
       setError(e.message)
     } finally {
@@ -2687,7 +2894,7 @@ export default function HomePage() {
   }, [currentFile, saveRating, viewedFilter])
 
   // 自动标记已看过
-  const startAutoMarkTimer = (file?: MediaFile) => {
+  const startAutoMarkTimer = (file?: MediaFile, skipAutoRating: boolean = false) => {
     // 使用传入的文件或当前文件
     const targetFile = file || currentFile
     if (!targetFile) return
@@ -2701,6 +2908,12 @@ export default function HomePage() {
     hasAutoRatedRef.current = false
 
     setViewStartTime(Date.now())
+
+    // 如果跳过自动评分（如历史导航），不设置定时器
+    if (skipAutoRating) {
+      console.log(`[自动评分] 跳过自动评分（历史文件）: ${targetFile.basename}`)
+      return
+    }
 
     // 根据文件类型设置不同的时间
     const isImageFile = isImage(targetFile.filename)
@@ -3601,14 +3814,61 @@ export default function HomePage() {
                     </>
                   )}
 
-                  {/* 右下角：换一个按钮（可拖动） */}
-                  <DraggableFab
-                    storageKey="fullscreen_shuffle"
-                    onClick={loadRandomMedia}
-                    disabled={isSwitching}
-                  >
-                    <ShuffleIcon />
-                  </DraggableFab>
+                  {/* 随机模式控制按钮（全屏） */}
+                  {viewMode === 'random' && (
+                    <>
+                      {/* 回看按钮 */}
+                      {randomHistory.length > 0 && randomHistoryIndex > -(randomHistory.length) && (
+                        <Tooltip title="回看上一个" placement="left">
+                          <Fab
+                            color="default"
+                            onClick={loadPreviousRandomFile}
+                            disabled={loading || isSwitching}
+                            sx={{
+                              position: 'fixed',
+                              bottom: 120,
+                              left: 24,
+                              backgroundColor: 'rgba(255, 255, 255, 0.9)',
+                              zIndex: 2001,
+                            }}
+                          >
+                            <ArrowBackIcon />
+                          </Fab>
+                        </Tooltip>
+                      )}
+
+                      {/* 前进按钮 */}
+                      {randomHistoryIndex < -1 && (
+                        <Tooltip title="前进到下一个" placement="right">
+                          <Fab
+                            color="default"
+                            onClick={loadNextRandomFile}
+                            disabled={loading || isSwitching}
+                            sx={{
+                              position: 'fixed',
+                              bottom: 100,
+                              right: 24,
+                              backgroundColor: 'rgba(255, 255, 255, 0.9)',
+                              zIndex: 2001,
+                            }}
+                          >
+                            <ArrowForwardIcon />
+                          </Fab>
+                        </Tooltip>
+                      )}
+                    </>
+                  )}
+
+                  {/* 右下角：换一个按钮（可拖动） - 随机模式回看状态下隐藏 */}
+                  {!(viewMode === 'random' && randomHistoryIndex < -1) && (
+                    <DraggableFab
+                      storageKey="fullscreen_shuffle"
+                      onClick={loadRandomMedia}
+                      disabled={isSwitching}
+                    >
+                      <ShuffleIcon />
+                    </DraggableFab>
+                  )}
 
                   {/* 右上角：退出全屏按钮 */}
                   <IconButton
@@ -4708,33 +4968,93 @@ export default function HomePage() {
       )}
 
       {/* 悬浮按钮 - 固定在右下角 */}
-      <Tooltip 
-        title={
-          loading 
-            ? '加载中...' 
-            : viewMode === 'gallery' && !galleryPreloadReady && preloadEnabled
-              ? '正在加载预加载文件，请稍候...' 
-              : '换一个'
-        } 
-        placement="left"
-      >
-        <DraggableFab
-          storageKey="normal_shuffle"
-          color="primary"
-          aria-label="换一个"
-          onClick={loadRandomMedia}
-          disabled={loading || isSwitching || (viewMode === 'gallery' && !galleryPreloadReady && preloadEnabled)}
-          defaultSx={{
-            zIndex: 1000,
-          }}
+      {/* 随机模式回看状态下隐藏换一个按钮 */}
+      {!(viewMode === 'random' && randomHistoryIndex < -1) && (
+        <Tooltip 
+          title={
+            loading 
+              ? '加载中...' 
+              : viewMode === 'gallery' && !galleryPreloadReady && preloadEnabled
+                ? '正在加载预加载文件，请稍候...' 
+                : '换一个'
+          } 
+          placement="left"
         >
-          {loading || (viewMode === 'gallery' && !galleryPreloadReady && preloadEnabled && cachePreloadProgress) ? (
-            <CircularProgress size={24} color="inherit" />
-          ) : (
-            <ShuffleIcon />
+          <DraggableFab
+            storageKey="normal_shuffle"
+            color="primary"
+            aria-label="换一个"
+            onClick={loadRandomMedia}
+            disabled={loading || isSwitching || (viewMode === 'gallery' && !galleryPreloadReady && preloadEnabled)}
+            defaultSx={{
+              zIndex: 1000,
+            }}
+          >
+            {loading || (viewMode === 'gallery' && !galleryPreloadReady && preloadEnabled && cachePreloadProgress) ? (
+              <CircularProgress size={24} color="inherit" />
+            ) : (
+              <ShuffleIcon />
+            )}
+          </DraggableFab>
+        </Tooltip>
+      )}
+
+      {/* 随机模式：回看和前进按钮 */}
+      {viewMode === 'random' && !fullscreen && (
+        <>
+          {/* 回看按钮 - 在换一个按钮左侧 */}
+          <Tooltip 
+            title={
+              randomHistory.length === 0 
+                ? '没有历史记录' 
+                : randomHistoryIndex <= -(randomHistory.length)
+                  ? '已经是最早的记录'
+                  : '回看上一个'
+            } 
+            placement="top"
+          >
+            <Fab
+              size="medium"
+              color="secondary"
+              aria-label="回看上一个"
+              onClick={loadPreviousRandomFile}
+              disabled={loading || isSwitching || randomHistory.length === 0 || randomHistoryIndex <= -(randomHistory.length)}
+              sx={{
+                position: 'fixed',
+                bottom: 24,
+                right: 104, // 换一个按钮左侧
+                zIndex: 1000,
+              }}
+            >
+              <ArrowBackIcon />
+            </Fab>
+          </Tooltip>
+
+          {/* 前进按钮 - 在回看按钮左侧 */}
+          {randomHistoryIndex < -1 && (
+            <Tooltip 
+              title="前进到下一个" 
+              placement="top"
+            >
+              <Fab
+                size="medium"
+                color="secondary"
+                aria-label="前进到下一个"
+                onClick={loadNextRandomFile}
+                disabled={loading || isSwitching}
+                sx={{
+                  position: 'fixed',
+                  bottom: 24,
+                  right: 184, // 回看按钮左侧
+                  zIndex: 1000,
+                }}
+              >
+                <ArrowForwardIcon />
+              </Fab>
+            </Tooltip>
           )}
-        </DraggableFab>
-      </Tooltip>
+        </>
+      )}
 
       {/* 评分对话框 */}
       <RatingDialog
