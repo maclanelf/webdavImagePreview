@@ -3040,6 +3040,25 @@ export default function HomePage() {
                   webkit-playsinline="true" // iOS Safari 需要
                   onTimeUpdate={handleVideoTimeUpdate}
                   onEnded={handleVideoEnded}
+                  onPlay={() => {
+                    console.log('[视频] 播放开始')
+                    // 延迟重置播放意图，确保所有播放尝试都完成
+                    setTimeout(() => {
+                      if (playIntentRef.current) {
+                        playIntentRef.current = false
+                        console.log('[视频] 重置播放意图')
+                      }
+                    }, 1000)
+                    
+                    // 如果是静音状态，延迟取消静音
+                    const video = videoRef.current
+                    if (video?.muted) {
+                      setTimeout(() => {
+                        video.muted = false
+                        console.log('[视频] 已取消静音')
+                      }, 300)
+                    }
+                  }}
                   onLoadedMetadata={(e) => {
                     const video = e.currentTarget as HTMLVideoElement
                     console.log('[视频] onLoadedMetadata 触发, playIntent:', playIntentRef.current)
@@ -3089,29 +3108,26 @@ export default function HomePage() {
                       })
                     }
                   }}
-                  onPlay={() => {
-                    console.log('[视频] 播放开始')
-                    // 延迟重置播放意图，确保所有播放尝试都完成
-                    setTimeout(() => {
-                      if (playIntentRef.current) {
-                        playIntentRef.current = false
-                        console.log('[视频] 重置播放意图')
-                      }
-                    }, 1000)
-                    
-                    // 如果是静音状态，延迟取消静音
-                    const video = videoRef.current
-                    if (video?.muted) {
-                      setTimeout(() => {
-                        video.muted = false
-                        console.log('[视频] 已取消静音')
-                      }, 300)
-                    }
-                  }}
                   sx={{
                     width: fullscreen ? 'auto' : '100%',
                     maxWidth: '100%',
                     maxHeight: fullscreen ? '100%' : 'calc(100vh - 150px)',
+                    // 使用 CSS 淡化中间的播放按钮
+                    '&::-webkit-media-controls-play-button': {
+                      opacity: 0.4,
+                      transition: 'opacity 0.2s',
+                    },
+                    '&:hover::-webkit-media-controls-play-button': {
+                      opacity: 1,
+                    },
+                    // Firefox
+                    '&::-moz-media-controls-play-button': {
+                      opacity: 0.4,
+                      transition: 'opacity 0.2s',
+                    },
+                    '&:hover::-moz-media-controls-play-button': {
+                      opacity: 1,
+                    },
                   }}
                 />
               )}
