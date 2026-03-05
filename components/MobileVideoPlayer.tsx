@@ -407,7 +407,7 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
         height: '100%',
         backgroundColor: '#000',
         overflow: 'hidden',
-        touchAction: 'none', // 禁用默认触摸行为
+        touchAction: 'pan-y', // 允许垂直滚动，但在拖动进度条时会被阻止
       }}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
