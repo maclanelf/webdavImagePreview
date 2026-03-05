@@ -37,18 +37,35 @@ export default function DraggableFab({
   }
 
   // 合并样式：默认样式 + 位置样式 + 用户自定义样式
+  // 检查 defaultSx 中是否包含位置属性
+  const hasPositionInDefaultSx = defaultSx && (
+    'bottom' in defaultSx || 'top' in defaultSx || 
+    'left' in defaultSx || 'right' in defaultSx
+  )
+  
+  // 确定位置样式
+  let positionStyles = {}
+  if (position) {
+    // 如果有保存的位置，使用保存的位置
+    positionStyles = {
+      left: `${position.x}px`,
+      top: `${position.y}px`,
+    }
+  } else if (!hasPositionInDefaultSx) {
+    // 如果没有保存的位置，且 defaultSx 中也没有位置，使用默认位置
+    positionStyles = {
+      bottom: 24,
+      right: 24,
+    }
+  }
+  // 如果没有保存的位置，但 defaultSx 中有位置，则不添加额外的位置样式（使用 defaultSx 中的）
+  
   const baseSx = {
     position: 'fixed' as const,
     cursor: isDragging ? 'grabbing' : 'grab',
     userSelect: 'none' as const,
     ...defaultSx,
-    ...(position ? {
-      left: `${position.x}px`,
-      top: `${position.y}px`,
-    } : {
-      bottom: 24,
-      right: 24,
-    }),
+    ...positionStyles, // 位置样式放在最后，确保优先级最高
   }
   
   const mergedSx = { ...baseSx, ...sx } as SxProps<Theme>

@@ -73,6 +73,7 @@ import InstantVideoPlayer from '@/components/InstantVideoPlayer'
 import MobileVideoPlayer from '@/components/MobileVideoPlayer'
 import databasePreloadManager from '@/lib/databasePreloadManager'
 import { getPlaybackStrategy, buildVideoStreamUrl } from '@/lib/videoFormat'
+import { initEruda } from '@/lib/erudaInit'
 
 // 快速评分配置
 const QUICK_RATING_CONFIG = [
@@ -387,17 +388,9 @@ export default function HomePage() {
     }
   }, [])
 
-  // 初始化 vConsole 调试工具（动态导入，避免 SSG 时报错）
+  // 初始化 eruda 调试工具
   useEffect(() => {
-    let vConsole: any = null
-    import('vconsole').then((VConsole) => {
-      vConsole = new VConsole.default()
-    })
-    return () => {
-      if (vConsole) {
-        vConsole.destroy()
-      }
-    }
+    initEruda()
   }, [])
 
   useEffect(() => {
@@ -3422,9 +3415,8 @@ export default function HomePage() {
                           }}
                           sx={({ position }: { position: { x: number; y: number } | null; isDragging: boolean }) => ({
                             ...(!position && {
-                              left: 8,
-                              top: viewMode === 'gallery' && currentGroup.length > 0 ? '65%' : '75%',
-                              transform: 'translateY(-50%)',
+                              right: 10,
+                              bottom: 151, // 换一个按钮80px + 按钮高度56px + 间距15px
                             }),
                           })}
                         >
@@ -3508,6 +3500,8 @@ export default function HomePage() {
                             defaultSx={{
                               // 在包装器内使用 absolute 定位
                               position: 'absolute',
+                              right: 10,
+                              bottom: 80, // 进度条60px + 间距20px
                             }}
                           >
                             <ShuffleIcon />
@@ -3709,9 +3703,8 @@ export default function HomePage() {
                     }}
                     sx={({ position }: { position: { x: number; y: number } | null; isDragging: boolean }) => ({
                       ...(!position && {
-                        left: 8,
-                        top: viewMode === 'gallery' && currentGroup.length > 0 ? '65%' : '75%',
-                        transform: 'translateY(-50%)',
+                        right: 10,
+                        bottom: 151, // 换一个按钮80px + 按钮高度56px + 间距15px
                       }),
                     })}
                   >
@@ -3901,6 +3894,10 @@ export default function HomePage() {
                       storageKey="fullscreen_shuffle"
                       onClick={loadRandomMedia}
                       disabled={isSwitching}
+                      defaultSx={{
+                        right: 10,
+                        bottom: 80, // 进度条60px + 间距20px
+                      }}
                     >
                       <ShuffleIcon />
                     </DraggableFab>
@@ -4526,6 +4523,39 @@ export default function HomePage() {
                 startIcon={<DownloadIcon />}
               >
                 清理缓存
+              </Button>
+              
+              <Button
+                variant="outlined"
+                size="small"
+                fullWidth
+                onClick={() => {
+                  // 清除所有拖拽组件的保存位置
+                  const storageKeys = [
+                    'fullscreen_rating',
+                    'fullscreen_shuffle',
+                    'fullscreen_rating_stream',
+                    'fullscreen_shuffle_stream',
+                    'normal_shuffle'
+                  ]
+                  
+                  storageKeys.forEach(key => {
+                    localStorage.removeItem(`draggable_${key}_position`)
+                  })
+                  
+                  setSnackbarMessage('按钮位置已复位，刷新页面生效')
+                  setSnackbarSeverity('success')
+                  setSnackbarOpen(true)
+                  
+                  // 自动刷新页面以应用新位置
+                  setTimeout(() => {
+                    window.location.reload()
+                  }, 1000)
+                }}
+                startIcon={<RefreshIcon />}
+                color="warning"
+              >
+                复位按钮位置
               </Button>
             </Stack>
           </Box>
