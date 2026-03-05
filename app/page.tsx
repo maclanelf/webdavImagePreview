@@ -73,7 +73,7 @@ import InstantVideoPlayer from '@/components/InstantVideoPlayer'
 import MobileVideoPlayer from '@/components/MobileVideoPlayer'
 import databasePreloadManager from '@/lib/databasePreloadManager'
 import { getPlaybackStrategy, buildVideoStreamUrl } from '@/lib/videoFormat'
-import { initEruda } from '@/lib/erudaInit'
+import { initEruda, getErudaEnabled, setErudaEnabled } from '@/lib/erudaInit'
 
 // 快速评分配置
 const QUICK_RATING_CONFIG = [
@@ -222,6 +222,9 @@ export default function HomePage() {
   
   // 乐观更新功能开关（默认开启）
   const [optimisticUpdateEnabled, setOptimisticUpdateEnabled] = useState(true)
+  
+  // Eruda 调试工具开关
+  const [erudaEnabled, setErudaEnabledState] = useState(false)
   
   // 缓存预加载进度状态（图组模式和随机模式都使用）
   const [cachePreloadProgress, setCachePreloadProgress] = useState<{ current: number, total: number } | null>(null)
@@ -390,7 +393,14 @@ export default function HomePage() {
 
   // 初始化 eruda 调试工具
   useEffect(() => {
-    initEruda()
+    // 从 localStorage 读取设置
+    const enabled = getErudaEnabled()
+    setErudaEnabledState(enabled)
+    
+    // 如果启用，则初始化
+    if (enabled) {
+      initEruda()
+    }
   }, [])
 
   useEffect(() => {
@@ -4468,6 +4478,32 @@ export default function HomePage() {
                   }}
                 >
                   {optimisticUpdateEnabled ? '已启用' : '已禁用'}
+                </Button>
+              </Box>
+              
+              {/* Eruda 调试工具开关 */}
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <Box>
+                  <Typography variant="body2">移动端调试</Typography>
+                  <Typography variant="caption" color="text.secondary" display="block">
+                    Eruda 调试工具（需刷新生效）
+                  </Typography>
+                </Box>
+                <Button
+                  size="small"
+                  variant={erudaEnabled ? "contained" : "outlined"}
+                  color="primary"
+                  onClick={() => {
+                    const newValue = !erudaEnabled
+                    setErudaEnabledState(newValue)
+                    setErudaEnabled(newValue)
+                    // 提示用户刷新页面
+                    setSnackbarMessage(newValue ? 'Eruda 已启用，请刷新页面生效' : 'Eruda 已禁用，请刷新页面生效')
+                    setSnackbarSeverity('info')
+                    setSnackbarOpen(true)
+                  }}
+                >
+                  {erudaEnabled ? '已启用' : '已禁用'}
                 </Button>
               </Box>
               

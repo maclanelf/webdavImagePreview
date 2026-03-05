@@ -3,10 +3,55 @@
  * 用于移动端调试，包含自定义的"复制全部日志"功能
  */
 
+// 检查是否为开发环境
+const isDevelopment = process.env.NODE_ENV === 'development'
+
+// Eruda 实例引用
+let erudaInstance: any = null
+
+// 获取 localStorage 中的设置（生产环境默认关闭，开发环境默认开启）
+export function getErudaEnabled(): boolean {
+  if (typeof window === 'undefined') return false
+  
+  const saved = localStorage.getItem('eruda_enabled')
+  if (saved !== null) {
+    return saved === 'true'
+  }
+  
+  // 默认值：开发环境开启，生产环境关闭
+  return isDevelopment
+}
+
+// 设置 Eruda 开关状态
+export function setErudaEnabled(enabled: boolean) {
+  if (typeof window === 'undefined') return
+  
+  localStorage.setItem('eruda_enabled', enabled.toString())
+  
+  if (enabled) {
+    initEruda()
+  } else {
+    destroyEruda()
+  }
+}
+
+// 销毁 Eruda
+function destroyEruda() {
+  if (erudaInstance && typeof erudaInstance.destroy === 'function') {
+    erudaInstance.destroy()
+    erudaInstance = null
+  }
+}
+
 export function initEruda() {
+  // 如果已经初始化，不重复初始化
+  if (erudaInstance) {
+    return
+  }
+  
   // 动态导入 eruda，避免 SSG 时报错
   import('eruda').then((eruda) => {
-    eruda.default.init({
+    erudaInstance = eruda.default.init({
       useShadowDom: false,
       autoScale: true,
       defaults: {
