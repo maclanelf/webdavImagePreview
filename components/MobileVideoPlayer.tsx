@@ -2,7 +2,7 @@
 
 import { useRef, useState, useEffect, TouchEvent, forwardRef, useImperativeHandle } from 'react'
 import { Box, IconButton } from '@mui/material'
-import { Fullscreen as FullscreenIcon } from '@mui/icons-material'
+import { Fullscreen as FullscreenIcon, PlayArrow as PlayArrowIcon } from '@mui/icons-material'
 
 interface MobileVideoPlayerProps {
   src: string
@@ -308,6 +308,23 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
     }
   }
 
+  // 点击中央播放按钮
+  const handleCenterPlayClick = (e: React.MouseEvent) => {
+    e.stopPropagation() // 防止触发视频点击事件
+    const video = videoRef.current
+    if (!video) return
+
+    video.play()
+    // 清除自动隐藏定时器
+    if (hideControlsTimerRef.current) {
+      clearTimeout(hideControlsTimerRef.current)
+    }
+    // 0.5秒后隐藏进度条
+    hideControlsTimerRef.current = setTimeout(() => {
+      setShowControls(false)
+    }, 500)
+  }
+
   // 触摸开始 - 检测是否在进度条区域
   const handleTouchStart = (e: TouchEvent) => {
     const touch = e.touches[0]
@@ -430,6 +447,61 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
           objectFit: 'contain',
         }}
       />
+
+      {/* 中央播放按钮 - 暂停时显示（圆角三角形） */}
+      {!isPlaying && (
+        <Box
+          onClick={handleCenterPlayClick}
+          sx={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            zIndex: 5,
+            cursor: 'pointer',
+            animation: 'fadeIn 0.3s ease-in-out',
+            '@keyframes fadeIn': {
+              '0%': {
+                opacity: 0,
+                transform: 'translate(-50%, -50%) scale(0.8)',
+              },
+              '100%': {
+                opacity: 1,
+                transform: 'translate(-50%, -50%) scale(1)',
+              },
+            },
+          }}
+        >
+          {/* 使用 SVG 绘制圆角三角形 */}
+          <svg
+            width="60"
+            height="70"
+            viewBox="0 0 60 70"
+            style={{
+              filter: 'drop-shadow(0 4px 12px rgba(0, 0, 0, 0.3))',
+              transition: 'all 0.2s ease',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.transform = 'scale(1.1)'
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.transform = 'scale(1)'
+            }}
+            onMouseDown={(e) => {
+              e.currentTarget.style.transform = 'scale(0.95)'
+            }}
+            onMouseUp={(e) => {
+              e.currentTarget.style.transform = 'scale(1.1)'
+            }}
+          >
+            <path
+              d="M 10 5 L 55 35 L 10 65 Q 5 65 5 60 L 5 10 Q 5 5 10 5 Z"
+              fill="rgba(255, 255, 255, 0.85)"
+              strokeWidth="0"
+            />
+          </svg>
+        </Box>
+      )}
 
       {/* 进度条容器 - 始终在底部固定位置 */}
       <Box
