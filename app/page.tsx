@@ -70,6 +70,7 @@ import DraggableBox from '@/components/DraggableBox'
 // 适用于全屏模式换一个按钮,非全屏模式换一个按钮可拖拽
 import DraggableFab from '@/components/DraggableFab'
 import InstantVideoPlayer from '@/components/InstantVideoPlayer'
+import MobileVideoPlayer from '@/components/MobileVideoPlayer'
 import databasePreloadManager from '@/lib/databasePreloadManager'
 import { getPlaybackStrategy, buildVideoStreamUrl } from '@/lib/videoFormat'
 
@@ -277,6 +278,8 @@ export default function HomePage() {
   
   // 视频元素引用（普通模式，用于小视频）
   const videoRef = useRef<HTMLVideoElement>(null)
+  // MobileVideoPlayer 引用（用于移动端小视频）
+  const mobileVideoRef = useRef<any>(null)
   // InstantVideoPlayer 引用（用于流式播放大视频）
   const instantVideoRef = useRef<any>(null)
   // 视频播放器容器引用（用于原生全屏 API）
@@ -3240,109 +3243,142 @@ export default function HomePage() {
                 />
               )}
               {mediaType === 'small-video' && (
-                <Box
-                  // 不使用 key，保持视频元素不重新创建
-                  component="video"
-                  ref={videoRef}
-                  src={mediaUrl}
-                  controls
-                  autoPlay={playIntentRef.current && !videoStateRef.current} // 有播放意图时才自动播放
-                  muted={true} // 始终初始静音，确保移动端兼容
-                  playsInline // 重要：iOS需要这个属性
-                  preload="metadata" // 预加载元数据
-                  webkit-playsinline="true" // iOS Safari 需要
-                  onTimeUpdate={handleVideoTimeUpdate}
-                  onEnded={handleVideoEnded}
-                  onPlay={() => {
-                    console.log('[视频] 播放开始')
+                <>
+                  {/* 移动端使用自定义播放器 */}
+                  {isMobile ? (
+                    <MobileVideoPlayer
+                      ref={mobileVideoRef}
+                      src={mediaUrl}
+                      autoPlay={playIntentRef.current && !videoStateRef.current}
+                      muted={true}
+                      isParentFullscreen={fullscreen}
+                      onTimeUpdate={(currentTime, duration) => {
+                        // 适配器：将 MobileVideoPlayer 的回调转换为原有的格式
+                        const video = mobileVideoRef.current?.getVideoElement()
+                        if (video) {
+                          // 触发原有的 handleVideoTimeUpdate
+                          handleVideoTimeUpdate({ 
+                            currentTarget: video 
+                          } as React.SyntheticEvent<HTMLVideoElement>)
+                        }
+                      }}
+                      onEnded={handleVideoEnded}
+                      onPlay={() => {
+                        console.log('[视频] 播放开始')
+                        setTimeout(() => {
+                          if (playIntentRef.current) {
+                            playIntentRef.current = false
+                            console.log('[视频] 重置播放意图')
+                          }
+                        }, 1000)
+                      }}
+                    />
+                  ) : (
+                    /* 桌面端使用原生 video 元素 */
+                    <Box
+                      component="video"
+                      ref={videoRef}
+                      src={mediaUrl}
+                      controls
+                      autoPlay={playIntentRef.current && !videoStateRef.current}
+                      muted={true}
+                      playsInline
+                      preload="metadata"
+                      webkit-playsinline="true"
+                      onTimeUpdate={handleVideoTimeUpdate}
+                      onEnded={handleVideoEnded}
+                      onPlay={() => {
+                        console.log('[视频] 播放开始')
                     // 延迟重置播放意图，确保所有播放尝试都完成
-                    setTimeout(() => {
-                      if (playIntentRef.current) {
-                        playIntentRef.current = false
-                        console.log('[视频] 重置播放意图')
-                      }
-                    }, 1000)
-                    
+                        setTimeout(() => {
+                          if (playIntentRef.current) {
+                            playIntentRef.current = false
+                            console.log('[视频] 重置播放意图')
+                          }
+                        }, 1000)
+                        
                     // 如果是静音状态，延迟取消静音
-                    const video = videoRef.current
-                    if (video?.muted) {
-                      setTimeout(() => {
-                        video.muted = false
-                        console.log('[视频] 已取消静音')
-                      }, 300)
-                    }
-                  }}
-                  onLoadedMetadata={(e) => {
-                    const video = e.currentTarget as HTMLVideoElement
-                    console.log('[视频] onLoadedMetadata 触发, playIntent:', playIntentRef.current)
-                    // 如果有播放意图，尝试播放
-                    if (playIntentRef.current && !videoStateRef.current) {
-                      video.play().catch(error => {
-                        console.log('[视频] onLoadedMetadata 播放失败，尝试静音播放:', error)
-                        // 如果播放失败，尝试静音播放
-                        video.muted = true
-                        video.play().then(() => {
-                          console.log('[视频] 静音播放成功')
-                          // 播放成功后延迟取消静音
+                        const video = videoRef.current
+                        if (video?.muted) {
                           setTimeout(() => {
                             video.muted = false
+                            console.log('[视频] 已取消静音')
                           }, 300)
-                        }).catch(err => {
-                          console.error('[视频] 静音播放也失败:', err)
-                        })
-                      })
-                    }
-                  }}
-                  onLoadedData={(e) => {
-                    const video = e.currentTarget as HTMLVideoElement
-                    console.log('[视频] onLoadedData 触发, playIntent:', playIntentRef.current)
+                        }
+                      }}
+                      onLoadedMetadata={(e) => {
+                        const video = e.currentTarget as HTMLVideoElement
+                        console.log('[视频] onLoadedMetadata 触发, playIntent:', playIntentRef.current)
+                    // 如果有播放意图，尝试播放
+                        if (playIntentRef.current && !videoStateRef.current) {
+                          video.play().catch(error => {
+                            console.log('[视频] onLoadedMetadata 播放失败，尝试静音播放:', error)
+                        // 如果播放失败，尝试静音播放
+                            video.muted = true
+                            video.play().then(() => {
+                              console.log('[视频] 静音播放成功')
+                          // 播放成功后延迟取消静音
+                              setTimeout(() => {
+                                video.muted = false
+                              }, 300)
+                            }).catch(err => {
+                              console.error('[视频] 静音播放也失败:', err)
+                            })
+                          })
+                        }
+                      }}
+                      onLoadedData={(e) => {
+                        const video = e.currentTarget as HTMLVideoElement
+                        console.log('[视频] onLoadedData 触发, playIntent:', playIntentRef.current)
                     // 如果有播放意图且视频还没播放，再次尝试
-                    if (playIntentRef.current && !videoStateRef.current && video.paused) {
-                      video.play().catch(error => {
-                        console.log('[视频] onLoadedData 播放失败，尝试静音播放:', error)
-                        video.muted = true
-                        video.play().catch(err => {
-                          console.error('[视频] onLoadedData 静音播放也失败:', err)
-                        })
-                      })
-                    }
-                  }}
-                  onCanPlay={(e) => {
-                    const video = e.currentTarget as HTMLVideoElement
-                    console.log('[视频] onCanPlay 触发, playIntent:', playIntentRef.current, 'paused:', video.paused)
+                        if (playIntentRef.current && !videoStateRef.current && video.paused) {
+                          video.play().catch(error => {
+                            console.log('[视频] onLoadedData 播放失败，尝试静音播放:', error)
+                            video.muted = true
+                            video.play().catch(err => {
+                              console.error('[视频] onLoadedData 静音播放也失败:', err)
+                            })
+                          })
+                        }
+                      }}
+                      onCanPlay={(e) => {
+                        const video = e.currentTarget as HTMLVideoElement
+                        console.log('[视频] onCanPlay 触发, playIntent:', playIntentRef.current, 'paused:', video.paused)
                     // 如果有播放意图且视频还没播放，再次尝试
-                    if (playIntentRef.current && !videoStateRef.current && video.paused) {
-                      video.play().catch(error => {
-                        console.log('[视频] onCanPlay 播放失败，尝试静音播放:', error)
-                        video.muted = true
-                        video.play().catch(err => {
-                          console.error('[视频] onCanPlay 静音播放也失败:', err)
-                        })
-                      })
-                    }
-                  }}
-                  sx={{
-                    width: fullscreen ? 'auto' : '100%',
-                    maxWidth: '100%',
-                    maxHeight: fullscreen ? '100%' : 'calc(100vh - 150px)',
+                        if (playIntentRef.current && !videoStateRef.current && video.paused) {
+                          video.play().catch(error => {
+                            console.log('[视频] onCanPlay 播放失败，尝试静音播放:', error)
+                            video.muted = true
+                            video.play().catch(err => {
+                              console.error('[视频] onCanPlay 静音播放也失败:', err)
+                            })
+                          })
+                        }
+                      }}
+                      sx={{
+                        width: fullscreen ? 'auto' : '100%',
+                        maxWidth: '100%',
+                        maxHeight: fullscreen ? '100%' : 'calc(100vh - 150px)',
                     // 使用 CSS 淡化中间的播放按钮
-                    '&::-webkit-media-controls-play-button': {
-                      opacity: 0.4,
-                      transition: 'opacity 0.2s',
-                    },
-                    '&:hover::-webkit-media-controls-play-button': {
-                      opacity: 1,
-                    },
+                        '&::-webkit-media-controls-play-button': {
+                          opacity: 0.4,
+                          transition: 'opacity 0.2s',
+                        },
+                        '&:hover::-webkit-media-controls-play-button': {
+                          opacity: 1,
+                        },
                     // Firefox
-                    '&::-moz-media-controls-play-button': {
-                      opacity: 0.4,
-                      transition: 'opacity 0.2s',
-                    },
-                    '&:hover::-moz-media-controls-play-button': {
-                      opacity: 1,
-                    },
-                  }}
-                />
+                        '&::-moz-media-controls-play-button': {
+                          opacity: 0.4,
+                          transition: 'opacity 0.2s',
+                        },
+                        '&:hover::-moz-media-controls-play-button': {
+                          opacity: 1,
+                        },
+                      }}
+                    />
+                  )}
+                </>
               )}
               {mediaType === 'stream-video' && (
                 <Box sx={{ position: 'relative', width: '100%', height: '100%' }}>
