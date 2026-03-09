@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Container,
   Box,
@@ -265,10 +265,14 @@ export default function HomePage() {
   // 智能预加载进行中标志
   const smartPreloadInProgressRef = useRef(false)
   
-  // 同步 viewMode 到 ref（避免闭包问题）
-  useEffect(() => {
-    viewModeRef.current = viewMode
-  }, [viewMode])
+  // 检测是否为移动端（使用 state 避免 hydration 错误）
+  const [isMobile, setIsMobile] = useState(false)
+  
+  // 手势滑动相关状态（仅移动端全屏模式）
+  const [touchStartY, setTouchStartY] = useState<number | null>(null)
+  const [touchStartX, setTouchStartX] = useState<number | null>(null)
+  const [isSwiping, setIsSwiping] = useState(false)
+  const swipeThreshold = 50 // 滑动阈值（像素）
   
   // 切换状态，防止连续快速点击
   const [isSwitching, setIsSwitching] = useState(false)
@@ -288,14 +292,23 @@ export default function HomePage() {
   const instantVideoRef = useRef<any>(null)
   // 视频播放器容器引用（用于原生全屏 API）
   const videoPlayerContainerRef = useRef<HTMLDivElement>(null)
-  // 全屏容器引用（用于在全屏模式下渲染对话框）
-  const fullscreenContainerRef = useRef<HTMLDivElement>(null)
   
   // 视频播放状态保存（用于全屏切换时保持播放状态，仅图片全屏需要）
   const videoStateRef = useRef<{ currentTime: number; paused: boolean } | null>(null)
   
   // 播放意图标记（用于移动端自动播放）
-  const playIntentRef = useRef(false)
+  const playIntentRef = useRef(true) // 默认为 true，视频应该自动播放
+  // 自动播放状态（用于触发组件重新渲染）
+  const [shouldAutoPlay, setShouldAutoPlay] = useState(true) // 默认为 true，视频应该自动播放
+  
+
+  
+  // 设置播放意图的辅助函数
+  const setPlayIntent = (intent: boolean) => {
+    playIntentRef.current = intent
+    setShouldAutoPlay(intent)
+    console.log(`[播放意图] 设置为 ${intent}`)
+  }
   
   // 媒体类型（用于条件渲染不同的播放器）
   const [mediaType, setMediaType] = useState<MediaType>('image')
@@ -402,6 +415,16 @@ export default function HomePage() {
       initEruda()
     }
   }, [])
+
+  // 检查 MobileVideoPlayer ref 是否已挂载
+  useEffect(() => {
+    if (isMobile) {
+      console.log('[初始化] 检查 mobileVideoRef:', {
+        current: mobileVideoRef.current,
+        hasWarmUp: !!mobileVideoRef.current?.warmUp
+      })
+    }
+  }, [isMobile])
 
   useEffect(() => {
     // 初始化应用服务
@@ -996,6 +1019,7 @@ export default function HomePage() {
         URL.revokeObjectURL(mediaUrl)
       }
       
+      // 设置媒体 URL（视频和图片都需要）
       setMediaUrl(url)
       
       // 设置媒体类型
@@ -1153,11 +1177,11 @@ export default function HomePage() {
     })
   }
 
-  // 检测是否为移动端
-  const isMobile = useMemo(() => {
-    if (typeof window === 'undefined') return false
+  // 在客户端检测移动设备（useEffect）
+  useEffect(() => {
     const userAgent = navigator.userAgent.toLowerCase()
-    return userAgent.includes('android') || /iphone|ipad|ipod/.test(userAgent)
+    const mobile = userAgent.includes('android') || /iphone|ipad|ipod/.test(userAgent)
+    setIsMobile(mobile)
   }, [])
 
   // 外部播放器菜单状态
@@ -1394,6 +1418,24 @@ export default function HomePage() {
     
     // 标记用户有播放意图（用于移动端视频自动播放）
     playIntentRef.current = true
+    
+    // ✅ 在用户交互上下文中立即调用 warmUp（首次取消静音）
+    console.log('[loadRandomMedia] ========== 开始 ==========')
+    console.log('[loadRandomMedia] isMobile =', isMobile)
+    console.log('[loadRandomMedia] mobileVideoRef.current =', mobileVideoRef.current)
+    console.log('[loadRandomMedia] mobileVideoRef.current?.warmUp =', mobileVideoRef.current?.warmUp)
+    
+    // ✅ 立即调用 warmUp（不需要等待，因为组件已经渲染）
+    if (mobileVideoRef.current?.warmUp) {
+      mobileVideoRef.current.warmUp()
+      console.log('[loadRandomMedia] ✓ 调用 warmUp 取消静音')
+    } else {
+      console.log('[loadRandomMedia] ✗ 未调用 warmUp，原因：', {
+        isMobile,
+        hasMobileVideoRef: !!mobileVideoRef.current,
+        hasWarmUp: !!mobileVideoRef.current?.warmUp
+      })
+    }
 
     // 图组模式
     if (viewMode === 'gallery') {
@@ -1639,6 +1681,7 @@ export default function HomePage() {
         }
       }
       
+      // 设置媒体 URL（视频和图片都需要）
       setMediaUrl(url)
       
       // 设置媒体类型
@@ -1783,6 +1826,112 @@ export default function HomePage() {
     loadFileDirectly(fileToLoad, true)
   }
   
+  // 手势滑动处理：触摸开始（仅移动端全屏模式）
+  const handleTouchStart = (e: React.TouchEvent) => {
+    // 只在移动端、全屏下启用（所有模式）
+    if (!isMobile || !fullscreen) return
+    
+    const touch = e.touches[0]
+    setTouchStartY(touch.clientY)
+    setTouchStartX(touch.clientX)
+    setIsSwiping(false)
+  }
+  
+  // 手势滑动处理：触摸移动
+  const handleTouchMove = (e: React.TouchEvent) => {
+    // 只在移动端、全屏下启用（所有模式）
+    if (!isMobile || !fullscreen) return
+    if (touchStartY === null || touchStartX === null) return
+    
+    const touch = e.touches[0]
+    const deltaY = touch.clientY - touchStartY
+    const deltaX = touch.clientX - touchStartX
+    
+    // 判断是否为垂直滑动（垂直距离大于水平距离）
+    if (Math.abs(deltaY) > Math.abs(deltaX) && Math.abs(deltaY) > 10) {
+      setIsSwiping(true)
+      // 阻止默认滚动行为
+      e.preventDefault()
+    }
+  }
+  
+  // 手势滑动处理：触摸结束
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    // 只在移动端、全屏下启用（所有模式）
+    if (!isMobile || !fullscreen) return
+    if (touchStartY === null || !isSwiping) {
+      setTouchStartY(null)
+      setTouchStartX(null)
+      setIsSwiping(false)
+      return
+    }
+    
+    const touch = e.changedTouches[0]
+    const deltaY = touch.clientY - touchStartY
+    
+    // 判断是否达到切换阈值
+    const shouldSwitch = Math.abs(deltaY) > swipeThreshold
+    
+    if (shouldSwitch) {
+      const direction = deltaY < 0 ? 'up' : 'down'
+      
+      // ✅ 在用户交互上下文中调用 warmUp（首次取消静音）
+      if (mobileVideoRef.current?.warmUp) {
+        mobileVideoRef.current.warmUp()
+        console.log('[手势] 在touchend中调用warmUp')
+      }
+      
+      // 直接执行切换逻辑（移除过渡效果）
+      setPlayIntent(true)
+      
+      // 根据不同模式执行不同操作
+      if (viewMode === 'random') {
+        if (direction === 'up') {
+          if (randomHistoryIndex === -1) {
+            loadRandomMedia()
+          } else {
+            loadNextRandomFile()
+          }
+        } else {
+          const maxHistoryCount = 3
+          const newIndex = randomHistoryIndex - 1
+          const targetIndex = randomHistory.length + newIndex
+          
+          // 计算回看的步数：从当前位置往前数了多少个文件
+          // 例如：length=4, 当前在index=3(-1), 要去index=0(-4), 回看步数 = 3-0 = 3
+          const stepsBack = (randomHistory.length - 1) - targetIndex
+          
+          if (targetIndex < 0 || stepsBack > maxHistoryCount) {
+            setSnackbarMessage('最多只能回看3个文件')
+            setSnackbarSeverity('info')
+            setSnackbarOpen(true)
+          } else {
+            loadPreviousRandomFile()
+          }
+        }
+      } else if (viewMode === 'gallery') {
+          if (direction === 'up') {
+            nextInGroup()
+          } else {
+            previousInGroup()
+          }
+        } else if (viewMode === 'large-video') {
+          if (direction === 'up') {
+            loadRandomMedia()
+          } else {
+            setSnackbarMessage('大视频模式暂不支持回看')
+            setSnackbarSeverity('info')
+            setSnackbarOpen(true)
+          }
+        }
+    }
+    
+    // 重置触摸状态
+    setTouchStartY(null)
+    setTouchStartX(null)
+    setIsSwiping(false)
+  }
+  
   // 直接加载文件（用于历史导航，不触发保存逻辑）
   const loadFileDirectly = async (fileToLoad: MediaFile, isNavigatingHistory: boolean = false) => {
     // 切换文件时立即重置自动评分标志
@@ -1822,7 +1971,10 @@ export default function HomePage() {
         console.log(`[URL清理] 历史导航时释放旧URL`)
       }
       
+      // ✅ 直接更新 mediaUrl 状态，让 React 重新渲染
+      // MobileVideoPlayer 的 useEffect 会检查 hasUnmutedRef 并设置正确的静音状态
       setMediaUrl(url)
+      
       setMediaType(cachedData.mediaType)
       setOriginalStreamUrl(cachedData.originalStreamUrl)
       
@@ -3197,14 +3349,11 @@ export default function HomePage() {
           </Alert>
         )}
 
-        {currentFile && mediaUrl && (
-          <Card 
-            elevation={0} 
-            sx={{ 
-              borderRadius: fullscreen ? 0 : 2, 
-              overflow: 'hidden',
-              backgroundColor: fullscreen ? '#000' : 'transparent',
-              // 全屏模式样式（通过 CSS 实现，不使用原生全屏 API）
+        {/* 渲染条件：有文件时 或 移动端且无文件时（确保 MobileVideoPlayer 初始化） */}
+        {((currentFile && mediaUrl) || (!currentFile && !mediaUrl && isMobile)) && (
+          <Box
+            sx={{
+              position: 'relative',
               ...(fullscreen && {
                 position: 'fixed',
                 top: 0,
@@ -3215,13 +3364,37 @@ export default function HomePage() {
               }),
             }}
           >
+            {/* 下层：新内容（当前内容） */}
+            <Card 
+              elevation={0}
+              onTouchStart={handleTouchStart}
+              onTouchMove={handleTouchMove}
+              onTouchEnd={handleTouchEnd}
+              sx={{ 
+                borderRadius: fullscreen ? 0 : 2, 
+                overflow: 'hidden',
+                backgroundColor: fullscreen ? '#000' : 'transparent',
+              // 全屏模式样式（通过 CSS 实现，不使用原生全屏 API）
+                ...(fullscreen && {
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  zIndex: 1,
+                }),
+              }}
+            >
             <Box 
               ref={videoPlayerContainerRef}
               sx={{ 
                 position: 'relative', 
-                backgroundColor: '#000',
+                backgroundColor: (mediaType === 'image' || mediaType === 'small-video' || mediaType === 'stream-video') && currentFile ? '#000' : 'transparent',
                 borderRadius: fullscreen ? 0 : 2,
                 overflow: 'hidden',
+                // 当没有实际内容显示时，不占据空间（但仍然渲染 MobileVideoPlayer 以保持 ref）
+                minHeight: (mediaType === 'image' || mediaType === 'small-video' || mediaType === 'stream-video') && currentFile ? 'auto' : 0,
+                height: (mediaType === 'image' || mediaType === 'small-video' || mediaType === 'stream-video') && currentFile ? 'auto' : 0,
                 // 全屏模式样式
                 ...(fullscreen && {
                   width: '100%',
@@ -3235,8 +3408,8 @@ export default function HomePage() {
               {mediaType === 'image' && (
                 <CardMedia
                   component="img"
-                  image={mediaUrl}
-                  alt={currentFile.basename}
+                  image={mediaUrl || ''}
+                  alt={currentFile?.basename || ''}
                   sx={{
                     width: fullscreen ? 'auto' : '100%',
                     maxWidth: '100%',
@@ -3245,145 +3418,131 @@ export default function HomePage() {
                   }}
                 />
               )}
-              {mediaType === 'small-video' && (
-                <>
-                  {/* 移动端使用自定义播放器 */}
-                  {isMobile ? (
-                    <MobileVideoPlayer
-                      ref={mobileVideoRef}
-                      src={mediaUrl}
-                      autoPlay={playIntentRef.current && !videoStateRef.current}
-                      muted={true}
-                      isParentFullscreen={fullscreen}
-                      onTimeUpdate={(currentTime, duration) => {
-                        // 适配器：将 MobileVideoPlayer 的回调转换为原有的格式
-                        const video = mobileVideoRef.current?.getVideoElement()
-                        if (video) {
-                          // 触发原有的 handleVideoTimeUpdate
-                          handleVideoTimeUpdate({ 
-                            currentTarget: video 
-                          } as React.SyntheticEvent<HTMLVideoElement>)
-                        }
-                      }}
-                      onEnded={handleVideoEnded}
-                      onPlay={() => {
-                        console.log('[视频] 播放开始')
-                        setTimeout(() => {
-                          if (playIntentRef.current) {
-                            playIntentRef.current = false
-                            console.log('[视频] 重置播放意图')
-                          }
-                        }, 1000)
-                      }}
-                    />
-                  ) : (
-                    /* 桌面端使用原生 video 元素 */
-                    <Box
-                      component="video"
-                      ref={videoRef}
-                      src={mediaUrl}
-                      controls
-                      autoPlay={playIntentRef.current && !videoStateRef.current}
-                      muted={true}
-                      playsInline
-                      preload="metadata"
-                      webkit-playsinline="true"
-                      onTimeUpdate={handleVideoTimeUpdate}
-                      onEnded={handleVideoEnded}
-                      onPlay={() => {
-                        console.log('[视频] 播放开始')
-                    // 延迟重置播放意图，确保所有播放尝试都完成
-                        setTimeout(() => {
-                          if (playIntentRef.current) {
-                            playIntentRef.current = false
-                            console.log('[视频] 重置播放意图')
-                          }
-                        }, 1000)
-                        
-                    // 如果是静音状态，延迟取消静音
-                        const video = videoRef.current
-                        if (video?.muted) {
+              
+              {/* 移动端小视频：MobileVideoPlayer 组件 */}
+              {/* 初始化时也渲染（即使没有 currentFile），确保 ref 可用 */}
+              {isMobile && (
+                <MobileVideoPlayer
+                  ref={mobileVideoRef}
+                  src={mediaUrl || 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAAAu1tZGF0AAACrQYF//+c3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE1MiByMjg1NCBlOWE1OTAzIC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAxNyAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTEgcmVmPTMgZGVibG9jaz0xOjA6MCBhbmFseXNlPTB4MzoweDExMyBtZT1oZXggc3VibWU9NyBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0xIG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MSA4eDhkY3Q9MSBjcW09MCBkZWFkem9uZT0yMSwxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0tMiB0aHJlYWRzPTEgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0zIGJfcHlyYW1pZD0yIGJfYWRhcHQ9MSBiX2JpYXM9MCBkaXJlY3Q9MSB3ZWlnaHRiPTEgb3Blbl9nb3A9MCB3ZWlnaHRwPTIga2V5aW50PTI1MCBrZXlpbnRfbWluPTI1IHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19sb29rYWhlYWQ9NDAgcmM9Y3JmIG1idHJlZT0xIGNyZj0yMy4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02OSBxcHN0ZXA9NCBpcF9yYXRpbz0xLjQwIGFxPTE6MS4wMACAAAAA='}
+                  autoPlay={shouldAutoPlay && !videoStateRef.current}
+                  isParentFullscreen={fullscreen}
+                  isVisible={mediaType === 'small-video'}
+                  onTimeUpdate={(currentTime, duration) => {
+                    const video = mobileVideoRef.current?.getVideoElement()
+                    if (video) {
+                      handleVideoTimeUpdate({
+                        currentTarget: video
+                      } as React.SyntheticEvent<HTMLVideoElement>)
+                    }
+                  }}
+                  onEnded={handleVideoEnded}
+                  onPlay={() => {
+                    console.log('[视频] 播放开始')
+                  }}
+                />
+              )}
+              
+              {/* 桌面端小视频：原生 video 元素 */}
+              {mediaType === 'small-video' && !isMobile && mediaUrl && (
+                <Box
+                  component="video"
+                  ref={videoRef}
+                  src={mediaUrl}
+                  controls
+                  autoPlay={playIntentRef.current && !videoStateRef.current}
+                  muted={true}
+                  playsInline
+                  preload="metadata"
+                  webkit-playsinline="true"
+                  onTimeUpdate={handleVideoTimeUpdate}
+                  onEnded={handleVideoEnded}
+                  onPlay={() => {
+                    console.log('[视频] 播放开始')
+                    setTimeout(() => {
+                      if (playIntentRef.current) {
+                        playIntentRef.current = false
+                        console.log('[视频] 重置播放意图')
+                      }
+                    }, 1000)
+                    
+                    const video = videoRef.current
+                    if (video?.muted) {
+                      setTimeout(() => {
+                        video.muted = false
+                        console.log('[视频] 已取消静音')
+                      }, 300)
+                    }
+                  }}
+                  onLoadedMetadata={(e) => {
+                    const video = e.currentTarget as HTMLVideoElement
+                    console.log('[视频] onLoadedMetadata 触发, playIntent:', playIntentRef.current)
+                    if (playIntentRef.current && !videoStateRef.current) {
+                      video.play().catch(error => {
+                        console.log('[视频] onLoadedMetadata 播放失败，尝试静音播放:', error)
+                        video.muted = true
+                        video.play().then(() => {
+                          console.log('[视频] 静音播放成功')
                           setTimeout(() => {
                             video.muted = false
-                            console.log('[视频] 已取消静音')
                           }, 300)
-                        }
-                      }}
-                      onLoadedMetadata={(e) => {
-                        const video = e.currentTarget as HTMLVideoElement
-                        console.log('[视频] onLoadedMetadata 触发, playIntent:', playIntentRef.current)
-                    // 如果有播放意图，尝试播放
-                        if (playIntentRef.current && !videoStateRef.current) {
-                          video.play().catch(error => {
-                            console.log('[视频] onLoadedMetadata 播放失败，尝试静音播放:', error)
-                        // 如果播放失败，尝试静音播放
-                            video.muted = true
-                            video.play().then(() => {
-                              console.log('[视频] 静音播放成功')
-                          // 播放成功后延迟取消静音
-                              setTimeout(() => {
-                                video.muted = false
-                              }, 300)
-                            }).catch(err => {
-                              console.error('[视频] 静音播放也失败:', err)
-                            })
-                          })
-                        }
-                      }}
-                      onLoadedData={(e) => {
-                        const video = e.currentTarget as HTMLVideoElement
-                        console.log('[视频] onLoadedData 触发, playIntent:', playIntentRef.current)
+                        }).catch(err => {
+                          console.error('[视频] 静音播放也失败:', err)
+                        })
+                      })
+                    }
+                  }}
+                  onLoadedData={(e) => {
+                    const video = e.currentTarget as HTMLVideoElement
+                    console.log('[视频] onLoadedData 触发, playIntent:', playIntentRef.current)
+                    if (playIntentRef.current && !videoStateRef.current && video.paused) {
+                      video.play().catch(error => {
+                        console.log('[视频] onLoadedData 播放失败，尝试静音播放:', error)
+                        video.muted = true
+                        video.play().catch(err => {
+                          console.error('[视频] onLoadedData 静音播放也失败:', err)
+                        })
+                      })
+                    }
+                  }}
+                  onCanPlay={(e) => {
+                    const video = e.currentTarget as HTMLVideoElement
+                    console.log('[视频] onCanPlay 触发, playIntent:', playIntentRef.current, 'paused:', video.paused)
                     // 如果有播放意图且视频还没播放，再次尝试
-                        if (playIntentRef.current && !videoStateRef.current && video.paused) {
-                          video.play().catch(error => {
-                            console.log('[视频] onLoadedData 播放失败，尝试静音播放:', error)
-                            video.muted = true
-                            video.play().catch(err => {
-                              console.error('[视频] onLoadedData 静音播放也失败:', err)
-                            })
-                          })
-                        }
-                      }}
-                      onCanPlay={(e) => {
-                        const video = e.currentTarget as HTMLVideoElement
-                        console.log('[视频] onCanPlay 触发, playIntent:', playIntentRef.current, 'paused:', video.paused)
-                    // 如果有播放意图且视频还没播放，再次尝试
-                        if (playIntentRef.current && !videoStateRef.current && video.paused) {
-                          video.play().catch(error => {
-                            console.log('[视频] onCanPlay 播放失败，尝试静音播放:', error)
-                            video.muted = true
-                            video.play().catch(err => {
-                              console.error('[视频] onCanPlay 静音播放也失败:', err)
-                            })
-                          })
-                        }
-                      }}
-                      sx={{
-                        width: fullscreen ? 'auto' : '100%',
-                        maxWidth: '100%',
-                        maxHeight: fullscreen ? '100%' : 'calc(100vh - 150px)',
+                    if (playIntentRef.current && !videoStateRef.current && video.paused) {
+                      video.play().catch(error => {
+                        console.log('[视频] onCanPlay 播放失败，尝试静音播放:', error)
+                        video.muted = true
+                        video.play().catch(err => {
+                          console.error('[视频] onCanPlay 静音播放也失败:', err)
+                        })
+                      })
+                    }
+                  }}
+                  sx={{
+                    width: fullscreen ? 'auto' : '100%',
+                    maxWidth: '100%',
+                    maxHeight: fullscreen ? '100%' : 'calc(100vh - 150px)',
                     // 使用 CSS 淡化中间的播放按钮
-                        '&::-webkit-media-controls-play-button': {
-                          opacity: 0.4,
-                          transition: 'opacity 0.2s',
-                        },
-                        '&:hover::-webkit-media-controls-play-button': {
-                          opacity: 1,
-                        },
+                    '&::-webkit-media-controls-play-button': {
+                      opacity: 0.4,
+                      transition: 'opacity 0.2s',
+                    },
+                    '&:hover::-webkit-media-controls-play-button': {
+                      opacity: 1,
+                    },
                     // Firefox
-                        '&::-moz-media-controls-play-button': {
-                          opacity: 0.4,
-                          transition: 'opacity 0.2s',
-                        },
-                        '&:hover::-moz-media-controls-play-button': {
-                          opacity: 1,
-                        },
-                      }}
-                    />
-                  )}
-                </>
+                    '&::-moz-media-controls-play-button': {
+                      opacity: 0.4,
+                      transition: 'opacity 0.2s',
+                    },
+                    '&:hover::-moz-media-controls-play-button': {
+                      opacity: 1,
+                    },
+                  }}
+                />
               )}
-              {mediaType === 'stream-video' && (
+              {mediaType === 'stream-video' && mediaUrl && (
                 <Box sx={{ position: 'relative', width: '100%', height: '100%' }}>
                   <InstantVideoPlayer
                     key={mediaUrl} // 使用 mediaUrl 作为 key，确保 URL 变化时重新创建实例
@@ -3512,6 +3671,7 @@ export default function HomePage() {
                               position: 'absolute',
                               right: 10,
                               bottom: 80, // 进度条60px + 间距20px
+                              zIndex: 2001,
                             }}
                           >
                             <ShuffleIcon />
@@ -3790,112 +3950,26 @@ export default function HomePage() {
                     </Tooltip>
                   </DraggableBox>
 
-                  {/* 图组模式控制按钮 */}
+                  {/* 图组模式：换组按钮 */}
                   {viewMode === 'gallery' && currentGroup.length > 0 && (
-                    <>
-                      {/* 上一张 */}
-                      {currentGroupIndex > 0 && (
-                        <Tooltip title="上一张" placement="left">
-                          <Fab
-                            color="default"
-                            onClick={previousInGroup}
-                            disabled={loading || isSwitching}
-                            sx={{
-                              position: 'fixed',
-                              bottom: 120,
-                              left: 24,
-                              backgroundColor: 'rgba(255, 255, 255, 0.9)',
-                              zIndex: 2001,
-                            }}
-                          >
-                            <ArrowBackIcon />
-                          </Fab>
-                        </Tooltip>
-                      )}
-
-                      {/* 下一张 */}
-                      <Tooltip title="下一张" placement="right">
-                        <Fab
-                          color="default"
-                          onClick={nextInGroup}
-                          disabled={loading || isSwitching}
-                          sx={{
-                            position: 'fixed',
-                            bottom: 100,
-                            right: 24,
-                            backgroundColor: 'rgba(255, 255, 255, 0.9)',
-                            zIndex: 2001,
-                          }}
-                        >
-                          <ArrowForwardIcon />
-                        </Fab>
-                      </Tooltip>
-
-                      {/* 换组按钮 */}
-                      <Tooltip title="换下一组" placement="left">
-                        <Fab
-                          color="secondary"
-                          onClick={() => {
-                            playIntentRef.current = true
-                            loadRandomGroup()
-                          }}
-                          disabled={loading || isSwitching}
-                          sx={{
-                            position: 'fixed',
-                            bottom: 180,
-                            right: 24,
-                            zIndex: 2001,
-                          }}
-                        >
-                          <SkipNextIcon />
-                        </Fab>
-                      </Tooltip>
-                    </>
-                  )}
-
-                  {/* 随机模式控制按钮（全屏） */}
-                  {viewMode === 'random' && (
-                    <>
-                      {/* 回看按钮 */}
-                      {randomHistory.length > 0 && randomHistoryIndex > -(randomHistory.length) && (
-                        <Tooltip title="回看上一个" placement="left">
-                          <Fab
-                            color="default"
-                            onClick={loadPreviousRandomFile}
-                            disabled={loading || isSwitching}
-                            sx={{
-                              position: 'fixed',
-                              bottom: 120,
-                              left: 24,
-                              backgroundColor: 'rgba(255, 255, 255, 0.9)',
-                              zIndex: 2001,
-                            }}
-                          >
-                            <ArrowBackIcon />
-                          </Fab>
-                        </Tooltip>
-                      )}
-
-                      {/* 前进按钮 */}
-                      {randomHistoryIndex < -1 && (
-                        <Tooltip title="前进到下一个" placement="right">
-                          <Fab
-                            color="default"
-                            onClick={loadNextRandomFile}
-                            disabled={loading || isSwitching}
-                            sx={{
-                              position: 'fixed',
-                              bottom: 100,
-                              right: 24,
-                              backgroundColor: 'rgba(255, 255, 255, 0.9)',
-                              zIndex: 2001,
-                            }}
-                          >
-                            <ArrowForwardIcon />
-                          </Fab>
-                        </Tooltip>
-                      )}
-                    </>
+                    <Tooltip title="换下一组" placement="left">
+                      <Fab
+                        color="secondary"
+                        onClick={() => {
+                          playIntentRef.current = true
+                          loadRandomGroup()
+                        }}
+                        disabled={loading || isSwitching}
+                        sx={{
+                          position: 'fixed',
+                          bottom: 180,
+                          right: 24,
+                          zIndex: 2001,
+                        }}
+                      >
+                        <SkipNextIcon />
+                      </Fab>
+                    </Tooltip>
                   )}
 
                   {/* 右下角：换一个按钮（可拖动） - 随机模式回看状态下隐藏 */}
@@ -3907,6 +3981,7 @@ export default function HomePage() {
                       defaultSx={{
                         right: 10,
                         bottom: 80, // 进度条60px + 间距20px
+                        zIndex: 2001,
                       }}
                     >
                       <ShuffleIcon />
@@ -3975,7 +4050,7 @@ export default function HomePage() {
             </Box>
             
             {/* 文件信息 - 紧凑显示（全屏模式下隐藏） */}
-            {!fullscreen && (
+            {!fullscreen && currentFile && (
             <CardContent sx={{ py: 1.5 }}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 1 }}>
                 <Typography 
@@ -4108,6 +4183,7 @@ export default function HomePage() {
             </CardContent>
             )}
           </Card>
+          </Box>
         )}
 
         {/* 图组模式导航按钮（正常模式） */}

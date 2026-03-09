@@ -2,30 +2,32 @@
 
 import { useRef, useState, useEffect, TouchEvent, forwardRef, useImperativeHandle } from 'react'
 import { Box, IconButton } from '@mui/material'
-import { Fullscreen as FullscreenIcon, PlayArrow as PlayArrowIcon } from '@mui/icons-material'
+import { Fullscreen as FullscreenIcon } from '@mui/icons-material'
 
 interface MobileVideoPlayerProps {
   src: string
   autoPlay?: boolean
-  muted?: boolean
   isParentFullscreen?: boolean // 父组件的 CSS 全屏状态
   onTimeUpdate?: (currentTime: number, duration: number) => void
   onEnded?: () => void
   onPlay?: () => void
+  isVisible?: boolean // 控制组件可见性（用于图片时隐藏）
 }
 
 export interface MobileVideoPlayerRef {
   getVideoElement: () => HTMLVideoElement | null
+  warmUp: () => void // 首次用户交互时调用，取消静音
+  changeSrc: (newSrc: string) => void // 换 src 并播放
 }
 
 const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProps>(({
   src,
   autoPlay = true,
-  muted = true,
   isParentFullscreen = false,
   onTimeUpdate,
   onEnded,
   onPlay,
+  isVisible = true,
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -43,10 +45,39 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
   
   // 控制条自动隐藏定时器
   const hideControlsTimerRef = useRef<NodeJS.Timeout | null>(null)
+  
+  // 保存 autoPlay 的最新值（避免 useEffect 依赖导致的问题）
+  const autoPlayRef = useRef(autoPlay)
+  
+  // 追踪是否已取消静音
+  const hasUnmutedRef = useRef(false)
+  
+  // 同步 autoPlay 到 ref
+  useEffect(() => {
+    autoPlayRef.current = autoPlay
+  }, [autoPlay])
 
   // 暴露 video 元素给父组件
   useImperativeHandle(ref, () => ({
     getVideoElement: () => videoRef.current,
+    warmUp: () => {
+      hasUnmutedRef.current = true
+      const video = videoRef.current
+      if (video) {
+        video.muted = false
+      }
+    },
+    changeSrc: (newSrc: string) => {
+      const video = videoRef.current
+      if (video) {
+        const shouldBeMuted = !hasUnmutedRef.current
+        video.src = newSrc
+        video.muted = shouldBeMuted
+        video.play().catch(err => {
+          console.error('[MobileVideoPlayer] 播放失败:', err)
+        })
+      }
+    }
   }))
 
   // 监听原生全屏状态变化
@@ -111,10 +142,7 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
   const calculateVideoDisplayRect = () => {
     const video = videoRef.current
     const container = containerRef.current
-    if (!video || !container || !video.videoWidth || !video.videoHeight) {
-      console.log('[视频显示区域] 无法计算，缺少必要信息')
-      return
-    }
+    if (!video || !container || !video.videoWidth || !video.videoHeight) return
 
     const containerWidth = container.clientWidth
     const containerHeight = container.clientHeight
@@ -158,19 +186,7 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
       buttonBottom = bottomMargin - gapFromVideo - buttonHeight
     }
     
-    setVideoDisplayRect({
-      bottom: buttonBottom
-    })
-    
-    console.log('[视频显示区域] 容器:', containerWidth, 'x', containerHeight)
-    console.log('[视频显示区域] 视频:', video.videoWidth, 'x', video.videoHeight)
-    console.log('[视频显示区域] 显示尺寸:', videoDisplayWidth.toFixed(1), 'x', videoDisplayHeight.toFixed(1))
-    console.log('[视频显示区域] 黑边高度:', bottomMargin.toFixed(1), 'px')
-    console.log('[视频显示区域] 视频底边位置:', bottomMargin.toFixed(1), 'px (距容器底部)')
-    console.log('[视频显示区域] 按钮底部位置:', buttonBottom.toFixed(1), 'px (距容器底部)')
-    console.log('[视频显示区域] 按钮顶部位置:', (buttonBottom + buttonHeight).toFixed(1), 'px (距容器底部)')
-    console.log('[视频显示区域] 按钮顶部距视频底边:', (bottomMargin - (buttonBottom + buttonHeight)).toFixed(1), 'px')
-    console.log('[视频显示区域] 需要的最小黑边:', minRequiredSpace, 'px, 实际黑边:', bottomMargin.toFixed(1), 'px')
+    setVideoDisplayRect({ bottom: buttonBottom })
   }
 
   // 监听窗口大小变化，重新计算视频显示区域
@@ -219,14 +235,6 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
     const handlePlay = () => {
       setIsPlaying(true)
       onPlay?.()
-      
-      // 播放开始后延迟取消静音
-      if (video.muted) {
-        setTimeout(() => {
-          video.muted = false
-          console.log('[MobileVideoPlayer] 已取消静音')
-        }, 300)
-      }
     }
 
     const handlePause = () => {
@@ -246,28 +254,45 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
     }
   }, [onTimeUpdate, onEnded, onPlay])
 
-  // 自动播放处理
+  // 追踪是否已初始化（只在首次设置静音）
+  const isInitializedRef = useRef(false)
+
+  // 初始化：首次加载时静音播放
   useEffect(() => {
     const video = videoRef.current
-    if (!video || !autoPlay) return
+    if (!video) return
 
+    // 优先检查 warmUp 标记
+    if (hasUnmutedRef.current) {
+      video.muted = false
+      isInitializedRef.current = true
+    } else if (!isInitializedRef.current) {
+      // 首次初始化且未 warmUp，设置为静音
+      video.muted = true
+      isInitializedRef.current = true
+    } else {
+      // 已初始化但未 warmUp，保持静音
+      video.muted = true
+    }
+    
     const tryPlay = () => {
+      if (!autoPlayRef.current) return
+      
       video.play().catch(error => {
-        console.log('[MobileVideoPlayer] 自动播放失败，尝试静音播放:', error)
-        video.muted = true
-        video.play().catch(err => {
-          console.error('[MobileVideoPlayer] 静音播放也失败:', err)
-        })
+        console.log('[MobileVideoPlayer] 自动播放失败:', error)
       })
     }
 
-    // 等待元数据加载后播放
-    if (video.readyState >= 1) {
+    if (video.readyState >= 2) {
       tryPlay()
     } else {
-      video.addEventListener('loadedmetadata', tryPlay, { once: true })
+      video.addEventListener('loadeddata', tryPlay, { once: true })
     }
-  }, [src, autoPlay])
+    
+    return () => {
+      video.removeEventListener('loadeddata', tryPlay)
+    }
+  }, [src])
 
   // 格式化时间显示
   const formatTime = (seconds: number) => {
@@ -287,6 +312,12 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
 
     const video = videoRef.current
     if (!video) return
+
+    // 用户交互时取消静音并标记
+    if (video.muted) {
+      video.muted = false
+      hasUnmutedRef.current = true
+    }
 
     if (video.paused) {
       video.play()
@@ -313,6 +344,12 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
     e.stopPropagation() // 防止触发视频点击事件
     const video = videoRef.current
     if (!video) return
+
+    // 用户交互时取消静音并标记
+    if (video.muted) {
+      video.muted = false
+      hasUnmutedRef.current = true
+    }
 
     video.play()
     // 清除自动隐藏定时器
@@ -424,7 +461,8 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
         height: '100%',
         backgroundColor: '#000',
         overflow: 'hidden',
-        touchAction: 'pan-y', // 允许垂直滚动，但在拖动进度条时会被阻止
+        touchAction: 'pan-y',
+        display: isVisible ? 'block' : 'none', // 控制可见性
       }}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
@@ -435,8 +473,6 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
       <video
         ref={videoRef}
         src={src}
-        autoPlay={autoPlay}
-        muted={muted}
         playsInline
         webkit-playsinline="true"
         preload="metadata"
