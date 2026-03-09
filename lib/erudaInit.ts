@@ -44,6 +44,11 @@ function destroyEruda() {
 }
 
 export function initEruda() {
+  // 只在客户端执行
+  if (typeof window === 'undefined') {
+    return
+  }
+  
   // 如果已经初始化，不重复初始化
   if (erudaInstance) {
     return
@@ -65,6 +70,8 @@ export function initEruda() {
       addCustomStyles()
       addCopyAllButton()
     }, 1000)
+  }).catch((error) => {
+    console.error('Eruda 初始化失败:', error)
   })
 }
 
