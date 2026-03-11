@@ -10,6 +10,8 @@
 
 // 数据库预加载管理器
 class DatabasePreloadManager {
+  //#region 状态管理
+  
   // 当前组缓存：存储当前正在浏览的图组文件
   private cache = new Map<string, {
     blob: Blob
@@ -59,7 +61,11 @@ class DatabasePreloadManager {
   // 取消预加载控制
   private abortController: AbortController | null = null
   private preloadCancelled = false
+  
+  //#endregion
 
+  //#region 配置管理
+  
   // 设置缓存大小
   setMaxCacheSize(size: number) {
     this.maxCacheSize = size
@@ -75,7 +81,11 @@ class DatabasePreloadManager {
     this.concurrencyLimitEnabled = enabled
     console.log(`[数据库模式][并发控制] 并发限制${enabled ? '已启用' : '已禁用'}`)
   }
+  
+  //#endregion
 
+  //#region 取消控制
+  
   // 取消所有正在进行的预加载请求
   cancelAllPreloads(): void {
     
@@ -115,7 +125,11 @@ class DatabasePreloadManager {
   private getAbortSignal(): AbortSignal | undefined {
     return this.abortController?.signal
   }
+  
+  //#endregion
 
+  //#region 并发控制
+  
   // 获取预加载许可
   private async acquirePreloadSlot(): Promise<void> {
     console.log(`[并发控制] 请求许可，当前活跃: ${this.activePreloadCount}/${this.maxConcurrentPreloads}，限制: ${this.concurrencyLimitEnabled}`)
@@ -168,7 +182,11 @@ class DatabasePreloadManager {
       limitEnabled: this.concurrencyLimitEnabled
     }
   }
+  
+  //#endregion
 
+  //#region 文件预加载核心方法
+  
   // 预加载单个文件（带并发控制和快速重试）
   private async preloadFile(config: any, file: any): Promise<void> {
     const filepath = file.filename
@@ -495,7 +513,11 @@ class DatabasePreloadManager {
       }
     }
   }
+  
+  //#endregion
 
+  //#region 缓存管理
+  
   // 删除最旧的缓存
   private evictOldestCache() {
     let oldestKey = ''
@@ -548,9 +570,11 @@ class DatabasePreloadManager {
       }
     }
   }
+  
+  //#endregion
 
-  // ========== 公共方法 ==========
-
+  //#region 缓存查询与状态
+  
   // 获取预加载的文件
   getPreloadedFile(filepath: string): Blob | null {
     const cached = this.cache.get(filepath)
@@ -656,7 +680,11 @@ class DatabasePreloadManager {
     const randomIndex = Math.floor(Math.random() * cachedPaths.length)
     return cachedPaths[randomIndex]
   }
+  
+  //#endregion
 
+  //#region 已观看文件管理
+  
   // 标记文件为已观看
   // 优化：使用 localViewedFiles 避免重复请求，不再维护全量 viewedFiles
   async markAsViewed(filepath: string): Promise<void> {
@@ -735,7 +763,11 @@ class DatabasePreloadManager {
   getLocalViewedFilenames(): Set<string> {
     return new Set(this.localViewedFiles)
   }
+  
+  //#endregion
 
+  //#region 图组模式管理
+  
   // 获取当前图组信息
   getCurrentGroup(): any[] {
     return [...this.currentGroupFiles]
@@ -785,10 +817,11 @@ class DatabasePreloadManager {
     
     console.log('[数据库模式] 切换完成，当前缓存大小:', this.cache.size)
   }
+  
+  //#endregion
 
-
-  // ========== 数据库模式核心方法 ==========
-
+  //#region 数据库模式核心方法
+  
   // 从数据库随机获取文件并预加载（随机模式）
   async preloadFromDatabase(
     config: any,
@@ -1518,8 +1551,10 @@ class DatabasePreloadManager {
     
     console.log('[数据库模式] 当前图组剩余文件预加载完成')
   }
+  
+  //#endregion
 
-  // ========== 兼容方法（用于替代 preloadManager） ==========
+  //#region 兼容方法（用于替代 preloadManager）
   
   // 兼容 preloadManager.preloadFiles - 从数据库随机获取文件并预加载
   async preloadFiles(
@@ -1779,6 +1814,8 @@ class DatabasePreloadManager {
     
     console.log(`[数据库模式] 智能预加载最终完成: 请求 ${requestCount} 个，成功 ${successCount} 个`)
   }
+  
+  //#endregion
 }
 
 // 创建全局数据库预加载管理器实例

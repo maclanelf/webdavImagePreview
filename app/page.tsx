@@ -1,6 +1,6 @@
-﻿'use client'
+﻿﻿'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
   Container,
   Box,
@@ -237,20 +237,27 @@ export default function HomePage() {
   // 自动播放状态（用于触发组件重新渲染）
   const [shouldAutoPlay, setShouldAutoPlay] = useState(true) // 默认为 true，视频应该自动播放
   
+  // 外部播放器菜单状态
+  const [externalPlayerAnchor, setExternalPlayerAnchor] = useState<null | HTMLElement>(null)
+  const externalPlayerMenuOpen = Boolean(externalPlayerAnchor)
+  // 播放方式选择状态（在视频框中央显示）
+  const [showPlayModeSelector, setShowPlayModeSelector] = useState(false)
 
-  
-  // 设置播放意图的辅助函数
-  const setPlayIntent = (intent: boolean) => {
-    playIntentRef.current = intent
-    setShouldAutoPlay(intent)
-    console.log(`[播放意图] 设置为 ${intent}`)
-  }
-  
   // 媒体类型（用于条件渲染不同的播放器）
   const [mediaType, setMediaType] = useState<MediaType>('image')
   
   // 全屏过渡遮罩（用于图片全屏切换到视频全屏时的平滑过渡）
   const [fullscreenTransitionOverlay, setFullscreenTransitionOverlay] = useState(false)
+  
+  // 计算当前筛选条件下的统计信息（用于 UI 显示）
+  const filteredStats = useMemo(() => {
+    if (mediaFilter === 'images') {
+      return { total: stats.images, label: '图片' }
+    } else if (mediaFilter === 'videos') {
+      return { total: stats.videos, label: '视频' }
+    }
+    return { total: stats.total, label: '全部' }
+  }, [mediaFilter, stats])
   
   // 监听原生全屏状态变化（仅用于视频）
   useEffect(() => {
@@ -352,6 +359,13 @@ export default function HomePage() {
     }
   }, [])
 
+  // 在客户端检测移动设备
+  useEffect(() => {
+    const userAgent = navigator.userAgent.toLowerCase()
+    const mobile = userAgent.includes('android') || /iphone|ipad|ipod/.test(userAgent)
+    setIsMobile(mobile)
+  }, [])
+
   // 检查 MobileVideoPlayer ref 是否已挂载
   useEffect(() => {
     if (isMobile) {
@@ -362,6 +376,7 @@ export default function HomePage() {
     }
   }, [isMobile])
 
+  //初始化应用,加载默认配置
   useEffect(() => {
     // 初始化应用服务
     const initApp = async () => {
@@ -489,30 +504,6 @@ export default function HomePage() {
     // 加载可用的评价标签和分类
     loadAvailableFilters()
   }, [])
-
-  // 加载可用的评价标签和分类
-  const loadAvailableFilters = async () => {
-    try {
-      const [evalRes, catRes] = await Promise.all([
-        fetch('/api/ratings/evaluations'),
-        fetch('/api/ratings/categories')
-      ])
-
-      if (evalRes.ok) {
-        const evalData = await evalRes.json()
-        const labels = evalData.evaluations?.map((e: any) => e.label) || []
-        setAvailableEvaluations(labels)
-      }
-
-      if (catRes.ok) {
-        const catData = await catRes.json()
-        const names = catData.categories?.map((c: any) => c.name) || []
-        setAvailableCategories(names)
-      }
-    } catch (error) {
-      console.error('加载评价标签和分类失败:', error)
-    }
-  }
 
   // 当统计数据加载完成后，触发初始预加载
   // 注意：配置变化时的预加载由 toggleDrawer 处理
@@ -687,123 +678,8 @@ export default function HomePage() {
   }, [preloadStatus?.cacheSize, preloadEnabled, config, viewMode])
 
   
-
-  // 从数据库加载统计信息（不触发扫描，扫描请通过管理页面操作）
-  const loadStatsFromCache = async (cfg: WebDAVConfig) => {
-    setLoading(true)
-    setError(null)
-    
-    try {
-      const statsResponse = await fetch(`/api/scan-files/stats?webdavUrl=${encodeURIComponent(cfg.url)}&webdavUsername=${encodeURIComponent(cfg.username)}&paths=${encodeURIComponent(cfg.mediaPaths.join(','))}`)
-      
-      if (statsResponse.ok) {
-        const statsData = await statsResponse.json()
-        
-        setStats({
-          total: statsData.total || 0,
-          images: statsData.images || 0,
-          videos: statsData.videos || 0,
-          viewed: statsData.viewed || 0
-        })
-        
-        if (statsData.hasData) {
-          console.log('从数据库加载统计信息:', statsData)
-        } else {
-          console.log('数据库中暂无数据，请通过管理页面触发扫描')
-        }
-      }
-    } catch (error: any) {
-      console.error('加载统计信息失败:', error)
-      setError('加载统计信息失败，请检查配置或通过管理页面重新扫描')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // 智能预加载（大视频模式下禁用）
-  const smartPreload = async (currentFile: MediaFile) => {
-    // 大视频模式下不进行智能预加载
-    if (viewMode === 'large-video') {
-      console.log('[大视频模式] 跳过智能预加载')
-      return
-    }
-    
-    if (!preloadEnabled || !config) return
-    
-    // ✅ 清除之前的定时器（防抖动）
-    // 注意：不检查 smartPreloadInProgressRef，因为我们需要确保每次切换都最终触发预加载
-    if (smartPreloadTimeoutRef.current) {
-      clearTimeout(smartPreloadTimeoutRef.current)
-      console.log('[智能预加载] 清除旧定时器，重新设置')
-    }
-    
-    // ✅ 延迟执行，避免快速切换时重复触发
-    // 如果用户在200ms内再次切换，定时器会被清除并重新设置
-    // 这样可以确保：快速切换时只触发最后一次，但不会完全跳过
-    smartPreloadTimeoutRef.current = setTimeout(async () => {
-      // 如果已经有预加载在进行，等待它完成
-      if (smartPreloadInProgressRef.current) {
-        console.log('[智能预加载] 已有预加载在进行，等待完成后再执行')
-        // 等待当前预加载完成（最多等待5秒）
-        let waitCount = 0
-        while (smartPreloadInProgressRef.current && waitCount < 50) {
-          await new Promise(resolve => setTimeout(resolve, 100))
-          waitCount++
-        }
-        if (smartPreloadInProgressRef.current) {
-          console.warn('[智能预加载] 等待超时，强制执行')
-        }
-      }
-      
-      smartPreloadInProgressRef.current = true
-      
-      try {
-        // 从配置中获取预加载数量，默认为10
-        const preloadCount = config.scanSettings?.preloadCount || 10
-        
-        // ✅ 动态计算需要预加载的数量
-        // 公式：需要预加载数量 = 预加载总数 - 当前缓存数 - 正在下载数 - 等待许可数
-        const cacheStatus = databasePreloadManager.getCacheStatus()
-        
-        const currentCacheSize = cacheStatus.cacheSize  // 当前缓存中的文件数（已加载完成）
-        const queueSize = cacheStatus.queueSize  // 正在下载的文件数（已获得许可）
-        const pendingQueueSize = cacheStatus.pendingQueueSize || 0  // 等待许可的文件数
-        
-        // 计算需要预加载的数量
-        // 注意：需要同时考虑正在下载和等待许可的文件
-        const needCount = Math.max(0, preloadCount - currentCacheSize - queueSize - pendingQueueSize)
-        
-        console.log(`[智能预加载] 动态计算：预加载总数=${preloadCount}, 当前缓存=${currentCacheSize}, 正在下载=${queueSize}, 等待许可=${pendingQueueSize}, 需要预加载=${needCount}`)
-        console.log(`[智能预加载] 缓存详情：`, cacheStatus.cachedFiles.map(f => f.substring(f.lastIndexOf('/') + 1)))
-        
-        // 如果不需要预加载，直接返回
-        if (needCount <= 0) {
-          console.log('[智能预加载] 无需预加载，缓存充足')
-          setPreloadStatus(cacheStatus)
-          return
-        }
-        
-        // 准备高级过滤参数（仅已看过模式且非图组模式）
-        const filters = (viewedFilter === 'viewed' && viewMode !== 'gallery') ? advancedFilters : undefined
-        
-        // ✅ 使用动态计算的数量进行预加载
-        await databasePreloadManager.smartPreload(
-          config, [], currentFile, preloadCount, viewedFilter, 
-          preloadRandomness, mediaFilter, filters, needCount  // 传入动态计算的数量
-        )
-        // 预加载完成后更新缓存状态显示
-        setPreloadStatus(databasePreloadManager.getCacheStatus())
-      } catch (error) {
-        console.error('智能预加载失败:', error)
-        // 即使失败也更新显示，确保状态准确
-        setPreloadStatus(databasePreloadManager.getCacheStatus())
-      } finally {
-        smartPreloadInProgressRef.current = false
-      }
-    }, 200) // 延迟200ms，避免快速切换时重复触发
-  }
-
-
+  //#region 图组模式相关函数
+  
   // 随机选择一个图组
   const loadRandomGroup = () => {
     console.log(`[DEBUG] loadRandomGroup 开始，当前筛选条件: ${viewedFilter}`)
@@ -858,7 +734,7 @@ export default function HomePage() {
     
   }
 
-  // 加载图组中的指定文件
+  // 加载图组中的指定文件（支持预加载缓存）
   const loadFileFromGroup = async (group: MediaFile[], index: number) => {
     if (index < 0 || index >= group.length) return
     
@@ -1039,7 +915,7 @@ export default function HomePage() {
     }
   }
 
-  // 保存当前评分并切换图片
+  // 保存当前评分并切换图片（通用切换逻辑，所有模式共用）
   const saveAndSwitch = async (switchCallback: () => void) => {
     console.log(`[DEBUG] saveAndSwitch 被调用, currentFile: ${currentFile?.basename}, viewMode: ${viewMode}`)
     if (isSwitching) {
@@ -1113,294 +989,11 @@ export default function HomePage() {
     })
   }
 
-  // 在客户端检测移动设备（useEffect）
-  useEffect(() => {
-    const userAgent = navigator.userAgent.toLowerCase()
-    const mobile = userAgent.includes('android') || /iphone|ipad|ipod/.test(userAgent)
-    setIsMobile(mobile)
-  }, [])
+  //#endregion 图组模式相关函数
 
-  // 外部播放器菜单状态
-  const [externalPlayerAnchor, setExternalPlayerAnchor] = useState<null | HTMLElement>(null)
-  const externalPlayerMenuOpen = Boolean(externalPlayerAnchor)
-  // 播放方式选择状态（在视频框中央显示）
-  const [showPlayModeSelector, setShowPlayModeSelector] = useState(false)
-
-  // 使用外部播放器播放当前视频（PotPlayer/VLC）
-  const playWithExternalPlayer = useCallback((player?: 'potplayer' | 'vlc' | 'system') => {
-    // 外部播放器使用直链（如果有配置）
-    let urlToUse = ''
-    
-    if (config?.enableDirectLink && currentFile) {
-      // 使用直链
-      // 处理路径：将全角斜杠替换为竖线（OpenList 特殊处理）
-      let processedPath = currentFile.filename
-        .split('/')
-        .map(segment => segment.replace(/／/g, '|'))
-        .join('/')
-      
-      const directLinkUrl = `/d${processedPath}`
-      urlToUse = new URL(directLinkUrl, window.location.origin).href
-      console.log('🎬 外部播放器使用直链:', urlToUse)
-    } else {
-      // 降级到原始流URL
-      urlToUse = originalStreamUrl || mediaUrl || ''
-      console.log('🎬 外部播放器使用原始流:', urlToUse)
-    }
-    
-    if (!urlToUse) {
-      console.log('⚠️ 没有可用的视频 URL')
-      return
-    }
-    
-    console.log('🎬 调用外部播放器:', player || 'system', urlToUse)
-    
-    // 检测平台
-    const userAgent = navigator.userAgent.toLowerCase()
-    const isAndroid = userAgent.includes('android')
-    const isIOS = /iphone|ipad|ipod/.test(userAgent)
-    
-    // 使用隐藏的 iframe 打开协议，避免影响当前页面
-    const openProtocol = (url: string) => {
-      const iframe = document.createElement('iframe')
-      iframe.style.display = 'none'
-      iframe.src = url
-      document.body.appendChild(iframe)
-      
-      // 2秒后移除 iframe
-      setTimeout(() => {
-        document.body.removeChild(iframe)
-      }, 2000)
-    }
-    
-    if (isAndroid) {
-      // Android: 使用 intent 协议，让系统选择播放器
-      const intentUrl = `intent:${urlToUse}#Intent;type=video/*;end`
-      openProtocol(intentUrl)
-    } else if (isIOS) {
-      // iOS: 尝试 VLC 的 vlc-x-callback 协议
-      const vlcUrl = `vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(urlToUse)}`
-      openProtocol(vlcUrl)
-      
-      // 500ms 后如果没有跳转，直接打开
-      setTimeout(() => {
-        window.open(urlToUse, '_blank')
-      }, 500)
-    } else {
-      // PC 端: 根据选择的播放器打开
-      if (player === 'potplayer') {
-        // PotPlayer 协议格式: potplayer://URL
-        openProtocol(`potplayer://${urlToUse}`)
-      } else if (player === 'vlc') {
-        // VLC 协议格式: vlc://URL
-        openProtocol(`vlc://${urlToUse}`)
-      } else {
-        // 默认在新标签页打开
-        window.open(urlToUse, '_blank')
-      }
-    }
-    
-    // 关闭菜单
-    setExternalPlayerAnchor(null)
-  }, [originalStreamUrl, mediaUrl, config, currentFile])
-
-  // 处理外部播放器按钮点击（PotPlayer/VLC）
-  const handleExternalPlayerClick = useCallback((event: React.MouseEvent<HTMLElement>) => {
-    // 1. 如果是视频，暂停播放并显示播放方式选择器
-    if (mediaType === 'stream-video' || mediaType === 'small-video') {
-      // 暂停视频播放（不是取消请求）
-      if (instantVideoRef.current?.pause) {
-        instantVideoRef.current.pause()
-      }
-      // 显示播放方式选择器（在视频中央）
-      setShowPlayModeSelector(true)
-    }
-    
-    // 2. 同时展开外部播放器菜单（所有视频类型）
-    if (isMobile) {
-      // 移动端直接调用系统选择器
-      playWithExternalPlayer('system')
-    } else {
-      // PC 端显示下拉菜单
-      setExternalPlayerAnchor(event.currentTarget)
-    }
-  }, [isMobile, playWithExternalPlayer, mediaType])
-
-  // 处理播放方式选择（在视频框中央的选择器）
-  const handlePlayModeSelect = useCallback((mode: 'webdav' | 'direct' | 'transcode') => {
-    console.log('🎬 [播放方式] 用户选择:', mode)
-    console.log('🎬 [播放方式] 当前文件:', currentFile?.filename)
-    console.log('🎬 [播放方式] originalStreamUrl:', originalStreamUrl)
-    console.log('🎬 [播放方式] 当前 mediaUrl:', mediaUrl)
-    
-    // 关闭选择器
-    setShowPlayModeSelector(false)
-    
-    // 根据选择切换播放方式
-    if (!currentFile || !config) {
-      console.error('❌ 缺少必要信息: currentFile 或 config')
-      return
-    }
-    
-    let newUrl = ''
-    
-    switch (mode) {
-      case 'webdav':
-        // 使用 WebDAV 原始流
-        console.log('🎬 切换到 WebDAV 播放')
-        // 构建 WebDAV instant-stream URL
-        const webdavParams = new URLSearchParams({
-          url: config.url,
-          username: config.username,
-          password: config.password,
-          filepath: currentFile.filename,
-          sourceType: config.sourceType || 'clouddrive2',
-          forceWebDAV: 'true', // 强制使用 WebDAV，不要重定向到直链
-        })
-        newUrl = `/api/webdav/instant-stream?${webdavParams.toString().replace(/\+/g, '%20')}`
-        console.log('🔗 [WebDAV] 新 URL:', newUrl)
-        break
-        
-      case 'direct':
-        // 使用直链
-        if (config.enableDirectLink) {
-          console.log('🎬 切换到直链播放')
-          // 处理路径：将全角斜杠替换为竖线（OpenList 特殊处理）
-          let processedPath = currentFile.filename
-            .split('/')
-            .map(segment => segment.replace(/／/g, '|'))
-            .join('/')
-          
-          newUrl = `/d${processedPath}`
-          console.log('🔗 [直链播放] 原始路径:', currentFile.filename)
-          console.log('🔗 [直链播放] 处理后路径:', processedPath)
-          console.log('🔗 [直链播放] 直链 URL:', newUrl)
-        } else {
-          console.error('❌ 直链播放未启用')
-        }
-        break
-        
-      case 'transcode':
-        // 使用转码流（仅 WebDAV）
-        console.log('🎬 切换到转码播放')
-        // 构建 WebDAV transcode-stream URL
-        const transcodeParams = new URLSearchParams({
-          url: config.url,
-          username: config.username,
-          password: config.password,
-          filepath: currentFile.filename,
-          sourceType: config.sourceType || 'clouddrive2',
-          format: 'mp4',
-          quality: 'high',
-        })
-        newUrl = `/api/webdav/transcode-stream?${transcodeParams.toString().replace(/\+/g, '%20')}`
-        console.log('🔗 [转码] 新 URL:', newUrl)
-        break
-    }
-    
-    if (newUrl) {
-      console.log('✅ [播放方式] 设置新 URL:', newUrl)
-      
-      // 更新 URL 并重新播放
-      setMediaUrl(newUrl)
-      
-      // 根据模式更新相关状态
-      if (mode === 'direct') {
-        // 直链模式：保存完整 URL 用于外部播放器
-        const fullDirectLinkUrl = new URL(newUrl, window.location.origin).href
-        setOriginalStreamUrl(fullDirectLinkUrl)
-        setTranscodeUrl(null) // 直链不支持转码
-        setIsUsingTranscode(false)
-      } else if (mode === 'transcode') {
-        // 转码模式
-        setTranscodeUrl(newUrl)
-        setIsUsingTranscode(true)
-        // 保存相对路径用于外部播放器
-        setOriginalStreamUrl(newUrl)
-      } else {
-        // WebDAV 原始流模式
-        setTranscodeUrl(null)
-        setIsUsingTranscode(false)
-        // 保存相对路径用于外部播放器
-        setOriginalStreamUrl(newUrl)
-      }
-      
-      // 延迟一下确保 URL 更新后再播放
-      setTimeout(() => {
-        console.log('🎬 [播放方式] 尝试播放...')
-        if (instantVideoRef.current?.play) {
-          instantVideoRef.current.play().catch((err: any) => {
-            console.error('❌ 播放失败:', err)
-          })
-        } else {
-          console.error('❌ instantVideoRef.current 或 play 方法不存在')
-        }
-      }, 100)
-    } else {
-      console.error('❌ [播放方式] 无法生成新 URL')
-    }
-  }, [currentFile, config, originalStreamUrl, mediaUrl])
-
-  const loadRandomMedia = async () => {
-    if (!config) {
-      setError('请先配置WebDAV连接')
-      return
-    }
-
-    console.log(`[loadRandomMedia] 当前模式: ${viewMode}`)
-    
-    // 关闭播放方式选择器（如果正在显示）
-    setShowPlayModeSelector(false)
-    
-    // 标记用户有播放意图（用于移动端视频自动播放）
-    playIntentRef.current = true
-    
-    // ✅ 在用户交互上下文中立即调用 warmUp（首次取消静音）
-    console.log('[loadRandomMedia] ========== 开始 ==========')
-    console.log('[loadRandomMedia] isMobile =', isMobile)
-    console.log('[loadRandomMedia] mobileVideoRef.current =', mobileVideoRef.current)
-    console.log('[loadRandomMedia] mobileVideoRef.current?.warmUp =', mobileVideoRef.current?.warmUp)
-    
-    // ✅ 立即调用 warmUp（不需要等待，因为组件已经渲染）
-    if (mobileVideoRef.current?.warmUp) {
-      mobileVideoRef.current.warmUp()
-      console.log('[loadRandomMedia] ✓ 调用 warmUp 取消静音')
-    } else {
-      console.log('[loadRandomMedia] ✗ 未调用 warmUp，原因：', {
-        isMobile,
-        hasMobileVideoRef: !!mobileVideoRef.current,
-        hasWarmUp: !!mobileVideoRef.current?.warmUp
-      })
-    }
-
-    // 图组模式
-    if (viewMode === 'gallery') {
-      if (currentGroup.length === 0) {
-        loadRandomGroup()
-      } else {
-        nextInGroup()
-      }
-      return
-    }
-
-    // 大视频模式
-    if (viewMode === 'large-video') {
-      console.log('[loadRandomMedia] 进入大视频模式分支')
-      saveAndSwitch(() => {
-        loadLargeVideoFile()
-      })
-      return
-    }
-
-    // 随机模式
-    console.log('[loadRandomMedia] 进入随机模式分支')
-    
-    // 加载新的随机文件（不处理历史导航逻辑）
-    saveAndSwitch(() => {
-      loadRandomFile(false)
-    })
-  }
-
+  //#region 随机模式相关函数
+  
+  // 随机模式：加载新文件（从预加载缓存或数据库获取）
   const loadRandomFile = async (isNavigatingHistory: boolean = false) => {
     if (!config) {
       setError('请先配置WebDAV连接')
@@ -1687,7 +1280,7 @@ export default function HomePage() {
     }
   }
   
-  // 随机模式：回看上一个文件
+  // 随机模式：回看上一个文件（从历史缓存加载）
   const loadPreviousRandomFile = () => {
     if (randomHistory.length === 0) {
       console.log('[回看] 没有历史记录')
@@ -1716,7 +1309,7 @@ export default function HomePage() {
     loadFileDirectly(fileToLoad, true)
   }
   
-  // 随机模式：前进到下一个文件
+  // 随机模式：前进到下一个文件（从历史缓存加载或加载新文件）
   const loadNextRandomFile = () => {
     if (randomHistoryIndex === -1) {
       // 已经在最新位置，加载新的随机文件
@@ -1762,7 +1355,223 @@ export default function HomePage() {
     loadFileDirectly(fileToLoad, true)
   }
   
-  // 手势滑动处理：触摸开始（仅移动端全屏模式）
+  // 加载随机媒体（根据当前模式调用对应的加载函数）
+  const loadRandomMedia = async () => {
+    if (!config) {
+      setError('请先配置WebDAV连接')
+      return
+    }
+
+    console.log(`[loadRandomMedia] 当前模式: ${viewMode}`)
+    
+    // 关闭播放方式选择器（如果正在显示）
+    setShowPlayModeSelector(false)
+    
+    // 标记用户有播放意图（用于移动端视频自动播放）
+    playIntentRef.current = true
+    
+    // ✅ 在用户交互上下文中立即调用 warmUp（首次取消静音）
+    console.log('[loadRandomMedia] ========== 开始 ==========')
+    console.log('[loadRandomMedia] isMobile =', isMobile)
+    console.log('[loadRandomMedia] mobileVideoRef.current =', mobileVideoRef.current)
+    console.log('[loadRandomMedia] mobileVideoRef.current?.warmUp =', mobileVideoRef.current?.warmUp)
+    
+    // ✅ 立即调用 warmUp（不需要等待，因为组件已经渲染）
+    if (mobileVideoRef.current?.warmUp) {
+      mobileVideoRef.current.warmUp()
+      console.log('[loadRandomMedia] ✓ 调用 warmUp 取消静音')
+    } else {
+      console.log('[loadRandomMedia] ✗ 未调用 warmUp，原因：', {
+        isMobile,
+        hasMobileVideoRef: !!mobileVideoRef.current,
+        hasWarmUp: !!mobileVideoRef.current?.warmUp
+      })
+    }
+
+    // 图组模式
+    if (viewMode === 'gallery') {
+      if (currentGroup.length === 0) {
+        loadRandomGroup()
+      } else {
+        nextInGroup()
+      }
+      return
+    }
+
+    // 大视频模式
+    if (viewMode === 'large-video') {
+      console.log('[loadRandomMedia] 进入大视频模式分支')
+      saveAndSwitch(() => {
+        loadLargeVideoFile()
+      })
+      return
+    }
+
+    // 随机模式
+    console.log('[loadRandomMedia] 进入随机模式分支')
+    
+    // 加载新的随机文件（不处理历史导航逻辑）
+    saveAndSwitch(() => {
+      loadRandomFile(false)
+    })
+  }
+
+  // 直接加载文件（用于历史导航，从内存缓存加载，不触发保存逻辑）
+  const loadFileDirectly = async (fileToLoad: MediaFile, isNavigatingHistory: boolean = false) => {
+    // 切换文件时立即重置自动评分标志
+    hasAutoRatedRef.current = false
+    
+    // 清除保存的视频状态，确保新视频可以自动播放
+    videoStateRef.current = null
+    
+    // 检测媒体类型变化并处理全屏切换
+    const shouldEnterVideoFullscreen = handleMediaTypeChangeInFullscreen(fileToLoad)
+    
+    setLoading(true)
+    setError(null)
+
+    try {
+      setCurrentFile(fileToLoad)
+
+      // 从历史缓存中获取（loadFileDirectly 只用于历史导航）
+      const cachedData = randomHistoryCache.current.get(fileToLoad.filename)
+      
+      if (!cachedData) {
+        // 缓存中没有数据，说明出现了逻辑错误
+        console.error(`[历史回看错误] 缓存中没有找到文件: ${fileToLoad.basename}`)
+        setError('历史缓存丢失，无法回看此文件')
+        setLoading(false)
+        return
+      }
+      
+      // 从内存缓存的 blob 重新创建 URL
+      console.log(`[历史回看] 从内存缓存加载: ${fileToLoad.basename}`)
+      
+      const url = URL.createObjectURL(cachedData.blob)
+      
+      // ✅ 清理旧的 URL（历史导航时也需要清理，避免内存泄漏）
+      if (mediaUrl) {
+        URL.revokeObjectURL(mediaUrl)
+        console.log(`[URL清理] 历史导航时释放旧URL`)
+      }
+      
+      // ✅ 直接更新 mediaUrl 状态，让 React 重新渲染
+      // MobileVideoPlayer 的 useEffect 会检查 hasUnmutedRef 并设置正确的静音状态
+      setMediaUrl(url)
+      
+      setMediaType(cachedData.mediaType)
+      setOriginalStreamUrl(cachedData.originalStreamUrl)
+      
+      if (shouldEnterVideoFullscreen && cachedData.mediaType !== 'image') {
+        setTimeout(() => {
+          enterVideoFullscreen()
+        }, 100)
+      }
+      
+      setRatingType('media')
+      
+      // 加载评分（历史文件肯定已经被观看过，直接加载评分）
+      await loadCurrentRating(fileToLoad, 'media')
+      
+      // 清除之前的自动标记定时器，但不启动新的（历史文件已有评分）
+      startAutoMarkTimer(fileToLoad, true)
+      
+      setLoading(false)
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // 智能预加载（仅随机模式使用，根据当前目录和随机性动态补充缓存）
+  const smartPreload = async (currentFile: MediaFile) => {
+    // 大视频模式下不进行智能预加载
+    if (viewMode === 'large-video') {
+      console.log('[大视频模式] 跳过智能预加载')
+      return
+    }
+    
+    if (!preloadEnabled || !config) return
+    
+    // ✅ 清除之前的定时器（防抖动）
+    // 注意：不检查 smartPreloadInProgressRef，因为我们需要确保每次切换都最终触发预加载
+    if (smartPreloadTimeoutRef.current) {
+      clearTimeout(smartPreloadTimeoutRef.current)
+      console.log('[智能预加载] 清除旧定时器，重新设置')
+    }
+    
+    // ✅ 延迟执行，避免快速切换时重复触发
+    // 如果用户在200ms内再次切换，定时器会被清除并重新设置
+    // 这样可以确保：快速切换时只触发最后一次，但不会完全跳过
+    smartPreloadTimeoutRef.current = setTimeout(async () => {
+      // 如果已经有预加载在进行，等待它完成
+      if (smartPreloadInProgressRef.current) {
+        console.log('[智能预加载] 已有预加载在进行，等待完成后再执行')
+        // 等待当前预加载完成（最多等待5秒）
+        let waitCount = 0
+        while (smartPreloadInProgressRef.current && waitCount < 50) {
+          await new Promise(resolve => setTimeout(resolve, 100))
+          waitCount++
+        }
+        if (smartPreloadInProgressRef.current) {
+          console.warn('[智能预加载] 等待超时，强制执行')
+        }
+      }
+      
+      smartPreloadInProgressRef.current = true
+      
+      try {
+        // 从配置中获取预加载数量，默认为10
+        const preloadCount = config.scanSettings?.preloadCount || 10
+        
+        // ✅ 动态计算需要预加载的数量
+        // 公式：需要预加载数量 = 预加载总数 - 当前缓存数 - 正在下载数 - 等待许可数
+        const cacheStatus = databasePreloadManager.getCacheStatus()
+        
+        const currentCacheSize = cacheStatus.cacheSize  // 当前缓存中的文件数（已加载完成）
+        const queueSize = cacheStatus.queueSize  // 正在下载的文件数（已获得许可）
+        const pendingQueueSize = cacheStatus.pendingQueueSize || 0  // 等待许可的文件数
+        
+        // 计算需要预加载的数量
+        // 注意：需要同时考虑正在下载和等待许可的文件
+        const needCount = Math.max(0, preloadCount - currentCacheSize - queueSize - pendingQueueSize)
+        
+        console.log(`[智能预加载] 动态计算：预加载总数=${preloadCount}, 当前缓存=${currentCacheSize}, 正在下载=${queueSize}, 等待许可=${pendingQueueSize}, 需要预加载=${needCount}`)
+        console.log(`[智能预加载] 缓存详情：`, cacheStatus.cachedFiles.map(f => f.substring(f.lastIndexOf('/') + 1)))
+        
+        // 如果不需要预加载，直接返回
+        if (needCount <= 0) {
+          console.log('[智能预加载] 无需预加载，缓存充足')
+          setPreloadStatus(cacheStatus)
+          return
+        }
+        
+        // 准备高级过滤参数（仅已看过模式且非图组模式）
+        const filters = (viewedFilter === 'viewed' && viewMode !== 'gallery') ? advancedFilters : undefined
+        
+        // ✅ 使用动态计算的数量进行预加载
+        await databasePreloadManager.smartPreload(
+          config, [], currentFile, preloadCount, viewedFilter, 
+          preloadRandomness, mediaFilter, filters, needCount  // 传入动态计算的数量
+        )
+        // 预加载完成后更新缓存状态显示
+        setPreloadStatus(databasePreloadManager.getCacheStatus())
+      } catch (error) {
+        console.error('智能预加载失败:', error)
+        // 即使失败也更新显示，确保状态准确
+        setPreloadStatus(databasePreloadManager.getCacheStatus())
+      } finally {
+        smartPreloadInProgressRef.current = false
+      }
+    }, 200) // 延迟200ms，避免快速切换时重复触发
+  }
+
+  //#endregion 随机模式相关函数
+
+  //#region 手势相关函数
+  
+  // 手势滑动处理：触摸开始（仅移动端全屏模式，记录起始位置）
   const handleTouchStart = (e: React.TouchEvent) => {
     // 只在移动端、全屏下启用（所有模式）
     if (!isMobile || !fullscreen) return
@@ -1773,7 +1582,7 @@ export default function HomePage() {
     setIsSwiping(false)
   }
   
-  // 手势滑动处理：触摸移动
+  // 手势滑动处理：触摸移动（判断滑动方向并阻止默认行为）
   const handleTouchMove = (e: React.TouchEvent) => {
     // 只在移动端、全屏下启用（所有模式）
     if (!isMobile || !fullscreen) return
@@ -1791,7 +1600,7 @@ export default function HomePage() {
     }
   }
   
-  // 手势滑动处理：触摸结束
+  // 手势滑动处理：触摸结束（根据滑动方向执行切换操作）
   const handleTouchEnd = (e: React.TouchEvent) => {
     // 只在移动端、全屏下启用（所有模式）
     if (!isMobile || !fullscreen) return
@@ -1867,76 +1676,12 @@ export default function HomePage() {
     setTouchStartX(null)
     setIsSwiping(false)
   }
+
+  //#endregion 手势相关函数
+
+  //#region 大视频模式相关函数
   
-  // 直接加载文件（用于历史导航，不触发保存逻辑）
-  const loadFileDirectly = async (fileToLoad: MediaFile, isNavigatingHistory: boolean = false) => {
-    // 切换文件时立即重置自动评分标志
-    hasAutoRatedRef.current = false
-    
-    // 清除保存的视频状态，确保新视频可以自动播放
-    videoStateRef.current = null
-    
-    // 检测媒体类型变化并处理全屏切换
-    const shouldEnterVideoFullscreen = handleMediaTypeChangeInFullscreen(fileToLoad)
-    
-    setLoading(true)
-    setError(null)
-
-    try {
-      setCurrentFile(fileToLoad)
-
-      // 从历史缓存中获取（loadFileDirectly 只用于历史导航）
-      const cachedData = randomHistoryCache.current.get(fileToLoad.filename)
-      
-      if (!cachedData) {
-        // 缓存中没有数据，说明出现了逻辑错误
-        console.error(`[历史回看错误] 缓存中没有找到文件: ${fileToLoad.basename}`)
-        setError('历史缓存丢失，无法回看此文件')
-        setLoading(false)
-        return
-      }
-      
-      // 从内存缓存的 blob 重新创建 URL
-      console.log(`[历史回看] 从内存缓存加载: ${fileToLoad.basename}`)
-      
-      const url = URL.createObjectURL(cachedData.blob)
-      
-      // ✅ 清理旧的 URL（历史导航时也需要清理，避免内存泄漏）
-      if (mediaUrl) {
-        URL.revokeObjectURL(mediaUrl)
-        console.log(`[URL清理] 历史导航时释放旧URL`)
-      }
-      
-      // ✅ 直接更新 mediaUrl 状态，让 React 重新渲染
-      // MobileVideoPlayer 的 useEffect 会检查 hasUnmutedRef 并设置正确的静音状态
-      setMediaUrl(url)
-      
-      setMediaType(cachedData.mediaType)
-      setOriginalStreamUrl(cachedData.originalStreamUrl)
-      
-      if (shouldEnterVideoFullscreen && cachedData.mediaType !== 'image') {
-        setTimeout(() => {
-          enterVideoFullscreen()
-        }, 100)
-      }
-      
-      setRatingType('media')
-      
-      // 加载评分（历史文件肯定已经被观看过，直接加载评分）
-      await loadCurrentRating(fileToLoad, 'media')
-      
-      // 清除之前的自动标记定时器，但不启动新的（历史文件已有评分）
-      startAutoMarkTimer(fileToLoad, true)
-      
-      setLoading(false)
-    } catch (e: any) {
-      setError(e.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // 清理当前正在播放的流式视频，释放网络连接
+  // 清理当前正在播放的流式视频，释放网络连接（避免WebDAV连接泄漏）
   const cleanupCurrentStreamVideo = () => {
     if (instantVideoRef.current) {
       const videoElement = instantVideoRef.current.getVideoElement?.()
@@ -1958,7 +1703,7 @@ export default function HomePage() {
     }
   }
   
-  // 大视频模式：加载随机大视频文件（使用即点即播）
+  // 大视频模式：加载随机大视频文件（使用即点即播，不预加载）
   const loadLargeVideoFile = async () => {
     console.log(`[大视频模式] 开始加载，筛选条件: ${viewedFilter}，随机性: ${preloadRandomness}`)
     console.log(`[大视频模式] 当前缓存文件数量: ${databasePreloadManager.getCachedFilepaths().length}`)
@@ -2199,91 +1944,399 @@ export default function HomePage() {
     }
   }
 
+  //#endregion 大视频模式相关函数=
 
+  //#region 通用函数
 
-  // 重新观看已看过的文件
-  const restartViewedMode = async () => {
-    if (!config) return
-    
-    // 清除本地已看过记录
-    databasePreloadManager.clearLocalViewedFiles()
-    
-    // 清空当前显示
-    setCurrentFile(null)
-    setMediaUrl(null)
-    
-    // 重新预加载已看过的文件
-    if (preloadEnabled) {
-      const preloadCount = config.scanSettings?.preloadCount || 10
-      
-      if (viewMode === 'gallery') {
-        // 图组模式：使用图组模式专用预加载，带进度回调
-        await databasePreloadManager.preloadForGalleryMode(
-          config, 
-          [], // 数据库模式不需要文件列表
-          preloadCount, 
-          'viewed',
-          (current, total) => {
-            // 实时更新进度显示
-            setCachePreloadProgress({ current, total })
-          }
-        )
-      } else {
-        // 随机模式：使用随机预加载，带进度回调
-        await databasePreloadManager.refillCache(
-          config, 
-          [], // 数据库模式不需要文件列表
-          preloadCount, 
-          'viewed',
-          (current, total) => {
-            // 实时更新进度显示
-            setCachePreloadProgress({ current, total })
-          },
-          preloadRandomness,
-          false, // isInitialLoad
-          undefined, // currentParentPath
-          mediaFilter // 媒体类型筛选
-        )
-      }
-      
-      const cacheStatus = databasePreloadManager.getCacheStatus()
-      setPreloadStatus(cacheStatus)
-      // 更新进度显示
-      setCachePreloadProgress({ 
-        current: cacheStatus.cacheSize, 
-        total: preloadCount 
-      })
-    }
-    
-    setSnackbarMessage('🔄 已重新开始观看已看过的文件')
-    setSnackbarSeverity('info')
-    setSnackbarOpen(true)
-  }
-
+  // 判断文件是否为图片
   const isImage = (filename: string) => {
     return /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(filename)
   }
 
+  // 判断文件是否为视频
   const isVideo = (filename: string) => {
     return /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(filename)
   }
 
+  // 格式化文件大小（字节转换为可读格式）
   const formatFileSize = (bytes: number) => {
     if (bytes < 1024) return bytes + ' B'
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB'
     return (bytes / (1024 * 1024)).toFixed(2) + ' MB'
   }
 
-  const getFilteredStats = () => {
-    // 使用数据库统计信息
-    if (mediaFilter === 'images') {
-      return { total: stats.images, label: '图片' }
-    } else if (mediaFilter === 'videos') {
-      return { total: stats.videos, label: '视频' }
-    }
-    return { total: stats.total, label: '全部' }
+  /**
+   * 检测媒体类型变化并处理全屏状态切换
+   * 由于现在图片和视频都使用网页容器全屏（CSS 方式），不再需要特殊处理
+   * @returns 始终返回 false
+   */
+  const handleMediaTypeChangeInFullscreen = (nextFile: MediaFile): boolean => {
+    // 图片和视频都使用网页容器全屏，无需特殊处理
+    return false
   }
 
+  /**
+   * 视频加载后自动进入原生全屏
+   */
+  const enterVideoFullscreen = async () => {
+    const container = videoPlayerContainerRef.current
+    if (!container) {
+      console.warn('[自动全屏] 视频容器未找到，延迟重试')
+      // 延迟重试，等待容器渲染
+      setTimeout(async () => {
+        const retryContainer = videoPlayerContainerRef.current
+        if (retryContainer) {
+          try {
+            await retryContainer.requestFullscreen()
+            console.log('[自动全屏] 延迟重试成功，视频已进入原生全屏')
+            // 成功进入全屏后，移除过渡遮罩
+            setTimeout(() => {
+              setFullscreenTransitionOverlay(false)
+            }, 200) // 稍微延迟以确保全屏动画完成
+            
+            // 进入全屏后尝试播放
+            tryPlayVideoAfterFullscreen()
+          } catch (error) {
+            console.error('[自动全屏] 延迟重试失败:', error)
+            // 失败也要移除遮罩
+            setFullscreenTransitionOverlay(false)
+          }
+        } else {
+          // 容器仍未找到，移除遮罩
+          setFullscreenTransitionOverlay(false)
+        }
+      }, 300)
+      return
+    }
+    
+    try {
+      await container.requestFullscreen()
+      console.log('[自动全屏] 视频已自动进入原生全屏')
+      // 成功进入全屏后，移除过渡遮罩
+      setTimeout(() => {
+        setFullscreenTransitionOverlay(false)
+      }, 200) // 稍微延迟以确保全屏动画完成
+      
+      // 进入全屏后尝试播放
+      tryPlayVideoAfterFullscreen()
+    } catch (error) {
+      console.error('[自动全屏] 进入原生全屏失败:', error)
+      // 失败也要移除遮罩
+      setFullscreenTransitionOverlay(false)
+    }
+  }
+  
+  // 进入全屏后尝试播放视频（处理自动播放失败的情况）
+  const tryPlayVideoAfterFullscreen = () => {
+    if (!playIntentRef.current) return
+    
+    const video = videoRef.current
+    if (video && video.paused) {
+      console.log('[全屏后播放] 进入全屏后尝试播放视频')
+      video.play().catch(error => {
+        console.log('[全屏后播放] 播放失败，尝试静音播放:', error)
+        video.muted = true
+        video.play().then(() => {
+          console.log('[全屏后播放] 静音播放成功')
+          setTimeout(() => {
+            video.muted = false
+          }, 300)
+        }).catch(err => {
+          console.error('[全屏后播放] 静音播放也失败:', err)
+        })
+      })
+    }
+  }
+
+  // 切换全屏状态（使用CSS全屏，不使用原生全屏API）
+  const toggleFullscreen = async () => {
+    // 统一使用网页容器全屏方式（通过 CSS 实现，不使用原生全屏 API）
+    setFullscreen(!fullscreen)
+  }
+
+  // 设置播放意图的辅助函数
+  const setPlayIntent = (intent: boolean) => {
+    playIntentRef.current = intent
+    setShouldAutoPlay(intent)
+    console.log(`[播放意图] 设置为 ${intent}`)
+  }
+
+  // 加载可用的评价标签和分类
+  const loadAvailableFilters = async () => {
+    try {
+      const [evalRes, catRes] = await Promise.all([
+        fetch('/api/ratings/evaluations'),
+        fetch('/api/ratings/categories')
+      ])
+
+      if (evalRes.ok) {
+        const evalData = await evalRes.json()
+        const labels = evalData.evaluations?.map((e: any) => e.label) || []
+        setAvailableEvaluations(labels)
+      }
+
+      if (catRes.ok) {
+        const catData = await catRes.json()
+        const names = catData.categories?.map((c: any) => c.name) || []
+        setAvailableCategories(names)
+      }
+    } catch (error) {
+      console.error('加载评价标签和分类失败:', error)
+    }
+  }
+
+  // 从数据库加载统计信息（不触发扫描，扫描请通过管理页面操作）
+  const loadStatsFromCache = async (cfg: WebDAVConfig) => {
+    setLoading(true)
+    setError(null)
+    
+    try {
+      const statsResponse = await fetch(`/api/scan-files/stats?webdavUrl=${encodeURIComponent(cfg.url)}&webdavUsername=${encodeURIComponent(cfg.username)}&paths=${encodeURIComponent(cfg.mediaPaths.join(','))}`)
+      
+      if (statsResponse.ok) {
+        const statsData = await statsResponse.json()
+        
+        setStats({
+          total: statsData.total || 0,
+          images: statsData.images || 0,
+          videos: statsData.videos || 0,
+          viewed: statsData.viewed || 0
+        })
+        
+        if (statsData.hasData) {
+          console.log('从数据库加载统计信息:', statsData)
+        } else {
+          console.log('数据库中暂无数据，请通过管理页面触发扫描')
+        }
+      }
+    } catch (error: any) {
+      console.error('加载统计信息失败:', error)
+      setError('加载统计信息失败，请检查配置或通过管理页面重新扫描')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // 使用外部播放器播放当前视频（PotPlayer/VLC）
+  const playWithExternalPlayer = useCallback((player?: 'potplayer' | 'vlc' | 'system') => {
+    // 外部播放器使用直链（如果有配置）
+    let urlToUse = ''
+    
+    if (config?.enableDirectLink && currentFile) {
+      // 使用直链
+      // 处理路径：将全角斜杠替换为竖线（OpenList 特殊处理）
+      let processedPath = currentFile.filename
+        .split('/')
+        .map(segment => segment.replace(/／/g, '|'))
+        .join('/')
+      
+      const directLinkUrl = `/d${processedPath}`
+      urlToUse = new URL(directLinkUrl, window.location.origin).href
+      console.log('🎬 外部播放器使用直链:', urlToUse)
+    } else {
+      // 降级到原始流URL
+      urlToUse = originalStreamUrl || mediaUrl || ''
+      console.log('🎬 外部播放器使用原始流:', urlToUse)
+    }
+    
+    if (!urlToUse) {
+      console.log('⚠️ 没有可用的视频 URL')
+      return
+    }
+    
+    console.log('🎬 调用外部播放器:', player || 'system', urlToUse)
+    
+    // 检测平台
+    const userAgent = navigator.userAgent.toLowerCase()
+    const isAndroid = userAgent.includes('android')
+    const isIOS = /iphone|ipad|ipod/.test(userAgent)
+    
+    // 使用隐藏的 iframe 打开协议，避免影响当前页面
+    const openProtocol = (url: string) => {
+      const iframe = document.createElement('iframe')
+      iframe.style.display = 'none'
+      iframe.src = url
+      document.body.appendChild(iframe)
+      
+      // 2秒后移除 iframe
+      setTimeout(() => {
+        document.body.removeChild(iframe)
+      }, 2000)
+    }
+    
+    if (isAndroid) {
+      // Android: 使用 intent 协议，让系统选择播放器
+      const intentUrl = `intent:${urlToUse}#Intent;type=video/*;end`
+      openProtocol(intentUrl)
+    } else if (isIOS) {
+      // iOS: 尝试 VLC 的 vlc-x-callback 协议
+      const vlcUrl = `vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(urlToUse)}`
+      openProtocol(vlcUrl)
+      
+      // 500ms 后如果没有跳转，直接打开
+      setTimeout(() => {
+        window.open(urlToUse, '_blank')
+      }, 500)
+    } else {
+      // PC 端: 根据选择的播放器打开
+      if (player === 'potplayer') {
+        // PotPlayer 协议格式: potplayer://URL
+        openProtocol(`potplayer://${urlToUse}`)
+      } else if (player === 'vlc') {
+        // VLC 协议格式: vlc://URL
+        openProtocol(`vlc://${urlToUse}`)
+      } else {
+        // 默认在新标签页打开
+        window.open(urlToUse, '_blank')
+      }
+    }
+    
+    // 关闭菜单
+    setExternalPlayerAnchor(null)
+  }, [originalStreamUrl, mediaUrl, config, currentFile])
+
+  // 处理外部播放器按钮点击（PotPlayer/VLC）
+  const handleExternalPlayerClick = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    // 1. 如果是视频，暂停播放并显示播放方式选择器
+    if (mediaType === 'stream-video' || mediaType === 'small-video') {
+      // 暂停视频播放（不是取消请求）
+      if (instantVideoRef.current?.pause) {
+        instantVideoRef.current.pause()
+      }
+      // 显示播放方式选择器（在视频中央）
+      setShowPlayModeSelector(true)
+    }
+    
+    // 2. 同时展开外部播放器菜单（所有视频类型）
+    if (isMobile) {
+      // 移动端直接调用系统选择器
+      playWithExternalPlayer('system')
+    } else {
+      // PC 端显示下拉菜单
+      setExternalPlayerAnchor(event.currentTarget)
+    }
+  }, [isMobile, playWithExternalPlayer, mediaType])
+
+  // 处理播放方式选择（在视频框中央的选择器）
+  const handlePlayModeSelect = useCallback((mode: 'webdav' | 'direct' | 'transcode') => {
+    console.log('🎬 [播放方式] 用户选择:', mode)
+    console.log('🎬 [播放方式] 当前文件:', currentFile?.filename)
+    console.log('🎬 [播放方式] originalStreamUrl:', originalStreamUrl)
+    console.log('🎬 [播放方式] 当前 mediaUrl:', mediaUrl)
+    
+    // 关闭选择器
+    setShowPlayModeSelector(false)
+    
+    // 根据选择切换播放方式
+    if (!currentFile || !config) {
+      console.error('❌ 缺少必要信息: currentFile 或 config')
+      return
+    }
+    
+    let newUrl = ''
+    
+    switch (mode) {
+      case 'webdav':
+        // 使用 WebDAV 原始流
+        console.log('🎬 切换到 WebDAV 播放')
+        // 构建 WebDAV instant-stream URL
+        const webdavParams = new URLSearchParams({
+          url: config.url,
+          username: config.username,
+          password: config.password,
+          filepath: currentFile.filename,
+          sourceType: config.sourceType || 'clouddrive2',
+          forceWebDAV: 'true', // 强制使用 WebDAV，不要重定向到直链
+        })
+        newUrl = `/api/webdav/instant-stream?${webdavParams.toString().replace(/\+/g, '%20')}`
+        console.log('🔗 [WebDAV] 新 URL:', newUrl)
+        break
+        
+      case 'direct':
+        // 使用直链
+        if (config.enableDirectLink) {
+          console.log('🎬 切换到直链播放')
+          // 处理路径：将全角斜杠替换为竖线（OpenList 特殊处理）
+          let processedPath = currentFile.filename
+            .split('/')
+            .map(segment => segment.replace(/／/g, '|'))
+            .join('/')
+          
+          newUrl = `/d${processedPath}`
+          console.log('🔗 [直链播放] 原始路径:', currentFile.filename)
+          console.log('🔗 [直链播放] 处理后路径:', processedPath)
+          console.log('🔗 [直链播放] 直链 URL:', newUrl)
+        } else {
+          console.error('❌ 直链播放未启用')
+        }
+        break
+        
+      case 'transcode':
+        // 使用转码流（仅 WebDAV）
+        console.log('🎬 切换到转码播放')
+        // 构建 WebDAV transcode-stream URL
+        const transcodeParams = new URLSearchParams({
+          url: config.url,
+          username: config.username,
+          password: config.password,
+          filepath: currentFile.filename,
+          sourceType: config.sourceType || 'clouddrive2',
+          format: 'mp4',
+          quality: 'high',
+        })
+        newUrl = `/api/webdav/transcode-stream?${transcodeParams.toString().replace(/\+/g, '%20')}`
+        console.log('🔗 [转码] 新 URL:', newUrl)
+        break
+    }
+    
+    if (newUrl) {
+      console.log('✅ [播放方式] 设置新 URL:', newUrl)
+      
+      // 更新 URL 并重新播放
+      setMediaUrl(newUrl)
+      
+      // 根据模式更新相关状态
+      if (mode === 'direct') {
+        // 直链模式：保存完整 URL 用于外部播放器
+        const fullDirectLinkUrl = new URL(newUrl, window.location.origin).href
+        setOriginalStreamUrl(fullDirectLinkUrl)
+        setTranscodeUrl(null) // 直链不支持转码
+        setIsUsingTranscode(false)
+      } else if (mode === 'transcode') {
+        // 转码模式
+        setTranscodeUrl(newUrl)
+        setIsUsingTranscode(true)
+        // 保存相对路径用于外部播放器
+        setOriginalStreamUrl(newUrl)
+      } else {
+        // WebDAV 原始流模式
+        setTranscodeUrl(null)
+        setIsUsingTranscode(false)
+        // 保存相对路径用于外部播放器
+        setOriginalStreamUrl(newUrl)
+      }
+      
+      // 延迟一下确保 URL 更新后再播放
+      setTimeout(() => {
+        console.log('🎬 [播放方式] 尝试播放...')
+        if (instantVideoRef.current?.play) {
+          instantVideoRef.current.play().catch((err: any) => {
+            console.error('❌ 播放失败:', err)
+          })
+        } else {
+          console.error('❌ instantVideoRef.current 或 play 方法不存在')
+        }
+      }, 100)
+    } else {
+      console.error('❌ [播放方式] 无法生成新 URL')
+    }
+  }, [currentFile, config, originalStreamUrl, mediaUrl])
+
+  //#endregion 通用函数
+
+  //#region 抽屉相关函数
+  
+  // 切换抽屉状态（关闭时检查配置变化并重新加载）
   const toggleDrawer = (open: boolean) => () => {
     if (open) {
       // 打开抽屉时，保存当前配置快照
@@ -2471,9 +2524,7 @@ export default function HomePage() {
     setDrawerOpen(open)
   }
 
-  // ============抽屉相关函数开始============
-  
-  // 浏览模式变化处理
+  // 浏览模式变化处理（清空缓存并重置状态）
   const handleViewModeChange = (newMode: ViewMode) => {
     setViewMode(newMode)
     localStorage.setItem('view_mode', newMode)
@@ -2501,16 +2552,18 @@ export default function HomePage() {
     }
   }
 
-  // 预加载设置处理
+  // 预加载设置处理（启用或禁用预加载功能）
   const handlePreloadEnabledChange = (enabled: boolean) => {
     setPreloadEnabled(enabled)
   }
 
+  // 乐观更新设置处理（启用或禁用乐观更新）
   const handleOptimisticUpdateEnabledChange = (enabled: boolean) => {
     setOptimisticUpdateEnabled(enabled)
     localStorage.setItem('optimistic_update_enabled', enabled.toString())
   }
 
+  // Eruda调试工具设置处理（启用或禁用Eruda）
   const handleErudaEnabledChange = (enabled: boolean) => {
     setErudaEnabledState(enabled)
     setErudaEnabled(enabled)
@@ -2519,11 +2572,13 @@ export default function HomePage() {
     setSnackbarOpen(true)
   }
 
+  // 预加载随机性设置处理（调整预加载的随机性）
   const handlePreloadRandomnessChange = (value: number) => {
     setPreloadRandomness(value)
     localStorage.setItem('preload_randomness', value.toString())
   }
 
+  // 清理预加载缓存
   const handleClearCache = () => {
     databasePreloadManager.clearCache()
     setPreloadStatus(databasePreloadManager.getCacheStatus())
@@ -2532,6 +2587,7 @@ export default function HomePage() {
     setSnackbarOpen(true)
   }
 
+  // 重置所有可拖动按钮的位置
   const handleResetButtonPositions = () => {
     const storageKeys = [
       'fullscreen_rating',
@@ -2554,7 +2610,7 @@ export default function HomePage() {
     }, 1000)
   }
 
-  // 已看过筛选处理
+  // 已看过筛选处理（切换已看过/未看过/全部筛选）
   const handleViewedFilterChangeWrapper = (newFilter: ViewedFilter) => {
     setViewedFilter(newFilter)
     localStorage.setItem('viewed_filter', newFilter)
@@ -2572,6 +2628,7 @@ export default function HomePage() {
     }
   }
 
+  // 重新开始已看过模式（清除本地观看记录）
   const handleRestartViewedMode = () => {
     databasePreloadManager.clearLocalViewedFiles()
     setSnackbarMessage('已清除本地观看记录，可以重新观看')
@@ -2579,7 +2636,7 @@ export default function HomePage() {
     setSnackbarOpen(true)
   }
 
-  // 媒体类型筛选处理
+  // 媒体类型筛选处理（切换图片/视频/全部筛选）
   const handleMediaFilterChangeWrapper = (newFilter: MediaFilter) => {
     setMediaFilter(newFilter)
     localStorage.setItem('media_filter', newFilter)
@@ -2595,108 +2652,23 @@ export default function HomePage() {
     }
   }
 
-  // ============抽屉相关函数结束============
+  //#endregion 抽屉相关函数
 
-  /**
-   * 检测媒体类型变化并处理全屏状态切换
-   * 由于现在图片和视频都使用网页容器全屏（CSS 方式），不再需要特殊处理
-   * @returns 始终返回 false
-   */
-  const handleMediaTypeChangeInFullscreen = (nextFile: MediaFile): boolean => {
-    // 图片和视频都使用网页容器全屏，无需特殊处理
-    return false
-  }
-
-  /**
-   * 视频加载后自动进入原生全屏
-   */
-  const enterVideoFullscreen = async () => {
-    const container = videoPlayerContainerRef.current
-    if (!container) {
-      console.warn('[自动全屏] 视频容器未找到，延迟重试')
-      // 延迟重试，等待容器渲染
-      setTimeout(async () => {
-        const retryContainer = videoPlayerContainerRef.current
-        if (retryContainer) {
-          try {
-            await retryContainer.requestFullscreen()
-            console.log('[自动全屏] 延迟重试成功，视频已进入原生全屏')
-            // 成功进入全屏后，移除过渡遮罩
-            setTimeout(() => {
-              setFullscreenTransitionOverlay(false)
-            }, 200) // 稍微延迟以确保全屏动画完成
-            
-            // 进入全屏后尝试播放
-            tryPlayVideoAfterFullscreen()
-          } catch (error) {
-            console.error('[自动全屏] 延迟重试失败:', error)
-            // 失败也要移除遮罩
-            setFullscreenTransitionOverlay(false)
-          }
-        } else {
-          // 容器仍未找到，移除遮罩
-          setFullscreenTransitionOverlay(false)
-        }
-      }, 300)
-      return
-    }
-    
-    try {
-      await container.requestFullscreen()
-      console.log('[自动全屏] 视频已自动进入原生全屏')
-      // 成功进入全屏后，移除过渡遮罩
-      setTimeout(() => {
-        setFullscreenTransitionOverlay(false)
-      }, 200) // 稍微延迟以确保全屏动画完成
-      
-      // 进入全屏后尝试播放
-      tryPlayVideoAfterFullscreen()
-    } catch (error) {
-      console.error('[自动全屏] 进入原生全屏失败:', error)
-      // 失败也要移除遮罩
-      setFullscreenTransitionOverlay(false)
-    }
-  }
+  //#region 评分相关函数
   
-  // 进入全屏后尝试播放视频
-  const tryPlayVideoAfterFullscreen = () => {
-    if (!playIntentRef.current) return
-    
-    const video = videoRef.current
-    if (video && video.paused) {
-      console.log('[全屏后播放] 进入全屏后尝试播放视频')
-      video.play().catch(error => {
-        console.log('[全屏后播放] 播放失败，尝试静音播放:', error)
-        video.muted = true
-        video.play().then(() => {
-          console.log('[全屏后播放] 静音播放成功')
-          setTimeout(() => {
-            video.muted = false
-          }, 300)
-        }).catch(err => {
-          console.error('[全屏后播放] 静音播放也失败:', err)
-        })
-      })
-    }
-  }
-
-  const toggleFullscreen = async () => {
-    // 统一使用网页容器全屏方式（通过 CSS 实现，不使用原生全屏 API）
-    setFullscreen(!fullscreen)
-  }
-
-  // 评分相关函数
+  // 打开评分对话框
   const openRatingDialog = (type: 'media' | 'group') => {
     setRatingType(type)
     setRatingDialogOpen(true)
   }
 
+  // 关闭评分对话框
   const closeRatingDialog = () => {
     setRatingDialogOpen(false)
     // 不清空 currentRating，保持显示数据库中的实际评分状态
   }
 
-  // 加载指定媒体文件的评分（用于图组模式）
+  // 加载指定媒体文件的评分（专门用于媒体文件）
   const loadMediaRating = useCallback(async (filePath: string) => {
     try {
       // 确保评分类型为媒体
@@ -2721,6 +2693,7 @@ export default function HomePage() {
     }
   }, [])
 
+  // 加载当前文件或图组的评分（通用评分加载，支持媒体和图组）
   const loadCurrentRating = useCallback(async (file?: MediaFile, forceType?: 'media' | 'group') => {
     const targetFile = file || currentFile
     const effectiveRatingType = forceType || ratingType
@@ -2779,6 +2752,7 @@ export default function HomePage() {
     }
   }, [currentFile, ratingType, currentGroup])
 
+  // 保存评分（支持乐观更新）
   const saveRating = useCallback(async (data: MediaRating | GroupRating, file?: MediaFile, optimistic: boolean = false) => {
     try {
       const targetFile = file || currentFile
@@ -2861,7 +2835,7 @@ export default function HomePage() {
     }
   }, [currentFile, ratingType, currentGroup, loadMediaRating, loadCurrentRating, optimisticUpdateEnabled])
 
-  // 手动评分包装函数（用于评分对话框，保存后阻止自动评分覆盖）
+  // 手动评分包装函数（用于评分对话框，使用乐观更新并阻止自动评分覆盖）
   const saveRatingManual = useCallback(async (data: MediaRating | GroupRating, file?: MediaFile) => {
     // 弹窗评分也使用乐观更新（如果开启）
     await saveRating(data, file, true)
@@ -2869,27 +2843,26 @@ export default function HomePage() {
     hasAutoRatedRef.current = true
   }, [saveRating])
 
-  // 评分保存成功回调
+  // 评分保存成功回调（显示成功提示）
   const handleRatingSaveSuccess = useCallback(() => {
     setSnackbarMessage('✅ 评分保存成功')
     setSnackbarSeverity('success')
     setSnackbarOpen(true)
   }, [])
 
-
-  // 获取图组路径
+  // 获取图组路径（从文件路径提取目录路径）
   const getGroupPath = (filePath: string): string => {
     const lastSlashIndex = filePath.lastIndexOf('/')
     return lastSlashIndex > 0 ? filePath.substring(0, lastSlashIndex) : '/'
   }
 
-  // 获取图组名称
+  // 获取图组名称（从目录路径提取最后一级目录名）
   const getGroupName = (groupPath: string): string => {
     const pathParts = groupPath.split('/').filter(part => part.length > 0)
     return pathParts.length > 0 ? pathParts[pathParts.length - 1] : '根目录'
   }
 
-  // 快速评分函数
+  // 快速评分函数（使用乐观更新，保留已有分类和推荐理由）
   const handleQuickRate = useCallback(async (rating: number, evaluation: string) => {
     if (!currentFile) return
 
@@ -2922,12 +2895,12 @@ export default function HomePage() {
     }
   }, [currentFile, currentRating, saveRating])
   
-  // 关闭提示
+  // 关闭提示消息
   const handleCloseSnackbar = () => {
     setSnackbarOpen(false)
   }
 
-  // 处理重新开始观看
+  // 处理重新开始观看（清空本地记录和缓存，重新预加载）
   const handleRestartViewing = async () => {
     setShowRestartDialog(false)
     
@@ -3004,12 +2977,12 @@ export default function HomePage() {
     }
   }
 
-  // 取消重新开始
+  // 取消重新开始（关闭对话框）
   const handleCancelRestart = () => {
     setShowRestartDialog(false)
   }
 
-  // 执行自动评分
+  // 执行自动评分（默认2星"一般"，使用乐观更新）
   const performAutoRating = useCallback(async (file?: MediaFile) => {
     // 使用传入的文件或当前文件
     const targetFile = file || currentFile
@@ -3071,7 +3044,7 @@ export default function HomePage() {
     }
   }, [currentFile, saveRating, viewedFilter])
 
-  // 自动标记已看过
+  // 启动自动标记已看过定时器（图片100ms，视频3分钟）
   const startAutoMarkTimer = (file?: MediaFile, skipAutoRating: boolean = false) => {
     // 使用传入的文件或当前文件
     const targetFile = file || currentFile
@@ -3104,7 +3077,7 @@ export default function HomePage() {
     setAutoMarkTimer(timer)
   }
 
-  // 停止自动标记定时器
+  // 停止自动标记定时器（清除定时器和状态）
   const stopAutoMarkTimer = () => {
     if (autoMarkTimer) {
       clearTimeout(autoMarkTimer)
@@ -3113,7 +3086,7 @@ export default function HomePage() {
     setViewStartTime(null)
   }
 
-  // 视频播放进度监听（播放超过80%时自动标记）
+  // 视频播放进度监听（播放超过80%时自动标记，用于小视频）
   const handleVideoTimeUpdate = useCallback((event: React.SyntheticEvent<HTMLVideoElement>) => {
     const video = event.currentTarget
     // 检查 video 和 duration 是否有效（duration 可能是 undefined、NaN 或 Infinity）
@@ -3126,7 +3099,7 @@ export default function HomePage() {
     }
   }, [performAutoRating])
 
-  // InstantVideoPlayer 的时间更新监听（参数格式不同）
+  // InstantVideoPlayer 的时间更新监听（播放超过80%时自动标记，用于流式视频）
   const handleInstantVideoTimeUpdate = useCallback((currentTime: number, duration: number) => {
     // 检查 duration 是否有效
     if (!duration || !isFinite(duration)) return
@@ -3138,11 +3111,12 @@ export default function HomePage() {
     }
   }, [performAutoRating])
 
-  // 视频播放结束监听
+  // 视频播放结束监听（触发自动评分）
   const handleVideoEnded = useCallback(() => {
     performAutoRating()
   }, [performAutoRating])
 
+  // 注意：快捷键监听和清理定时器的 useEffect 放在这里是因为它们依赖评分相关的函数
   // 快捷键监听
   useEffect(() => {
     const handleKeyPress = (event: KeyboardEvent) => {
@@ -3191,6 +3165,9 @@ export default function HomePage() {
     }
   }, [autoMarkTimer])
 
+  //#endregion 评分相关函数
+  
+  // 注意：全屏过渡遮罩安全超时清理和确保小视频加载完成后自动播放 放在这里是因为都与视频播放相关
   // 全屏过渡遮罩安全超时清理（防止意外情况下遮罩一直显示）
   useEffect(() => {
     if (fullscreenTransitionOverlay) {
@@ -3261,6 +3238,7 @@ export default function HomePage() {
     }
   }, [currentFile, mediaUrl, mediaType])
 
+  // UI部分
   if (!config) {
     return (
       <Container maxWidth="md" sx={{ py: 8 }}>
@@ -3284,9 +3262,7 @@ export default function HomePage() {
       </Container>
     )
   }
-
-  const filteredStats = getFilteredStats()
-
+  // UI部分
   return (
     <Box sx={{ minHeight: '100vh', backgroundColor: '#f5f5f5' }}>
       {/* 顶部工具栏 - 简洁版 */}
