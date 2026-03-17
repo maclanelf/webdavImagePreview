@@ -220,7 +220,7 @@ export default function HomePage() {
   const touchStartYRef = useRef<number | null>(null)
   const touchStartXRef = useRef<number | null>(null)
   const isSwipingRef = useRef(false)
-  const swipeThreshold = 30 // 滑动阈值（像素），降低以提升灵敏度
+  const swipeThreshold = 50 // 滑动阈值（像素），降低以提升灵敏度
   
   // 切换状态，防止连续快速点击
   const [isSwitching, setIsSwitching] = useState(false)
