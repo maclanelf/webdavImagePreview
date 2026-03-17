@@ -214,13 +214,17 @@ export default function HomePage() {
   const [isMobile, setIsMobile] = useState(false)
   
   // 手势滑动相关状态（仅移动端全屏模式）
-  const [touchStartY, setTouchStartY] = useState<number | null>(null)
-  const [touchStartX, setTouchStartX] = useState<number | null>(null)
-  const [isSwiping, setIsSwiping] = useState(false)
+  // ⭐ 使用 useRef 避免 React 闭包陷阱：useState 的值在事件回调中是快照，
+  // 导致 handleTouchEnd 读取到的 isSwiping/touchStartY 可能是旧值（false/null），
+  // 从而误判为"未滑动"而跳过切换逻辑
+  const touchStartYRef = useRef<number | null>(null)
+  const touchStartXRef = useRef<number | null>(null)
+  const isSwipingRef = useRef(false)
   const swipeThreshold = 30 // 滑动阈值（像素），降低以提升灵敏度
   
   // 切换状态，防止连续快速点击
   const [isSwitching, setIsSwitching] = useState(false)
+  const isSwitchingRef = useRef(false) // 同步 isSwitching，避免闭包陷阱
   
   // 提示消息打开状态
   const [snackbarOpen, setSnackbarOpen] = useState(false)
@@ -898,11 +902,13 @@ export default function HomePage() {
 
   // 保存当前评分并切换图片（通用切换逻辑，所有模式共用）
   const saveAndSwitch = async (switchCallback: () => void) => {
-    console.log(`[DEBUG] saveAndSwitch 被调用, currentFile: ${currentFile?.basename}, viewMode: ${viewMode}`)
-    if (isSwitching) {
+    console.log(`[DEBUG] saveAndSwitch 被调用, currentFile: ${currentFile?.basename}, viewMode: ${viewMode}, isSwitching=${isSwitchingRef.current}`)
+    if (isSwitchingRef.current) {
+      console.log('[DEBUG] saveAndSwitch: isSwitching=true，跳过')
       return
     }
 
+    isSwitchingRef.current = true
     setIsSwitching(true)
 
     try {
@@ -931,16 +937,19 @@ export default function HomePage() {
       
       // 立即切换，不等待补齐缓存
       switchCallback()
+      isSwitchingRef.current = false
       setIsSwitching(false)
     } catch (error) {
       console.error('保存评分失败:', error)
       // 即使保存失败也继续切换，避免卡住
       switchCallback()
+      isSwitchingRef.current = false
       setIsSwitching(false)
     }
     
     // 500ms 后重置状态作为兜底策略，防止某些情况下状态未正确重置
     setTimeout(() => {
+      isSwitchingRef.current = false
       setIsSwitching(false)
     }, 500)
   }
@@ -1561,39 +1570,44 @@ export default function HomePage() {
     
     // 如果是多点触控（双指缩放），不处理滑动
     if (e.touches.length > 1) {
-      setTouchStartY(null)
-      setTouchStartX(null)
-      setIsSwiping(false)
+      touchStartYRef.current = null
+      touchStartXRef.current = null
+      isSwipingRef.current = false
+      console.log('[手势] touchStart: 多点触控，忽略')
       return
     }
     
     const touch = e.touches[0]
-    setTouchStartY(touch.clientY)
-    setTouchStartX(touch.clientX)
-    setIsSwiping(false)
+    touchStartYRef.current = touch.clientY
+    touchStartXRef.current = touch.clientX
+    isSwipingRef.current = false
+    console.log(`[手势] touchStart: y=${touch.clientY.toFixed(0)}, x=${touch.clientX.toFixed(0)}, mode=${viewMode}`)
   }
   
   // 手势滑动处理：触摸移动（判断滑动方向并阻止默认行为）
   const handleTouchMove = (e: React.TouchEvent) => {
     // 只在移动端、全屏下启用（所有模式）
     if (!isMobile || !fullscreen) return
-    if (touchStartY === null || touchStartX === null) return
+    if (touchStartYRef.current === null || touchStartXRef.current === null) return
     
     // 如果是多点触控（双指缩放），取消滑动状态
     if (e.touches.length > 1) {
-      setTouchStartY(null)
-      setTouchStartX(null)
-      setIsSwiping(false)
+      touchStartYRef.current = null
+      touchStartXRef.current = null
+      isSwipingRef.current = false
       return
     }
     
     const touch = e.touches[0]
-    const deltaY = touch.clientY - touchStartY
-    const deltaX = touch.clientX - touchStartX
+    const deltaY = touch.clientY - touchStartYRef.current
+    const deltaX = touch.clientX - touchStartXRef.current
     
     // 判断是否为垂直滑动（垂直距离大于水平距离）
     if (Math.abs(deltaY) > Math.abs(deltaX) && Math.abs(deltaY) > 10) {
-      setIsSwiping(true)
+      if (!isSwipingRef.current) {
+        console.log(`[手势] touchMove: 确认垂直滑动，deltaY=${deltaY.toFixed(0)}, deltaX=${deltaX.toFixed(0)}`)
+      }
+      isSwipingRef.current = true
       // 阻止默认滚动行为
       e.preventDefault()
     }
@@ -1606,27 +1620,37 @@ export default function HomePage() {
     
     // 如果还有其他触点（多点触控未完全结束），不处理
     if (e.touches.length > 0) {
-      setTouchStartY(null)
-      setTouchStartX(null)
-      setIsSwiping(false)
+      touchStartYRef.current = null
+      touchStartXRef.current = null
+      isSwipingRef.current = false
+      console.log('[手势] touchEnd: 还有触点，忽略')
       return
     }
     
-    if (touchStartY === null || !isSwiping) {
-      setTouchStartY(null)
-      setTouchStartX(null)
-      setIsSwiping(false)
+    const startY = touchStartYRef.current
+    const isSwiping = isSwipingRef.current
+    
+    console.log(`[手势] touchEnd: startY=${startY?.toFixed(0) ?? 'null'}, isSwiping=${isSwiping}, isSwitching=${isSwitching}, mode=${viewMode}`)
+    
+    if (startY === null || !isSwiping) {
+      touchStartYRef.current = null
+      touchStartXRef.current = null
+      isSwipingRef.current = false
+      console.log(`[手势] touchEnd: 跳过 - startY=${startY}, isSwiping=${isSwiping}`)
       return
     }
     
     const touch = e.changedTouches[0]
-    const deltaY = touch.clientY - touchStartY
+    const deltaY = touch.clientY - startY
     
     // 判断是否达到切换阈值
     const shouldSwitch = Math.abs(deltaY) > swipeThreshold
     
+    console.log(`[手势] touchEnd: deltaY=${deltaY.toFixed(0)}, threshold=${swipeThreshold}, shouldSwitch=${shouldSwitch}`)
+    
     if (shouldSwitch) {
       const direction = deltaY < 0 ? 'up' : 'down'
+      console.log(`[手势] 触发切换: direction=${direction}, mode=${viewMode}, isSwitching=${isSwitching}`)
       
       // ✅ 在用户交互上下文中调用 warmUp（首次取消静音）
       if (mobileVideoRef.current?.warmUp) {
@@ -1641,8 +1665,10 @@ export default function HomePage() {
       if (viewMode === 'random') {
         if (direction === 'up') {
           if (randomHistoryIndex === -1) {
+            console.log('[手势] 随机模式向上 → loadRandomMedia()')
             loadRandomMedia()
           } else {
+            console.log('[手势] 随机模式向上（历史中）→ loadNextRandomFile()')
             loadNextRandomFile()
           }
         } else {
@@ -1651,27 +1677,32 @@ export default function HomePage() {
           const targetIndex = randomHistory.length + newIndex
           
           // 计算回看的步数：从当前位置往前数了多少个文件
-          // 例如：length=4, 当前在index=3(-1), 要去index=0(-4), 回看步数 = 3-0 = 3
           const stepsBack = (randomHistory.length - 1) - targetIndex
           
           if (targetIndex < 0 || stepsBack > maxHistoryCount) {
+            console.log('[手势] 随机模式向下 → 已到历史上限')
             setSnackbarMessage('最多只能回看3个文件')
             setSnackbarSeverity('info')
             setSnackbarOpen(true)
           } else {
+            console.log('[手势] 随机模式向下 → loadPreviousRandomFile()')
             loadPreviousRandomFile()
           }
         }
       } else if (viewMode === 'gallery') {
           if (direction === 'up') {
+            console.log('[手势] 图组模式向上 → nextInGroup()')
             nextInGroup()
           } else {
+            console.log('[手势] 图组模式向下 → previousInGroup()')
             previousInGroup()
           }
         } else if (viewMode === 'large-video') {
           if (direction === 'up') {
+            console.log('[手势] 大视频模式向上 → loadRandomMedia()')
             loadRandomMedia()
           } else {
+            console.log('[手势] 大视频模式向下 → 不支持回看')
             setSnackbarMessage('大视频模式暂不支持回看')
             setSnackbarSeverity('info')
             setSnackbarOpen(true)
@@ -1680,9 +1711,9 @@ export default function HomePage() {
     }
     
     // 重置触摸状态
-    setTouchStartY(null)
-    setTouchStartX(null)
-    setIsSwiping(false)
+    touchStartYRef.current = null
+    touchStartXRef.current = null
+    isSwipingRef.current = false
   }
 
   //#endregion 手势相关函数
