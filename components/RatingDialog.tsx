@@ -198,6 +198,8 @@ export default function RatingDialog({
       onClose={onClose} 
       maxWidth="md" 
       fullWidth
+      keepMounted
+      transitionDuration={150}
       container={container || undefined}
       slotProps={{
         backdrop: {

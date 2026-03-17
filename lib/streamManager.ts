@@ -215,5 +215,22 @@ export function stopCleanupInterval(): void {
   }
 }
 
+// 清理所有流资源
+export function cleanupStreamManager(): void {
+  console.log('🧹 [流管理] 清理所有资源...')
+  
+  // 停止定时器
+  stopCleanupInterval()
+  
+  // 清理所有活跃流
+  const activeCount = activeStreams.size
+  if (activeCount > 0) {
+    console.log(`🧹 [流管理] 清理 ${activeCount} 个活跃流...`)
+    activeStreams.clear()
+  }
+  
+  console.log('✅ [流管理] 资源清理完成')
+}
+
 // 自动启动定期清理
 startCleanupInterval()

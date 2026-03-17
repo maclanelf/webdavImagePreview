@@ -71,6 +71,8 @@ import DraggableBox from '@/components/DraggableBox'
 import DraggableFab from '@/components/DraggableFab'
 import InstantVideoPlayer from '@/components/InstantVideoPlayer'
 import MobileVideoPlayer from '@/components/MobileVideoPlayer'
+import CreatorTag from '@/components/CreatorTag'
+import CreatorDialog from '@/components/CreatorDialog'
 import databasePreloadManager from '@/lib/databasePreloadManager'
 import { getPlaybackStrategy, buildVideoStreamUrl } from '@/lib/videoFormat'
 import { initEruda, getErudaEnabled, setErudaEnabled } from '@/lib/erudaInit'
@@ -185,6 +187,13 @@ export default function HomePage() {
   const [currentRating, setCurrentRating] = useState<MediaRating | GroupRating | null>(null)
   // 评分类型：单个媒体或图组
   const [ratingType, setRatingType] = useState<'media' | 'group'>('media')
+  
+  // 博主对话框打开状态
+  const [creatorDialogOpen, setCreatorDialogOpen] = useState(false)
+  // 当前识别的博主
+  const [currentCreator, setCurrentCreator] = useState<any>(null)
+  // 用于强制 CreatorTag 重新识别博主
+  const [creatorRefreshKey, setCreatorRefreshKey] = useState(0)
   
   // 查看开始时间（用于自动标记已看过）
   const [viewStartTime, setViewStartTime] = useState<number | null>(null)
@@ -307,45 +316,6 @@ export default function HomePage() {
       document.removeEventListener('MSFullscreenChange', handleFullscreenChange)
     }
   }, [currentFile, fullscreenTransitionOverlay])
-
-  // 页面卸载时清理所有活动的视频流
-  useEffect(() => {
-    const cleanupStreams = () => {
-      console.log('🧹 [页面] 页面卸载，清理视频流')
-      
-      // 先清理本地的视频元素
-      if (instantVideoRef.current) {
-        const videoElement = instantVideoRef.current.getVideoElement?.()
-        if (videoElement) {
-          videoElement.pause()
-          videoElement.src = ''
-          videoElement.load()
-        }
-      }
-      
-      // 然后通知服务端清理所有活动流
-      // 使用 sendBeacon 确保在页面卸载时也能发送请求
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon('/api/webdav/cleanup-streams', '')
-      } else {
-        // 降级方案：使用 fetch
-        fetch('/api/webdav/cleanup-streams', { 
-          method: 'POST',
-          keepalive: true 
-        }).catch(() => {})
-      }
-    }
-    
-    // 监听页面卸载事件
-    window.addEventListener('beforeunload', cleanupStreams)
-    // 监听页面隐藏事件（移动端切换应用时触发）
-    window.addEventListener('pagehide', cleanupStreams)
-    
-    return () => {
-      window.removeEventListener('beforeunload', cleanupStreams)
-      window.removeEventListener('pagehide', cleanupStreams)
-    }
-  }, [])
 
   // 初始化 eruda 调试工具
   useEffect(() => {
@@ -754,6 +724,7 @@ export default function HomePage() {
     
     try {
       setCurrentFile(file)
+      setCurrentCreator(null)
       setCurrentGroupIndex(index)
       // 尝试从预加载缓存获取
       let preloadedBlob = databasePreloadManager.getPreloadedFile(file.filename)
@@ -1126,6 +1097,7 @@ export default function HomePage() {
 
     try {
       setCurrentFile(fileToLoad)
+      setCurrentCreator(null)
 
       // 尝试从预加载缓存获取（如果文件在缓存中）
       const preloadedBlob = databasePreloadManager.getPreloadedFile(fileToLoad.filename)
@@ -1432,6 +1404,7 @@ export default function HomePage() {
 
     try {
       setCurrentFile(fileToLoad)
+      setCurrentCreator(null)
 
       // 从历史缓存中获取（loadFileDirectly 只用于历史导航）
       const cachedData = randomHistoryCache.current.get(fileToLoad.filename)
@@ -1799,6 +1772,7 @@ export default function HomePage() {
       setError(null)
       
       setCurrentFile(fileToLoad)
+      setCurrentCreator(null)
       
       // 检查是否启用直链播放
       if (config.enableDirectLink && config.directLinkUrl) {
@@ -2687,6 +2661,8 @@ export default function HomePage() {
       } else {
         setCurrentRating(null)
       }
+
+      // 同步更新当前博主信息由 CreatorTag 的 onCreatorIdentified 回调负责
     } catch (error) {
       console.error('加载媒体评分失败:', error)
       setCurrentRating(null)
@@ -3402,141 +3378,180 @@ export default function HomePage() {
               }}
             >
               {mediaType === 'image' && (
-                <CardMedia
-                  component="img"
-                  image={mediaUrl || ''}
-                  alt={currentFile?.basename || ''}
-                  sx={{
-                    width: fullscreen ? 'auto' : '100%',
-                    maxWidth: '100%',
-                    maxHeight: fullscreen ? '100%' : 'calc(100vh - 150px)',
-                    objectFit: 'contain',
-                  }}
-                />
+                <>
+                  <CardMedia
+                    component="img"
+                    image={mediaUrl || ''}
+                    alt={currentFile?.basename || ''}
+                    sx={{
+                      width: fullscreen ? 'auto' : '100%',
+                      maxWidth: '100%',
+                      maxHeight: fullscreen ? '100%' : 'calc(100vh - 150px)',
+                      objectFit: 'contain',
+                    }}
+                  />
+                  {/* 博主标签 - 仅在有文件时显示 */}
+                  {currentFile && (
+                    <CreatorTag
+                      key={creatorRefreshKey}
+                      filePath={currentFile.filename}
+                      onCreatorIdentified={setCurrentCreator}
+                      onTagClick={() => {
+                        setCreatorDialogOpen(true)
+                      }}
+                    />
+                  )}
+                </>
               )}
               
               {/* 移动端小视频：MobileVideoPlayer 组件 */}
               {/* 初始化时也渲染（即使没有 currentFile），确保 ref 可用 */}
               {isMobile && (
-                <MobileVideoPlayer
-                  ref={mobileVideoRef}
-                  src={mediaUrl || 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAAAu1tZGF0AAACrQYF//+c3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE1MiByMjg1NCBlOWE1OTAzIC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAxNyAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTEgcmVmPTMgZGVibG9jaz0xOjA6MCBhbmFseXNlPTB4MzoweDExMyBtZT1oZXggc3VibWU9NyBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0xIG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MSA4eDhkY3Q9MSBjcW09MCBkZWFkem9uZT0yMSwxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0tMiB0aHJlYWRzPTEgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0zIGJfcHlyYW1pZD0yIGJfYWRhcHQ9MSBiX2JpYXM9MCBkaXJlY3Q9MSB3ZWlnaHRiPTEgb3Blbl9nb3A9MCB3ZWlnaHRwPTIga2V5aW50PTI1MCBrZXlpbnRfbWluPTI1IHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19sb29rYWhlYWQ9NDAgcmM9Y3JmIG1idHJlZT0xIGNyZj0yMy4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02OSBxcHN0ZXA9NCBpcF9yYXRpbz0xLjQwIGFxPTE6MS4wMACAAAAA='}
-                  autoPlay={shouldAutoPlay && !videoStateRef.current}
-                  isParentFullscreen={fullscreen}
-                  isVisible={mediaType === 'small-video'}
-                  onTimeUpdate={(currentTime, duration) => {
-                    const video = mobileVideoRef.current?.getVideoElement()
-                    if (video) {
-                      handleVideoTimeUpdate({
-                        currentTarget: video
-                      } as React.SyntheticEvent<HTMLVideoElement>)
-                    }
-                  }}
-                  onEnded={handleVideoEnded}
-                  onPlay={() => {
-                    console.log('[视频] 播放开始')
-                  }}
-                />
+                <Box sx={{ position: 'relative', width: '100%', height: '100%' }}>
+                  <MobileVideoPlayer
+                    ref={mobileVideoRef}
+                    src={mediaUrl || 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAAAu1tZGF0AAACrQYF//+c3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE1MiByMjg1NCBlOWE1OTAzIC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAxNyAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTEgcmVmPTMgZGVibG9jaz0xOjA6MCBhbmFseXNlPTB4MzoweDExMyBtZT1oZXggc3VibWU9NyBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0xIG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MSA4eDhkY3Q9MSBjcW09MCBkZWFkem9uZT0yMSwxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0tMiB0aHJlYWRzPTEgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0zIGJfcHlyYW1pZD0yIGJfYWRhcHQ9MSBiX2JpYXM9MCBkaXJlY3Q9MSB3ZWlnaHRiPTEgb3Blbl9nb3A9MCB3ZWlnaHRwPTIga2V5aW50PTI1MCBrZXlpbnRfbWluPTI1IHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19sb29rYWhlYWQ9NDAgcmM9Y3JmIG1idHJlZT0xIGNyZj0yMy4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02OSBxcHN0ZXA9NCBpcF9yYXRpbz0xLjQwIGFxPTE6MS4wMACAAAAA='}
+                    autoPlay={shouldAutoPlay && !videoStateRef.current}
+                    isParentFullscreen={fullscreen}
+                    isVisible={mediaType === 'small-video'}
+                    onTimeUpdate={(currentTime, duration) => {
+                      const video = mobileVideoRef.current?.getVideoElement()
+                      if (video) {
+                        handleVideoTimeUpdate({
+                          currentTarget: video
+                        } as React.SyntheticEvent<HTMLVideoElement>)
+                      }
+                    }}
+                    onEnded={handleVideoEnded}
+                    onPlay={() => {
+                      console.log('[视频] 播放开始')
+                    }}
+                  />
+                  {/* 博主标签 - 仅在有文件且是小视频时显示 */}
+                  {currentFile && mediaType === 'small-video' && (
+                    <CreatorTag
+                      key={creatorRefreshKey}
+                      filePath={currentFile.filename}
+                      onCreatorIdentified={setCurrentCreator}
+                      onTagClick={() => {
+                        setCreatorDialogOpen(true)
+                      }}
+                    />
+                  )}
+                </Box>
               )}
               
               {/* 桌面端小视频：原生 video 元素 */}
               {mediaType === 'small-video' && !isMobile && mediaUrl && (
-                <Box
-                  component="video"
-                  ref={videoRef}
-                  src={mediaUrl}
-                  controls
-                  autoPlay={playIntentRef.current && !videoStateRef.current}
-                  muted={true}
-                  playsInline
-                  preload="metadata"
-                  webkit-playsinline="true"
-                  onTimeUpdate={handleVideoTimeUpdate}
-                  onEnded={handleVideoEnded}
-                  onPlay={() => {
-                    console.log('[视频] 播放开始')
-                    setTimeout(() => {
-                      if (playIntentRef.current) {
-                        playIntentRef.current = false
-                        console.log('[视频] 重置播放意图')
-                      }
-                    }, 1000)
-                    
-                    const video = videoRef.current
-                    if (video?.muted) {
+                <Box sx={{ position: 'relative', width: '100%', height: '100%' }}>
+                  <Box
+                    component="video"
+                    ref={videoRef}
+                    src={mediaUrl}
+                    controls
+                    autoPlay={playIntentRef.current && !videoStateRef.current}
+                    muted={true}
+                    playsInline
+                    preload="metadata"
+                    webkit-playsinline="true"
+                    onTimeUpdate={handleVideoTimeUpdate}
+                    onEnded={handleVideoEnded}
+                    onPlay={() => {
+                      console.log('[视频] 播放开始')
                       setTimeout(() => {
-                        video.muted = false
-                        console.log('[视频] 已取消静音')
-                      }, 300)
-                    }
-                  }}
-                  onLoadedMetadata={(e) => {
-                    const video = e.currentTarget as HTMLVideoElement
-                    console.log('[视频] onLoadedMetadata 触发, playIntent:', playIntentRef.current)
-                    if (playIntentRef.current && !videoStateRef.current) {
-                      video.play().catch(error => {
-                        console.log('[视频] onLoadedMetadata 播放失败，尝试静音播放:', error)
-                        video.muted = true
-                        video.play().then(() => {
-                          console.log('[视频] 静音播放成功')
-                          setTimeout(() => {
-                            video.muted = false
-                          }, 300)
-                        }).catch(err => {
-                          console.error('[视频] 静音播放也失败:', err)
+                        if (playIntentRef.current) {
+                          playIntentRef.current = false
+                          console.log('[视频] 重置播放意图')
+                        }
+                      }, 1000)
+                      
+                      const video = videoRef.current
+                      if (video?.muted) {
+                        setTimeout(() => {
+                          video.muted = false
+                          console.log('[视频] 已取消静音')
+                        }, 300)
+                      }
+                    }}
+                    onLoadedMetadata={(e) => {
+                      const video = e.currentTarget as HTMLVideoElement
+                      console.log('[视频] onLoadedMetadata 触发, playIntent:', playIntentRef.current)
+                      if (playIntentRef.current && !videoStateRef.current) {
+                        video.play().catch(error => {
+                          console.log('[视频] onLoadedMetadata 播放失败，尝试静音播放:', error)
+                          video.muted = true
+                          video.play().then(() => {
+                            console.log('[视频] 静音播放成功')
+                            setTimeout(() => {
+                              video.muted = false
+                            }, 300)
+                          }).catch(err => {
+                            console.error('[视频] 静音播放也失败:', err)
+                          })
                         })
-                      })
-                    }
-                  }}
-                  onLoadedData={(e) => {
-                    const video = e.currentTarget as HTMLVideoElement
-                    console.log('[视频] onLoadedData 触发, playIntent:', playIntentRef.current)
-                    if (playIntentRef.current && !videoStateRef.current && video.paused) {
-                      video.play().catch(error => {
-                        console.log('[视频] onLoadedData 播放失败，尝试静音播放:', error)
-                        video.muted = true
-                        video.play().catch(err => {
-                          console.error('[视频] onLoadedData 静音播放也失败:', err)
+                      }
+                    }}
+                    onLoadedData={(e) => {
+                      const video = e.currentTarget as HTMLVideoElement
+                      console.log('[视频] onLoadedData 触发, playIntent:', playIntentRef.current)
+                      if (playIntentRef.current && !videoStateRef.current && video.paused) {
+                        video.play().catch(error => {
+                          console.log('[视频] onLoadedData 播放失败，尝试静音播放:', error)
+                          video.muted = true
+                          video.play().catch(err => {
+                            console.error('[视频] onLoadedData 静音播放也失败:', err)
+                          })
                         })
-                      })
-                    }
-                  }}
-                  onCanPlay={(e) => {
-                    const video = e.currentTarget as HTMLVideoElement
-                    console.log('[视频] onCanPlay 触发, playIntent:', playIntentRef.current, 'paused:', video.paused)
-                    // 如果有播放意图且视频还没播放，再次尝试
-                    if (playIntentRef.current && !videoStateRef.current && video.paused) {
-                      video.play().catch(error => {
-                        console.log('[视频] onCanPlay 播放失败，尝试静音播放:', error)
-                        video.muted = true
-                        video.play().catch(err => {
-                          console.error('[视频] onCanPlay 静音播放也失败:', err)
+                      }
+                    }}
+                    onCanPlay={(e) => {
+                      const video = e.currentTarget as HTMLVideoElement
+                      console.log('[视频] onCanPlay 触发, playIntent:', playIntentRef.current, 'paused:', video.paused)
+                      // 如果有播放意图且视频还没播放，再次尝试
+                      if (playIntentRef.current && !videoStateRef.current && video.paused) {
+                        video.play().catch(error => {
+                          console.log('[视频] onCanPlay 播放失败，尝试静音播放:', error)
+                          video.muted = true
+                          video.play().catch(err => {
+                            console.error('[视频] onCanPlay 静音播放也失败:', err)
+                          })
                         })
-                      })
-                    }
-                  }}
-                  sx={{
-                    width: fullscreen ? 'auto' : '100%',
-                    maxWidth: '100%',
-                    maxHeight: fullscreen ? '100%' : 'calc(100vh - 150px)',
-                    // 使用 CSS 淡化中间的播放按钮
-                    '&::-webkit-media-controls-play-button': {
-                      opacity: 0.4,
-                      transition: 'opacity 0.2s',
-                    },
-                    '&:hover::-webkit-media-controls-play-button': {
-                      opacity: 1,
-                    },
-                    // Firefox
-                    '&::-moz-media-controls-play-button': {
-                      opacity: 0.4,
-                      transition: 'opacity 0.2s',
-                    },
-                    '&:hover::-moz-media-controls-play-button': {
-                      opacity: 1,
-                    },
-                  }}
-                />
+                      }
+                    }}
+                    sx={{
+                      width: fullscreen ? 'auto' : '100%',
+                      maxWidth: '100%',
+                      maxHeight: fullscreen ? '100%' : 'calc(100vh - 150px)',
+                      // 使用 CSS 淡化中间的播放按钮
+                      '&::-webkit-media-controls-play-button': {
+                        opacity: 0.4,
+                        transition: 'opacity 0.2s',
+                      },
+                      '&:hover::-webkit-media-controls-play-button': {
+                        opacity: 1,
+                      },
+                      // Firefox
+                      '&::-moz-media-controls-play-button': {
+                        opacity: 0.4,
+                        transition: 'opacity 0.2s',
+                      },
+                      '&:hover::-moz-media-controls-play-button': {
+                        opacity: 1,
+                      },
+                    }}
+                  />
+                  {/* 博主标签 - 仅在有文件时显示 */}
+                  {currentFile && (
+                    <CreatorTag
+                      key={creatorRefreshKey}
+                      filePath={currentFile.filename}
+                      onCreatorIdentified={setCurrentCreator}
+                      onTagClick={() => {
+                        setCreatorDialogOpen(true)
+                      }}
+                    />
+                  )}
+                </Box>
               )}
               {mediaType === 'stream-video' && mediaUrl && (
                 <Box sx={{ position: 'relative', width: '100%', height: '100%' }}>
@@ -4508,6 +4523,25 @@ export default function HomePage() {
         }
         initialData={currentRating || undefined}
         type={ratingType}
+      />
+
+      {/* 博主对话框 */}
+      <CreatorDialog
+        open={creatorDialogOpen}
+        onClose={() => setCreatorDialogOpen(false)}
+        filePath={currentFile?.filename || ''}
+        existingCreator={currentCreator}
+        onMarkUnknown={() => {
+          setCurrentCreator(null)
+          setCreatorRefreshKey(k => k + 1)
+        }}
+        onSuccess={() => {
+          if (currentFile) {
+            // 强制 CreatorTag 重新调用 identify，回调会更新 currentCreator
+            setCreatorRefreshKey(k => k + 1)
+            loadMediaRating(currentFile.filename)
+          }
+        }}
       />
 
       {/* 评分提示 */}

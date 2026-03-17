@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { groupRatings, customEvaluations, categories, ensureInitialized } from '@/lib/database'
+import { groupRatings, customEvaluations, categories, ensureInitialized, performCheckpoint } from '@/lib/database'
+import { UNKNOWN_CREATOR_ID } from '@/lib/constants'
 
 // 辅助函数：解析JSON字段
 function parseRatingData(rating: any) {
@@ -71,7 +72,8 @@ export async function POST(request: NextRequest) {
       recommendationReason,
       customEvaluation,
       category,
-      isViewed
+      isViewed,
+      creatorId
     } = body
 
     console.log(`💾 [API POST] 保存图组评分: ${groupName} (${rating}星, ${fileCount}个文件)`)
@@ -92,8 +94,16 @@ export async function POST(request: NextRequest) {
       recommendationReason,
       customEvaluation,
       category,
-      isViewed
+      isViewed,
+      creatorId
     })
+    
+    // 如果是标记"不认识"（creatorId = UNKNOWN_CREATOR_ID），立即执行 checkpoint 确保数据写入磁盘
+    if (creatorId === UNKNOWN_CREATOR_ID) {
+      const checkpointStartTime = Date.now()
+      performCheckpoint('PASSIVE')
+      console.log(`⏱️ [ratings/group POST] checkpoint完成: ${Date.now() - checkpointStartTime}ms`)
+    }
 
     // 更新自定义评价标签的使用计数
     if (customEvaluation) {

@@ -64,6 +64,13 @@ export interface OptimizedScanOptions {
 let cachedClient: WebDAVClient | null = null
 let cachedConfig: WebDAVConfig | null = null
 
+// 清理 WebDAV 客户端缓存
+export function cleanupWebDAVCache() {
+  console.log('🧹 [WebDAV-Optimized] 清理客户端缓存...')
+  cachedClient = null
+  cachedConfig = null
+}
+
 /**
  * 获取 WebDAV 客户端（带缓存）
  */

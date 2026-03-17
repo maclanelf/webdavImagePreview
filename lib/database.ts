@@ -2,6 +2,7 @@ import Database from 'better-sqlite3'
 import path from 'path'
 import { getCurrentLocalISOString } from './timeUtils'
 import { repairDatabase } from './repairDatabase'
+import { UNKNOWN_CREATOR_ID } from './constants'
 
 // 数据库文件路径
 const dbPath = path.join(process.cwd(), 'data', 'media_ratings.db')
@@ -107,6 +108,99 @@ export function stopCheckpointTimer() {
     globalThis.__checkpointTimer = undefined
     console.log('🛑 [Checkpoint] 停止定时 checkpoint 任务')
   }
+}
+
+// 🔧 清理所有缓存和资源
+// 注意：只清理服务端资源，客户端资源（如 databasePreloadManager）由浏览器管理
+// 
+// @param closeDatabase - 是否关闭数据库连接（默认 true）
+//   - true: 完全关闭（服务器退出时）
+//   - false: 只清理缓存（浏览器关闭时，服务器继续运行）
+export function cleanupDatabase(closeDatabase: boolean = true) {
+  console.log(`🧹 [Cleanup] 开始清理服务端资源... (关闭数据库: ${closeDatabase})`)
+
+  try {
+    // 1. 清除博主别名缓存（服务端）
+    clearCreatorAliasCache()
+
+    // 2. 清理 WebDAV 客户端缓存（服务端）
+    try {
+      const { cleanupWebDAVCache: cleanupWebDAV } = require('./webdav')
+      cleanupWebDAV()
+    } catch (e) {
+      // 模块可能未加载，忽略
+    }
+
+    try {
+      const { cleanupWebDAVCache: cleanupWebDAVOptimized } = require('./webdav-optimized')
+      cleanupWebDAVOptimized()
+    } catch (e) {
+      // 模块可能未加载，忽略
+    }
+
+    // 注意：不在这里清理 streamManager，因为它已经在 /api/cleanup 中单独清理了
+    // 避免重复清理
+
+    // 注意：不清理 databasePreloadManager，因为它是客户端资源
+    // 客户端资源由浏览器在页面关闭时自动释放
+
+    // 3. 执行 checkpoint（服务端）
+    if (db) {
+      console.log('🔄 [Cleanup] 执行 checkpoint...')
+      performCheckpoint('PASSIVE') // 使用 PASSIVE 模式，不阻塞
+    }
+
+    // 4. 关闭数据库连接（仅在服务器退出时）
+    if (closeDatabase && db) {
+      console.log('🔒 [Cleanup] 关闭数据库连接...')
+      
+      // 停止定时 checkpoint 任务
+      stopCheckpointTimer()
+      
+      // 执行最终 checkpoint
+      performCheckpoint('RESTART')
+      
+      // 关闭连接
+      db.close()
+      globalThis.__db = undefined
+      globalThis.__dbInitialized = undefined
+    }
+
+    console.log('✅ [Cleanup] 服务端资源清理完成')
+  } catch (error) {
+    console.error('❌ [Cleanup] 清理服务端资源失败:', error)
+  }
+}
+
+
+// 注册进程退出时的清理函数
+if (typeof process !== 'undefined') {
+  // 正常退出
+  process.on('exit', () => {
+    console.log('🚪 [Process] 进程退出，清理资源...')
+    cleanupDatabase()
+  })
+  
+  // SIGINT (Ctrl+C)
+  process.on('SIGINT', () => {
+    console.log('🛑 [Process] 收到 SIGINT 信号，清理资源...')
+    cleanupDatabase()
+    process.exit(0)
+  })
+  
+  // SIGTERM
+  process.on('SIGTERM', () => {
+    console.log('🛑 [Process] 收到 SIGTERM 信号，清理资源...')
+    cleanupDatabase()
+    process.exit(0)
+  })
+  
+  // 未捕获的异常
+  process.on('uncaughtException', (error) => {
+    console.error('💥 [Process] 未捕获的异常:', error)
+    cleanupDatabase()
+    process.exit(1)
+  })
 }
 
 // 创建数据库连接（使用缓存）
@@ -230,6 +324,70 @@ export function initDatabase() {
       )
     `)
 
+    // 创建博主/创作者表
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS creators (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        primary_name TEXT NOT NULL UNIQUE,
+        other_names TEXT,
+        appearance_rating INTEGER CHECK(appearance_rating >= 1 AND appearance_rating <= 5),
+        body_rating INTEGER CHECK(body_rating >= 1 AND body_rating <= 5),
+        bio TEXT,
+        avatar_path TEXT,
+        usage_count INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT (datetime(\'now\', \'localtime\')),
+        updated_at DATETIME DEFAULT (datetime(\'now\', \'localtime\'))
+      )
+    `)
+    
+    // 创建 creators 索引
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_creators_primary_name ON creators(primary_name)`)
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_creators_usage ON creators(usage_count DESC)`)
+    
+    // 为 media_ratings 添加 creator_id 字段（如果表已存在）
+    try {
+      db.exec(`ALTER TABLE media_ratings ADD COLUMN creator_id INTEGER REFERENCES creators(id)`)
+      console.log('✅ 添加 media_ratings.creator_id 字段成功')
+    } catch (e: any) {
+      if (!e.message?.includes('duplicate column name')) {
+        console.warn('⚠️ 添加 media_ratings.creator_id 字段失败:', e.message)
+      }
+    }
+    
+    // 为 group_ratings 添加 creator_id 字段（如果表已存在）
+    try {
+      db.exec(`ALTER TABLE group_ratings ADD COLUMN creator_id INTEGER REFERENCES creators(id)`)
+      console.log('✅ 添加 group_ratings.creator_id 字段成功')
+    } catch (e: any) {
+      if (!e.message?.includes('duplicate column name')) {
+        console.warn('⚠️ 添加 group_ratings.creator_id 字段失败:', e.message)
+      }
+    }
+    
+    // 创建 creator_id 索引
+    try {
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_media_ratings_creator ON media_ratings(creator_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_group_ratings_creator ON group_ratings(creator_id)`)
+      console.log('✅ 创建 creator_id 索引成功')
+    } catch (e: any) {
+      console.warn('⚠️ 创建 creator_id 索引失败:', e.message)
+    }
+    
+    // 创建特殊的"不认识"博主记录（ID = -1，不影响 AUTOINCREMENT 序列）
+    try {
+      const existingUnknown = db.prepare('SELECT id FROM creators WHERE id = ?').get(UNKNOWN_CREATOR_ID)
+      
+      if (!existingUnknown) {
+        db.prepare(`
+          INSERT INTO creators (id, primary_name, bio, usage_count)
+          VALUES (?, ?, ?, ?)
+        `).run(UNKNOWN_CREATOR_ID, '不认识', '用于标记无法识别的博主', 0)
+        console.log(`✅ 创建特殊"不认识"博主记录成功 (ID: ${UNKNOWN_CREATOR_ID})`)
+      }
+    } catch (e: any) {
+      console.warn('⚠️ 创建"不认识"博主记录失败:', e.message)
+    }
+    
     // 创建扫描缓存表
     db.exec(`
       CREATE TABLE IF NOT EXISTS scan_cache (
@@ -459,6 +617,7 @@ export const mediaRatings = {
     customEvaluation?: string | string[]
     category?: string | string[]
     isViewed?: boolean
+    creatorId?: number | null
   }) => {
     const saveStartTime = Date.now()
     try {
@@ -468,6 +627,16 @@ export const mediaRatings = {
       const getStartTime = Date.now()
       const existing = mediaRatings.get(data.filePath)
       console.log(`⏱️ [mediaRatings.save] get existing: ${Date.now() - getStartTime}ms`)
+    
+    // 智能关联博主：如果没有提供 creatorId，尝试从路径匹配
+    let creatorId = data.creatorId
+    if (creatorId === undefined && !existing) {
+      const matchedCreator = creators.findCreatorByPath(data.filePath)
+      if (matchedCreator) {
+        creatorId = matchedCreator.id
+        console.log(`✨ [智能关联] 自动关联博主: ${matchedCreator.primaryName} (ID: ${creatorId})`)
+      }
+    }
     
     // 将数组转换为JSON字符串
     const customEvaluationStr = data.customEvaluation 
@@ -489,15 +658,16 @@ export const mediaRatings = {
       const stmt = db.prepare(`
         UPDATE media_ratings 
         SET rating = ?, recommendation_reason = ?, custom_evaluation = ?, 
-            category = ?, is_viewed = ?, updated_at = datetime(\'now\', \'localtime\')
+            category = ?, is_viewed = ?, creator_id = ?, updated_at = datetime('now', 'localtime')
         WHERE file_path = ?
       `)
       result = stmt.run(
-        data.rating || null,
-        data.recommendationReason || null,
-        customEvaluationStr,
-        categoryStr,
-        data.isViewed ? 1 : 0,
+        data.rating !== undefined ? data.rating : (existing as any).rating,
+        data.recommendationReason !== undefined ? data.recommendationReason : (existing as any).recommendation_reason,
+        customEvaluationStr !== null ? customEvaluationStr : (existing as any).custom_evaluation,
+        categoryStr !== null ? categoryStr : (existing as any).category,
+        data.isViewed !== undefined ? (data.isViewed ? 1 : 0) : (existing as any).is_viewed,
+        creatorId !== undefined ? creatorId : (existing as any).creator_id,
         data.filePath
       )
     } else {
@@ -505,8 +675,8 @@ export const mediaRatings = {
       const stmt = db.prepare(`
         INSERT INTO media_ratings 
         (file_path, file_name, file_type, rating, recommendation_reason, 
-         custom_evaluation, category, is_viewed)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         custom_evaluation, category, is_viewed, creator_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       result = stmt.run(
         data.filePath,
@@ -516,7 +686,8 @@ export const mediaRatings = {
         data.recommendationReason || null,
         customEvaluationStr,
         categoryStr,
-        data.isViewed ? 1 : 0
+        data.isViewed ? 1 : 0,
+        creatorId || null
       )
     }
     console.log(`⏱️ [mediaRatings.save] ${existing ? 'UPDATE' : 'INSERT'} media_ratings: ${Date.now() - dbStartTime}ms`)
@@ -587,10 +758,21 @@ export const groupRatings = {
     customEvaluation?: string | string[]
     category?: string | string[]
     isViewed?: boolean
+    creatorId?: number | null
   }) => {
     try {
       ensureInitialized()
       const existing = groupRatings.get(data.groupPath)
+    
+    // 智能关联博主：如果没有提供 creatorId，尝试从路径匹配
+    let creatorId = data.creatorId
+    if (creatorId === undefined && !existing) {
+      const matchedCreator = creators.findCreatorByPath(data.groupPath)
+      if (matchedCreator) {
+        creatorId = matchedCreator.id
+        console.log(`✨ [智能关联] 自动关联博主: ${matchedCreator.primaryName} (ID: ${creatorId})`)
+      }
+    }
     
     // 将数组转换为JSON字符串
     const customEvaluationStr = data.customEvaluation 
@@ -610,7 +792,7 @@ export const groupRatings = {
       const stmt = db.prepare(`
         UPDATE group_ratings 
         SET rating = ?, recommendation_reason = ?, custom_evaluation = ?, 
-            category = ?, is_viewed = ?, updated_at = datetime(\'now\', \'localtime\')
+            category = ?, is_viewed = ?, creator_id = ?, updated_at = datetime(\'now\', \'localtime\')
         WHERE group_path = ?
       `)
       return stmt.run(
@@ -619,6 +801,7 @@ export const groupRatings = {
         customEvaluationStr,
         categoryStr,
         data.isViewed ? 1 : 0,
+        creatorId !== undefined ? creatorId : (existing as any).creator_id,
         data.groupPath
       )
     } else {
@@ -626,8 +809,8 @@ export const groupRatings = {
       const stmt = db.prepare(`
         INSERT INTO group_ratings 
         (group_path, group_name, file_count, rating, recommendation_reason, 
-         custom_evaluation, category, is_viewed)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         custom_evaluation, category, is_viewed, creator_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       return stmt.run(
         data.groupPath,
@@ -637,7 +820,8 @@ export const groupRatings = {
         data.recommendationReason || null,
         customEvaluationStr,
         categoryStr,
-        data.isViewed ? 1 : 0
+        data.isViewed ? 1 : 0,
+        creatorId || null
       )
     }
     } catch (error) {
@@ -734,6 +918,712 @@ export const categories = {
         const stmt = db.prepare('DELETE FROM categories WHERE name = ?')
         return stmt.run(name)
       }
+      throw error
+    }
+  }
+}
+
+// 博主别名缓存（用于智能关联性能优化）
+let creatorAliasCache: {
+  data: Array<{ id: number; primaryName: string; aliases: string[] }> | null
+  lastUpdate: number
+  ttl: number // 缓存有效期（毫秒）
+} = {
+  data: null,
+  lastUpdate: 0,
+  ttl: 5 * 60 * 1000 // 5分钟
+}
+
+// 清除博主别名缓存（在创建/更新/删除博主时调用）
+function clearCreatorAliasCache() {
+  creatorAliasCache.data = null
+  creatorAliasCache.lastUpdate = 0
+  console.log('🗑️ [缓存] 博主别名缓存已清除')
+}
+
+// 获取博主别名缓存
+function getCreatorAliasCache() {
+  const now = Date.now()
+  
+  // 检查缓存是否有效
+  if (creatorAliasCache.data && (now - creatorAliasCache.lastUpdate) < creatorAliasCache.ttl) {
+    console.log('✅ [缓存] 使用博主别名缓存')
+    return creatorAliasCache.data
+  }
+  
+  // 重新加载缓存
+  console.log('🔄 [缓存] 重新加载博主别名缓存')
+  const stmt = db.prepare(`
+    SELECT id, primary_name, other_names
+    FROM creators 
+    ORDER BY usage_count DESC, id ASC
+  `)
+  const creators = stmt.all()
+  
+  creatorAliasCache.data = creators.map((c: any) => ({
+    id: c.id,
+    primaryName: c.primary_name,  // 数据库字段名
+    aliases: c.other_names ? JSON.parse(c.other_names) : []
+  }))
+  creatorAliasCache.lastUpdate = now
+  
+  return creatorAliasCache.data
+}
+
+// 博主/创作者相关操作
+export const creators = {
+  // 获取所有博主
+  getAll: () => {
+    try {
+      ensureInitialized()
+      const stmt = db.prepare('SELECT * FROM creators ORDER BY usage_count DESC, primary_name ASC')
+      const rows = stmt.all()
+      // 转换字段名：下划线 -> 驼峰，并解析 JSON 字段
+      return rows.map((row: any) => ({
+        id: row.id,
+        primaryName: row.primary_name,
+        otherNames: row.other_names ? JSON.parse(row.other_names) : [],
+        appearanceRating: row.appearance_rating,
+        bodyRating: row.body_rating,
+        bio: row.bio,
+        avatarPath: row.avatar_path,
+        usageCount: row.usage_count,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      }))
+    } catch (error) {
+      console.error('获取博主列表失败:', error)
+      return []
+    }
+  },
+
+  // 根据 ID 获取博主
+  get: (id: number) => {
+    try {
+      ensureInitialized()
+      const stmt = db.prepare('SELECT * FROM creators WHERE id = ?')
+      const row: any = stmt.get(id)
+      if (!row) return null
+      
+      // 转换字段名：下划线 -> 驼峰
+      return {
+        id: row.id,
+        primaryName: row.primary_name,
+        otherNames: row.other_names ? JSON.parse(row.other_names) : [],
+        appearanceRating: row.appearance_rating,
+        bodyRating: row.body_rating,
+        bio: row.bio,
+        avatarPath: row.avatar_path,
+        usageCount: row.usage_count,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      }
+    } catch (error) {
+      console.error('获取博主失败:', error)
+      return null
+    }
+  },
+
+  // 搜索博主（支持模糊搜索主名称和别名）
+  search: (keyword: string) => {
+    try {
+      ensureInitialized()
+      const searchTerm = `%${keyword}%`
+      
+      // 搜索主名称或别名包含关键词的博主
+      const stmt = db.prepare(`
+        SELECT * FROM creators 
+        WHERE primary_name LIKE ? OR other_names LIKE ?
+        ORDER BY 
+          CASE 
+            WHEN primary_name = ? THEN 0
+            WHEN primary_name LIKE ? THEN 1
+            ELSE 2
+          END,
+          usage_count DESC,
+          primary_name ASC
+        LIMIT 20
+      `)
+      
+      const rows = stmt.all(searchTerm, searchTerm, keyword, `${keyword}%`)
+      
+      // 转换字段名：下划线 -> 驼峰，并解析 JSON 字段
+      return rows.map((row: any) => ({
+        id: row.id,
+        primaryName: row.primary_name,
+        otherNames: row.other_names ? JSON.parse(row.other_names) : [],
+        appearanceRating: row.appearance_rating,
+        bodyRating: row.body_rating,
+        bio: row.bio,
+        avatarPath: row.avatar_path,
+        usageCount: row.usage_count,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      }))
+    } catch (error) {
+      console.error('搜索博主失败:', error)
+      return []
+    }
+  },
+
+  // 创建或更新博主
+  save: (data: {
+    id?: number
+    primaryName: string
+    otherNames?: string[]
+    appearanceRating?: number
+    bodyRating?: number
+    bio?: string
+    avatarPath?: string
+  }) => {
+    try {
+      ensureInitialized()
+      
+      // 处理别名：确保主名称也在别名列表中
+      let otherNames = data.otherNames ? [...data.otherNames] : []
+      
+      // 如果是新建博主，自动将主名称添加到别名列表
+      if (!data.id && !otherNames.includes(data.primaryName)) {
+        otherNames.push(data.primaryName)
+      }
+      
+      const otherNamesStr = otherNames.length > 0 ? JSON.stringify(otherNames) : null
+      
+      let result
+      if (data.id) {
+        // 更新现有博主
+        const stmt = db.prepare(`
+          UPDATE creators 
+          SET primary_name = ?, other_names = ?, appearance_rating = ?, 
+              body_rating = ?, bio = ?, avatar_path = ?,
+              updated_at = datetime('now', 'localtime')
+          WHERE id = ?
+        `)
+        result = stmt.run(
+          data.primaryName,
+          otherNamesStr,
+          data.appearanceRating || null,
+          data.bodyRating || null,
+          data.bio || null,
+          data.avatarPath || null,
+          data.id
+        )
+      } else {
+        // 创建新博主 - 先检查是否已存在同名博主
+        const existingByName = db.prepare('SELECT id FROM creators WHERE primary_name = ?').get(data.primaryName) as { id: number } | undefined
+        if (existingByName) {
+          // 已存在同名博主，改为更新
+          const stmt = db.prepare(`
+            UPDATE creators 
+            SET other_names = ?, appearance_rating = ?, 
+                body_rating = ?, bio = ?, avatar_path = ?,
+                updated_at = datetime('now', 'localtime')
+            WHERE id = ?
+          `)
+          result = stmt.run(
+            otherNamesStr,
+            data.appearanceRating || null,
+            data.bodyRating || null,
+            data.bio || null,
+            data.avatarPath || null,
+            existingByName.id
+          )
+          // 让调用方知道实际使用的 id
+          ;(result as any).existingId = existingByName.id
+        } else {
+          const stmt = db.prepare(`
+            INSERT INTO creators 
+            (primary_name, other_names, appearance_rating, body_rating, bio, avatar_path)
+            VALUES (?, ?, ?, ?, ?, ?)
+          `)
+          result = stmt.run(
+            data.primaryName,
+            otherNamesStr,
+            data.appearanceRating || null,
+            data.bodyRating || null,
+            data.bio || null,
+            data.avatarPath || null
+          )
+        }
+      }
+      
+      // 清除缓存
+      clearCreatorAliasCache()
+      
+      return result
+    } catch (error) {
+      console.error('保存博主失败:', error)
+      throw error
+    }
+  },
+
+  // 更换主名称
+  changePrimaryName: (id: number, newName: string, addOldToOthers: boolean = true) => {
+    try {
+      ensureInitialized()
+      
+      const creator = creators.get(id)
+      if (!creator) {
+        throw new Error('博主不存在')
+      }
+      
+      const otherNames = [...creator.otherNames]
+      
+      // 如果需要，将旧的主名称添加到其他名称
+      if (addOldToOthers && !otherNames.includes(creator.primaryName)) {
+        otherNames.push(creator.primaryName)
+      }
+      
+      // 从其他名称中移除新的主名称（如果存在）
+      const index = otherNames.indexOf(newName)
+      if (index > -1) {
+        otherNames.splice(index, 1)
+      }
+      
+      const stmt = db.prepare(`
+        UPDATE creators 
+        SET primary_name = ?, other_names = ?, updated_at = datetime('now', 'localtime')
+        WHERE id = ?
+      `)
+      const result = stmt.run(newName, JSON.stringify(otherNames), id)
+      
+      // 清除缓存
+      clearCreatorAliasCache()
+      
+      return result
+    } catch (error) {
+      console.error('更换主名称失败:', error)
+      throw error
+    }
+  },
+
+  // 添加别名
+  addOtherName: (id: number, name: string) => {
+    try {
+      ensureInitialized()
+      
+      const creator = creators.get(id)
+      if (!creator) {
+        throw new Error('博主不存在')
+      }
+      
+      const otherNames = [...creator.otherNames]
+      
+      // 检查是否已存在
+      if (otherNames.includes(name) || creator.primaryName === name) {
+        return { success: false, message: '名称已存在' }
+      }
+      
+      otherNames.push(name)
+      
+      const stmt = db.prepare(`
+        UPDATE creators 
+        SET other_names = ?, updated_at = datetime('now', 'localtime')
+        WHERE id = ?
+      `)
+      stmt.run(JSON.stringify(otherNames), id)
+      
+      // 清除缓存
+      clearCreatorAliasCache()
+      
+      return { success: true }
+    } catch (error) {
+      console.error('添加别名失败:', error)
+      throw error
+    }
+  },
+
+  // 删除别名
+  removeOtherName: (id: number, name: string) => {
+    try {
+      ensureInitialized()
+      
+      const creator = creators.get(id)
+      if (!creator) {
+        throw new Error('博主不存在')
+      }
+      
+      const otherNames = creator.otherNames.filter((n: string) => n !== name)
+      
+      const stmt = db.prepare(`
+        UPDATE creators 
+        SET other_names = ?, updated_at = datetime('now', 'localtime')
+        WHERE id = ?
+      `)
+      const result = stmt.run(JSON.stringify(otherNames), id)
+      
+      // 清除缓存
+      clearCreatorAliasCache()
+      
+      return result
+    } catch (error) {
+      console.error('删除别名失败:', error)
+      throw error
+    }
+  },
+
+  // 合并博主（将多个博主合并为一个）
+  merge: (targetId: number, sourceIds: number[]) => {
+    try {
+      ensureInitialized()
+      
+      const target = creators.get(targetId)
+      if (!target) {
+        throw new Error('目标博主不存在')
+      }
+      
+      // 使用事务确保数据一致性
+      const mergeTransaction = db.transaction(() => {
+        const allOtherNames = [...target.otherNames]
+        
+        for (const sourceId of sourceIds) {
+          const source = creators.get(sourceId)
+          if (!source) continue
+          
+          // 收集所有名称
+          if (!allOtherNames.includes(source.primaryName)) {
+            allOtherNames.push(source.primaryName)
+          }
+          source.otherNames.forEach((name: string) => {
+            if (!allOtherNames.includes(name) && name !== target.primaryName) {
+              allOtherNames.push(name)
+            }
+          })
+          
+          // 更新所有引用该博主的评分记录
+          db.prepare('UPDATE media_ratings SET creator_id = ? WHERE creator_id = ?')
+            .run(targetId, sourceId)
+          db.prepare('UPDATE group_ratings SET creator_id = ? WHERE creator_id = ?')
+            .run(targetId, sourceId)
+          
+          // 删除源博主
+          db.prepare('DELETE FROM creators WHERE id = ?').run(sourceId)
+        }
+        
+        // 更新目标博主的其他名称和使用次数
+        const stmt = db.prepare(`
+          UPDATE creators 
+          SET other_names = ?, 
+              usage_count = (
+                SELECT COUNT(*) FROM media_ratings WHERE creator_id = ?
+              ) + (
+                SELECT COUNT(*) FROM group_ratings WHERE creator_id = ?
+              ),
+              updated_at = datetime('now', 'localtime')
+          WHERE id = ?
+        `)
+        stmt.run(JSON.stringify(allOtherNames), targetId, targetId, targetId)
+      })
+      
+      mergeTransaction()
+      
+      // 清除缓存
+      clearCreatorAliasCache()
+      
+      return { success: true }
+    } catch (error) {
+      console.error('合并博主失败:', error)
+      throw error
+    }
+  },
+
+  // 删除博主
+  delete: (id: number) => {
+    try {
+      ensureInitialized()
+      
+      // 使用事务确保数据一致性
+      const deleteTransaction = db.transaction(() => {
+        // 清除评分表中的关联
+        db.prepare('UPDATE media_ratings SET creator_id = NULL WHERE creator_id = ?').run(id)
+        db.prepare('UPDATE group_ratings SET creator_id = NULL WHERE creator_id = ?').run(id)
+        
+        // 删除博主
+        db.prepare('DELETE FROM creators WHERE id = ?').run(id)
+      })
+      
+      deleteTransaction()
+      
+      // 清除缓存
+      clearCreatorAliasCache()
+      
+      return { success: true }
+    } catch (error) {
+      console.error('删除博主失败:', error)
+      throw error
+    }
+  },
+
+  // 获取博主的所有文件
+  getFiles: (id: number, options?: { type?: 'media' | 'group' }) => {
+    try {
+      ensureInitialized()
+      
+      const { type } = options || {}
+      const results: any = { media: [], groups: [] }
+      
+      if (!type || type === 'media') {
+        const stmt = db.prepare('SELECT * FROM media_ratings WHERE creator_id = ? ORDER BY updated_at DESC')
+        results.media = stmt.all(id)
+      }
+      
+      if (!type || type === 'group') {
+        const stmt = db.prepare('SELECT * FROM group_ratings WHERE creator_id = ? ORDER BY updated_at DESC')
+        results.groups = stmt.all(id)
+      }
+      
+      return results
+    } catch (error) {
+      console.error('获取博主文件失败:', error)
+      return { media: [], groups: [] }
+    }
+  },
+
+  // 获取博主统计信息
+  getStats: (id: number) => {
+    try {
+      ensureInitialized()
+      
+      const mediaStmt = db.prepare(`
+        SELECT 
+          COUNT(*) as total,
+          COUNT(CASE WHEN rating IS NOT NULL THEN 1 END) as rated,
+          AVG(rating) as avg_rating
+        FROM media_ratings 
+        WHERE creator_id = ?
+      `)
+      const mediaStats = mediaStmt.get(id) as any
+      
+      const groupStmt = db.prepare(`
+        SELECT 
+          COUNT(*) as total,
+          COUNT(CASE WHEN rating IS NOT NULL THEN 1 END) as rated,
+          AVG(rating) as avg_rating
+        FROM group_ratings 
+        WHERE creator_id = ?
+      `)
+      const groupStats = groupStmt.get(id) as any
+      
+      return {
+        mediaFiles: mediaStats.total || 0,
+        mediaRated: mediaStats.rated || 0,
+        mediaAvgRating: mediaStats.avg_rating || 0,
+        groupFiles: groupStats.total || 0,
+        groupRated: groupStats.rated || 0,
+        groupAvgRating: groupStats.avg_rating || 0,
+        totalFiles: (mediaStats.total || 0) + (groupStats.total || 0)
+      }
+    } catch (error) {
+      console.error('获取博主统计失败:', error)
+      return {
+        mediaFiles: 0,
+        mediaRated: 0,
+        mediaAvgRating: 0,
+        groupFiles: 0,
+        groupRated: 0,
+        groupAvgRating: 0,
+        totalFiles: 0
+      }
+    }
+  },
+
+  // 根据文件路径智能匹配博主（从别名列表匹配）
+  // 使用缓存优化性能，避免每次都查询数据库
+  findCreatorByPath: (filePath: string) => {
+    try {
+      ensureInitialized()
+      
+      // 使用缓存获取博主别名列表
+      const cachedCreators = getCreatorAliasCache()
+      
+      // 遍历博主，检查路径是否包含其任何别名
+      for (const creator of cachedCreators) {
+        // 检查所有别名
+        for (const alias of creator.aliases) {
+          if (filePath.includes(alias)) {
+            console.log(`🎯 [智能关联] 路径匹配成功: "${filePath}" 包含博主 "${creator.primaryName}" 的别名 "${alias}"`)
+            
+            // 返回完整的博主信息
+            return creators.get(creator.id)
+          }
+        }
+      }
+      
+      return null
+    } catch (error) {
+      console.error('智能匹配博主失败:', error)
+      return null
+    }
+  },
+
+  // 预览批量关联影响范围
+  previewBatchLink: (namePattern: string) => {
+    try {
+      ensureInitialized()
+      
+      // 查询 media_ratings 中包含该名称的记录
+      const mediaStmt = db.prepare(`
+        SELECT COUNT(*) as count 
+        FROM media_ratings 
+        WHERE file_path LIKE ?
+      `)
+      const mediaResult = mediaStmt.get(`%${namePattern}%`) as { count: number }
+      
+      // 查询 group_ratings 中包含该名称的记录
+      const groupStmt = db.prepare(`
+        SELECT COUNT(*) as count 
+        FROM group_ratings 
+        WHERE group_path LIKE ?
+      `)
+      const groupResult = groupStmt.get(`%${namePattern}%`) as { count: number }
+      
+      // 获取示例记录（前5条）
+      const sampleMediaStmt = db.prepare(`
+        SELECT file_path, file_name, rating 
+        FROM media_ratings 
+        WHERE file_path LIKE ? 
+        LIMIT 5
+      `)
+      const mediaSamples = sampleMediaStmt.all(`%${namePattern}%`)
+      
+      const sampleGroupStmt = db.prepare(`
+        SELECT group_path, group_name, rating 
+        FROM group_ratings 
+        WHERE group_path LIKE ? 
+        LIMIT 5
+      `)
+      const groupSamples = sampleGroupStmt.all(`%${namePattern}%`)
+      
+      return {
+        mediaCount: mediaResult.count,
+        groupCount: groupResult.count,
+        totalCount: mediaResult.count + groupResult.count,
+        mediaSamples,
+        groupSamples
+      }
+    } catch (error) {
+      console.error('预览批量关联失败:', error)
+      throw error
+    }
+  },
+
+  // 批量关联文件到博主
+  batchLinkFilesByName: (creatorId: number, namePattern: string) => {
+    try {
+      ensureInitialized()
+      
+      // 验证博主是否存在
+      const creator = creators.get(creatorId)
+      if (!creator) {
+        throw new Error('博主不存在')
+      }
+      
+      console.log(`🔍 [批量关联] 开始: 博主ID=${creatorId}, 名称="${creator.primaryName}", 模式="${namePattern}"`)
+      
+      // 使用事务确保数据一致性
+      const batchLinkTransaction = db.transaction(() => {
+        // 更新 media_ratings
+        const updateMediaStmt = db.prepare(`
+          UPDATE media_ratings 
+          SET creator_id = ? 
+          WHERE file_path LIKE ?
+        `)
+        const mediaResult = updateMediaStmt.run(creatorId, `%${namePattern}%`)
+        console.log(`📊 [批量关联] media_ratings 更新: ${mediaResult.changes} 条`)
+        
+        // 更新 group_ratings
+        const updateGroupStmt = db.prepare(`
+          UPDATE group_ratings 
+          SET creator_id = ? 
+          WHERE group_path LIKE ?
+        `)
+        const groupResult = updateGroupStmt.run(creatorId, `%${namePattern}%`)
+        console.log(`📊 [批量关联] group_ratings 更新: ${groupResult.changes} 条`)
+        
+        // 更新博主的使用次数
+        const updateUsageStmt = db.prepare(`
+          UPDATE creators 
+          SET usage_count = (
+            SELECT COUNT(*) FROM media_ratings WHERE creator_id = ?
+          ) + (
+            SELECT COUNT(*) FROM group_ratings WHERE creator_id = ?
+          ),
+          updated_at = datetime('now', 'localtime')
+          WHERE id = ?
+        `)
+        updateUsageStmt.run(creatorId, creatorId, creatorId)
+        
+        return {
+          mediaUpdated: mediaResult.changes,
+          groupUpdated: groupResult.changes,
+          totalUpdated: mediaResult.changes + groupResult.changes
+        }
+      })
+      
+      const result = batchLinkTransaction()
+      console.log(`✅ [批量关联] 完成: 总计更新 ${result.totalUpdated} 条记录`)
+      
+      // 验证更新结果
+      const verifyStmt = db.prepare(`
+        SELECT COUNT(*) as count 
+        FROM media_ratings 
+        WHERE creator_id = ? AND file_path LIKE ?
+      `)
+      const verifyResult = verifyStmt.get(creatorId, `%${namePattern}%`) as { count: number }
+      console.log(`🔍 [批量关联] 验证: media_ratings 中有 ${verifyResult.count} 条记录关联到博主 ${creatorId}`)
+      
+      return result
+    } catch (error) {
+      console.error('批量关联文件失败:', error)
+      throw error
+    }
+  },
+
+  // 添加别名并批量关联历史记录
+  addOtherNameAndLinkFiles: (creatorId: number, newName: string, batchUpdate: boolean = false) => {
+    try {
+      ensureInitialized()
+      
+      // 检查博主是否存在
+      const creator = creators.get(creatorId)
+      if (!creator) {
+        return { success: false, message: '博主不存在' }
+      }
+      
+      // 检查别名是否已存在
+      const aliasExists = creator.otherNames.includes(newName) || creator.primaryName === newName
+      
+      // 如果别名不存在，先添加
+      if (!aliasExists) {
+        const addResult = creators.addOtherName(creatorId, newName)
+        if (!addResult.success) {
+          return addResult
+        }
+      }
+      
+      // 如果需要批量更新
+      if (batchUpdate) {
+        const linkResult = creators.batchLinkFilesByName(creatorId, newName)
+        const message = aliasExists 
+          ? `别名已存在，批量关联了 ${linkResult.totalUpdated} 条记录`
+          : `别名添加成功，批量关联了 ${linkResult.totalUpdated} 条记录`
+        
+        return {
+          success: true,
+          message,
+          ...linkResult
+        }
+      }
+      
+      return {
+        success: true,
+        message: aliasExists ? '别名已存在' : '别名添加成功',
+        mediaUpdated: 0,
+        groupUpdated: 0,
+        totalUpdated: 0
+      }
+    } catch (error) {
+      console.error('添加别名并批量关联失败:', error)
       throw error
     }
   }

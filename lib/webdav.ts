@@ -10,6 +10,13 @@ export interface WebDAVConfig {
 let cachedClient: WebDAVClient | null = null
 let cachedConfig: WebDAVConfig | null = null
 
+// 清理 WebDAV 客户端缓存
+export function cleanupWebDAVCache() {
+  console.log('🧹 [WebDAV] 清理客户端缓存...')
+  cachedClient = null
+  cachedConfig = null
+}
+
 export function getWebDAVClient(config?: WebDAVConfig): WebDAVClient {
   const finalConfig = config || {
     url: process.env.WEBDAV_URL || '',

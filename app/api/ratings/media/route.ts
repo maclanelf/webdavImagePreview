@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { mediaRatings, customEvaluations, categories, ensureInitialized } from '@/lib/database'
+import { mediaRatings, customEvaluations, categories, ensureInitialized, performCheckpoint } from '@/lib/database'
+import { UNKNOWN_CREATOR_ID } from '@/lib/constants'
 
 // 辅助函数：解析JSON字段
 function parseRatingData(rating: any) {
@@ -72,7 +73,8 @@ export async function POST(request: NextRequest) {
       recommendationReason,
       customEvaluation,
       category,
-      isViewed
+      isViewed,
+      creatorId
     } = body
 
     console.log(`⏱️ [ratings/media POST] 开始: ${fileName}`)
@@ -94,9 +96,17 @@ export async function POST(request: NextRequest) {
       recommendationReason,
       customEvaluation,
       category,
-      isViewed
+      isViewed,
+      creatorId
     })
     console.log(`⏱️ [ratings/media POST] mediaRatings.save完成: ${Date.now() - saveStartTime}ms`)
+    
+    // 如果是标记"不认识"（creatorId = UNKNOWN_CREATOR_ID），立即执行 checkpoint 确保数据写入磁盘
+    if (creatorId === UNKNOWN_CREATOR_ID) {
+      const checkpointStartTime = Date.now()
+      performCheckpoint('PASSIVE')
+      console.log(`⏱️ [ratings/media POST] checkpoint完成: ${Date.now() - checkpointStartTime}ms`)
+    }
 
     // 更新自定义评价标签的使用计数
     if (customEvaluation) {

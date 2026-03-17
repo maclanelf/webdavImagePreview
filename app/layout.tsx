@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import ThemeRegistry from './ThemeRegistry'
+import ClientCleanup from './ClientCleanup'
 
 export const metadata: Metadata = {
   title: 'WebDAV 媒体预览器',
@@ -15,6 +16,7 @@ export default function RootLayout({
     <html lang="zh-CN">
       <body>
         <ThemeRegistry>
+          <ClientCleanup />
           {children}
         </ThemeRegistry>
       </body>
