@@ -31,6 +31,10 @@ interface InstantVideoPlayerProps {
   onTranscodeFallback?: () => void // 降级到转码时的回调
   // 全屏覆盖层（用于在全屏模式下显示额外的 UI 组件）
   fullscreenOverlay?: React.ReactNode
+  // 始终显示的覆盖层（全屏和非全屏都显示，用于 CreatorTag 等）
+  alwaysOverlay?: React.ReactNode
+  // 控制栏显示状态变化回调
+  onControlsVisibilityChange?: (visible: boolean) => void
 }
 
 export interface InstantVideoPlayerRef {
@@ -86,12 +90,14 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   transcodeUrl,
   onTranscodeFallback,
   fullscreenOverlay,
+  alwaysOverlay,
+  onControlsVisibilityChange,
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement>(null) // 视频元素引用
   const [loading, setLoading] = useState(true) // 加载状态
   const [error, setError] = useState<string | null>(null) // 错误信息
   const [isPlaying, setIsPlaying] = useState(false) // 播放状态
-  const [showControls, setShowControls] = useState(false) // 控制栏显示状态
+  const [showControls, setShowControls] = useState(true) // 控制栏显示状态（初始显示）
   const [currentTime, setCurrentTime] = useState(0) // 当前播放时间
   const [duration, setDuration] = useState(0) // 视频总时长
   const [videoAspectRatio, setVideoAspectRatio] = useState<number | null>(null) // 视频宽高比
@@ -828,6 +834,13 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     }
   }, [])
 
+  // 通知父组件 controls 显示状态变化
+  useEffect(() => {
+    if (onControlsVisibilityChange) {
+      onControlsVisibilityChange(showControls)
+    }
+  }, [showControls, onControlsVisibilityChange])
+
   // 重试播放函数（直接播放）
   const retryPlayback = () => {
     console.log('🔄 [即点即播] 用户点击重试（直接播放）')
@@ -1372,6 +1385,29 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
         </Box>
       )}
       
+      {/* 始终显示的覆盖层（全屏和非全屏都显示） */}
+      {alwaysOverlay && (
+        <Box
+          sx={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            pointerEvents: 'none',
+            zIndex: 2050,
+            '& > *': {
+              pointerEvents: 'auto',
+            },
+          }}
+        >
+          {(() => {
+            console.log('[InstantVideoPlayer] 渲染 alwaysOverlay')
+            return alwaysOverlay
+          })()}
+        </Box>
+      )}
+
       {/* 全屏覆盖层 - 用于在全屏模式下显示额外的 UI 组件（如评分组件） */}
       {/* 原生全屏（isFullscreen）或 CSS 全屏（isParentFullscreen）时都显示 */}
       {(isFullscreen || isParentFullscreen) && fullscreenOverlay && (
@@ -1382,10 +1418,10 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
             left: 0,
             right: 0,
             bottom: 0,
-            pointerEvents: 'none', // 默认不拦截事件，让子元素自己控制
-            zIndex: 2100, // 提高 z-index，确保在控制栏之上
+            pointerEvents: 'none',
+            zIndex: 2100,
             '& > *': {
-              pointerEvents: 'auto', // 子元素可以接收事件
+              pointerEvents: 'auto',
             },
           }}
         >

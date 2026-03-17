@@ -20,15 +20,23 @@ interface CreatorTagProps {
   onTagClick: () => void
   onCreatorIdentified?: (creator: any | null) => void
   position?: { top?: string; bottom?: string; left?: string; right?: string }
+  visible?: boolean // 外部控制显示/隐藏
+  refreshKey?: number // 用于强制刷新识别
 }
 
-export default function CreatorTag({ filePath, onTagClick, onCreatorIdentified, position }: CreatorTagProps) {
+export default function CreatorTag({ 
+  filePath, 
+  onTagClick, 
+  onCreatorIdentified, 
+  position,
+  visible = true,
+  refreshKey = 0
+}: CreatorTagProps) {
   const [creatorName, setCreatorName] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [calculatedPosition, setCalculatedPosition] = useState<{ top: string; left: string } | null>(null)
   
-  // 使用 ref 追踪当前正在识别的文件路径，避免重复调用
-  const identifyingPathRef = useRef<string | null>(null)
+  const identifyingKeyRef = useRef<string | null>(null) // 改为存储 filePath + refreshKey 的组合
   const abortControllerRef = useRef<AbortController | null>(null)
 
   // 生成随机位置（更保守的策略，确保不会溢出和出现在黑边）
@@ -57,8 +65,10 @@ export default function CreatorTag({ filePath, onTagClick, onCreatorIdentified, 
   }
 
   useEffect(() => {
-    // 如果正在识别相同的文件，跳过
-    if (identifyingPathRef.current === filePath) {
+    const identifyKey = `${filePath}:${refreshKey}`
+    
+    // 如果正在识别相同的文件+key，跳过
+    if (identifyingKeyRef.current === identifyKey) {
       return
     }
     
@@ -70,7 +80,7 @@ export default function CreatorTag({ filePath, onTagClick, onCreatorIdentified, 
     // 创建新的 AbortController
     const abortController = new AbortController()
     abortControllerRef.current = abortController
-    identifyingPathRef.current = filePath
+    identifyingKeyRef.current = identifyKey
     
     // 调用识别 API
     const identifyCreator = async () => {
@@ -84,6 +94,11 @@ export default function CreatorTag({ filePath, onTagClick, onCreatorIdentified, 
         
         const data = await response.json()
         
+        // 检查请求是否已被取消
+        if (abortController.signal.aborted) {
+          return
+        }
+        
         if (data.success && data.identified && data.creator) {
           setCreatorName(data.creator.primaryName)
           if (onCreatorIdentified) onCreatorIdentified(data.creator)
@@ -93,12 +108,13 @@ export default function CreatorTag({ filePath, onTagClick, onCreatorIdentified, 
         }
       } catch (error: any) {
         if (error.name !== 'AbortError') {
-          console.error('识别博主失败:', error)
+          console.error('[CreatorTag] 识别博主失败:', error)
           setCreatorName(null)
         }
       } finally {
+        // 无论请求是否被取消，都要设置 loading 为 false
         setLoading(false)
-        identifyingPathRef.current = null
+        identifyingKeyRef.current = null
       }
     }
     
@@ -110,20 +126,23 @@ export default function CreatorTag({ filePath, onTagClick, onCreatorIdentified, 
         abortController.abort()
       }
     }
-  }, [filePath])
+  }, [filePath, refreshKey, onCreatorIdentified])
 
   // 计算随机位置
   useEffect(() => {
     if (!position) {
-      // 延迟一下确保组件已挂载
       setTimeout(() => {
         const pos = generateRandomPosition()
         setCalculatedPosition(pos)
       }, 100)
     }
-  }, [position, filePath]) // 添加 filePath 作为依赖，每次文件切换都重新生成位置
+  }, [position, filePath])
 
   if (loading) {
+    return null
+  }
+
+  if (!visible) {
     return null
   }
 
@@ -142,7 +161,10 @@ export default function CreatorTag({ filePath, onTagClick, onCreatorIdentified, 
         cursor: 'pointer',
         zIndex: 1000,
         userSelect: 'none',
+        opacity: 0.6, // 降低整体透明度
+        transition: 'opacity 0.3s ease',
         '&:hover': {
+          opacity: 1, // 悬停时完全不透明
           '& .creator-tag-text': {
             backgroundColor: 'rgba(0, 0, 0, 0.85)'
           }

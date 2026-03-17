@@ -229,6 +229,9 @@ export default function HomePage() {
   // 提示消息严重程度
   const [snackbarSeverity, setSnackbarSeverity] = useState<'success' | 'error' | 'info' | 'warning'>('success')
   
+  // 大视频模式下 CreatorTag 随 controls 显示/隐藏
+  const [streamVideoTagVisible, setStreamVideoTagVisible] = useState(true)
+  
   // 视频元素引用（普通模式，用于小视频）
   const videoRef = useRef<HTMLVideoElement>(null)
   // MobileVideoPlayer 引用（用于移动端小视频）
@@ -267,6 +270,13 @@ export default function HomePage() {
     }
     return { total: stats.total, label: '全部' }
   }, [mediaFilter, stats])
+  
+  // 当切换文件时，重置大视频模式下 CreatorTag 的显示状态
+  useEffect(() => {
+    if (mediaType === 'stream-video') {
+      setStreamVideoTagVisible(false)
+    }
+  }, [currentFile, mediaType])
   
   // 监听原生全屏状态变化（仅用于视频）
   useEffect(() => {
@@ -3418,12 +3428,12 @@ export default function HomePage() {
                   {/* 博主标签 - 仅在图片模式下显示 */}
                   {currentFile && (
                     <CreatorTag
-                      key={creatorRefreshKey}
                       filePath={currentFile.filename}
                       onCreatorIdentified={setCurrentCreator}
                       onTagClick={() => {
                         setCreatorDialogOpen(true)
                       }}
+                      refreshKey={creatorRefreshKey}
                     />
                   )}
                 </>
@@ -3454,7 +3464,6 @@ export default function HomePage() {
                     }}
                     onEnded={handleVideoEnded}
                     onPlay={() => {
-                      console.log('[视频] 播放开始')
                     }}
                   />
                 </Box>
@@ -3463,13 +3472,13 @@ export default function HomePage() {
               {/* 移动端小视频的博主标签 - 独立渲染以避免重复调用 API */}
               {isMobile && currentFile && mediaType === 'small-video' && (
                 <CreatorTag
-                  key={creatorRefreshKey}
                   filePath={currentFile.filename}
                   onCreatorIdentified={setCurrentCreator}
                   onTagClick={() => {
                     setCreatorDialogOpen(true)
                   }}
                   position={{ top: '15%', left: '15%' }}
+                  refreshKey={creatorRefreshKey}
                 />
               )}
               
@@ -3489,11 +3498,9 @@ export default function HomePage() {
                     onTimeUpdate={handleVideoTimeUpdate}
                     onEnded={handleVideoEnded}
                     onPlay={() => {
-                      console.log('[视频] 播放开始')
                       setTimeout(() => {
                         if (playIntentRef.current) {
                           playIntentRef.current = false
-                          console.log('[视频] 重置播放意图')
                         }
                       }, 1000)
                       
@@ -3501,19 +3508,15 @@ export default function HomePage() {
                       if (video?.muted) {
                         setTimeout(() => {
                           video.muted = false
-                          console.log('[视频] 已取消静音')
                         }, 300)
                       }
                     }}
                     onLoadedMetadata={(e) => {
                       const video = e.currentTarget as HTMLVideoElement
-                      console.log('[视频] onLoadedMetadata 触发, playIntent:', playIntentRef.current)
                       if (playIntentRef.current && !videoStateRef.current) {
                         video.play().catch(error => {
-                          console.log('[视频] onLoadedMetadata 播放失败，尝试静音播放:', error)
                           video.muted = true
                           video.play().then(() => {
-                            console.log('[视频] 静音播放成功')
                             setTimeout(() => {
                               video.muted = false
                             }, 300)
@@ -3525,10 +3528,8 @@ export default function HomePage() {
                     }}
                     onLoadedData={(e) => {
                       const video = e.currentTarget as HTMLVideoElement
-                      console.log('[视频] onLoadedData 触发, playIntent:', playIntentRef.current)
                       if (playIntentRef.current && !videoStateRef.current && video.paused) {
                         video.play().catch(error => {
-                          console.log('[视频] onLoadedData 播放失败，尝试静音播放:', error)
                           video.muted = true
                           video.play().catch(err => {
                             console.error('[视频] onLoadedData 静音播放也失败:', err)
@@ -3538,11 +3539,8 @@ export default function HomePage() {
                     }}
                     onCanPlay={(e) => {
                       const video = e.currentTarget as HTMLVideoElement
-                      console.log('[视频] onCanPlay 触发, playIntent:', playIntentRef.current, 'paused:', video.paused)
-                      // 如果有播放意图且视频还没播放，再次尝试
                       if (playIntentRef.current && !videoStateRef.current && video.paused) {
                         video.play().catch(error => {
-                          console.log('[视频] onCanPlay 播放失败，尝试静音播放:', error)
                           video.muted = true
                           video.play().catch(err => {
                             console.error('[视频] onCanPlay 静音播放也失败:', err)
@@ -3575,18 +3573,23 @@ export default function HomePage() {
                   {/* 博主标签 - 仅在有文件时显示 */}
                   {currentFile && (
                     <CreatorTag
-                      key={creatorRefreshKey}
                       filePath={currentFile.filename}
                       onCreatorIdentified={setCurrentCreator}
                       onTagClick={() => {
                         setCreatorDialogOpen(true)
                       }}
+                      refreshKey={creatorRefreshKey}
                     />
                   )}
                 </Box>
               )}
               {mediaType === 'stream-video' && mediaUrl && (
-                <Box sx={{ position: 'relative', width: '100%', height: '100%' }}>
+                <Box sx={{ 
+                  position: 'relative', 
+                  width: '100%', 
+                  height: fullscreen ? '100%' : 'min(56.25vw, calc(100vh - 150px))', // 16:9 比例，非全屏时限制最大高度
+                  minHeight: fullscreen ? undefined : 300,
+                }}>
                   <InstantVideoPlayer
                     key={mediaUrl} // 使用 mediaUrl 作为 key，确保 URL 变化时重新创建实例
                     ref={instantVideoRef}
@@ -3596,13 +3599,25 @@ export default function HomePage() {
                     isParentFullscreen={fullscreen} // 传递父组件的全屏状态
                     transcodeUrl={transcodeUrl || undefined} // 转码流 URL，用于自动降级
                     onTranscodeFallback={() => {
-                      console.log('[大视频模式] 已降级到转码流播放')
                       setIsUsingTranscode(true)
                     }}
                     onTimeUpdate={handleInstantVideoTimeUpdate}
                     onEnded={handleVideoEnded}
                     onNext={loadRandomMedia} // 换一个按钮
-                    // 不再使用 onError 回调，InstantVideoPlayer 内部已有错误 UI
+                    onControlsVisibilityChange={(visible) => {
+                      setStreamVideoTagVisible(visible)
+                    }}
+                    alwaysOverlay={
+                      currentFile ? (
+                        <CreatorTag
+                          filePath={currentFile.filename}
+                          onCreatorIdentified={setCurrentCreator}
+                          onTagClick={() => setCreatorDialogOpen(true)}
+                          visible={streamVideoTagVisible}
+                          refreshKey={creatorRefreshKey}
+                        />
+                      ) : undefined
+                    }
                     // 全屏覆盖层 - 在原生全屏模式下显示评分组件
                     fullscreenOverlay={
                       <>
