@@ -171,7 +171,7 @@ export default function CreatorTestPage() {
       return
     }
 
-    const aliasToUse = newAliasName.trim() || selectedCreator.primaryName
+    const aliasToUse = newAliasName.trim() || selectedCreator.primary_name
     console.log(`📝 [前端] 准备${batchUpdate ? '批量关联' : '添加别名'}: aliasName="${aliasToUse}", batchUpdate=${batchUpdate}`)
 
     try {
@@ -317,8 +317,8 @@ export default function CreatorTestPage() {
                       onClick={() => setSelectedCreator(creator)}
                     >
                       <ListItemText
-                        primary={creator.primaryName}
-                        secondary={`使用次数: ${creator.usageCount} | 别名: ${creator.otherNames.length}`}
+                        primary={creator.primary_name}
+                        secondary={`使用次数: ${creator.usage_count} | 别名: ${creator.otherNames.length}`}
                       />
                     </ListItemButton>
                   </ListItem>
@@ -347,18 +347,18 @@ export default function CreatorTestPage() {
                   主名称
                 </Typography>
                 <Typography variant="body1" gutterBottom>
-                  {selectedCreator.primaryName}
+                  {selectedCreator.primary_name}
                 </Typography>
 
                 <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 2 }}>
                   颜值评分
                 </Typography>
-                <Rating value={selectedCreator.appearanceRating || 0} readOnly />
+                <Rating value={selectedCreator.appearance_rating || 0} readOnly />
 
                 <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 2 }}>
                   身材评分
                 </Typography>
-                <Rating value={selectedCreator.bodyRating || 0} readOnly />
+                <Rating value={selectedCreator.body_rating || 0} readOnly />
 
                 <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 2 }}>
                   别名列表
@@ -417,7 +417,7 @@ export default function CreatorTestPage() {
                   newAliasName.trim() 
                     ? "例如：张三新作、Zhang San" 
                     : selectedCreator 
-                      ? `留空则使用主名称"${selectedCreator.primaryName}"进行批量关联`
+                      ? `留空则使用主名称"${selectedCreator.primary_name}"进行批量关联`
                       : "例如：张三新作、Zhang San"
                 }
               />
@@ -440,7 +440,7 @@ export default function CreatorTestPage() {
                   {newAliasName.trim() 
                     ? '添加别名 + 批量关联历史记录' 
                     : selectedCreator 
-                      ? `使用"${selectedCreator.primaryName}"批量关联`
+                      ? `使用"${selectedCreator.primary_name}"批量关联`
                       : '添加别名 + 批量关联历史记录'
                   }
                 </Button>
