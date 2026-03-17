@@ -26,6 +26,10 @@ export default function CreatorTag({ filePath, onTagClick, onCreatorIdentified, 
   const [creatorName, setCreatorName] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [calculatedPosition, setCalculatedPosition] = useState<{ top: string; left: string } | null>(null)
+  
+  // 使用 ref 追踪当前正在识别的文件路径，避免重复调用
+  const identifyingPathRef = useRef<string | null>(null)
+  const abortControllerRef = useRef<AbortController | null>(null)
 
   // 生成随机位置（更保守的策略，确保不会溢出和出现在黑边）
   const generateRandomPosition = () => {
@@ -34,9 +38,7 @@ export default function CreatorTag({ filePath, onTagClick, onCreatorIdentified, 
     const minLeftMargin = 20   // 左侧最小20%（避开黑边）
     const minTopMargin = 25    // 顶部最小25%（避开黑边+不太靠上）
     
-    // 标签最大宽度限制（通过CSS控制）
-    // 预留30%的空间给标签（包含安全边距）
-    const tagMaxWidthPercent = 30
+    
     
     // 计算安全区域
     // 水平：20%-55% 范围（更保守，确保标签+边距不超过85%）
@@ -48,12 +50,6 @@ export default function CreatorTag({ filePath, onTagClick, onCreatorIdentified, 
     const verticalRange = 20  // 45% - 25% = 20%
     const randomTop = minTopMargin + Math.sqrt(Math.random()) * verticalRange
     
-    console.log('[标签定位] 随机位置:', {
-      left: `${randomLeft.toFixed(2)}%`,
-      top: `${randomTop.toFixed(2)}%`,
-      说明: '水平20%-55%, 垂直25%-45%'
-    })
-    
     return {
       left: `${randomLeft}%`,
       top: `${randomTop}%`
@@ -61,13 +57,29 @@ export default function CreatorTag({ filePath, onTagClick, onCreatorIdentified, 
   }
 
   useEffect(() => {
+    // 如果正在识别相同的文件，跳过
+    if (identifyingPathRef.current === filePath) {
+      return
+    }
+    
+    // 取消之前的请求
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+    }
+    
+    // 创建新的 AbortController
+    const abortController = new AbortController()
+    abortControllerRef.current = abortController
+    identifyingPathRef.current = filePath
+    
     // 调用识别 API
     const identifyCreator = async () => {
       try {
         const response = await fetch('/api/creators/identify', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ filePath })
+          body: JSON.stringify({ filePath }),
+          signal: abortController.signal
         })
         
         const data = await response.json()
@@ -79,15 +91,25 @@ export default function CreatorTag({ filePath, onTagClick, onCreatorIdentified, 
           setCreatorName(null)
           if (onCreatorIdentified) onCreatorIdentified(null)
         }
-      } catch (error) {
-        console.error('识别博主失败:', error)
-        setCreatorName(null)
+      } catch (error: any) {
+        if (error.name !== 'AbortError') {
+          console.error('识别博主失败:', error)
+          setCreatorName(null)
+        }
       } finally {
         setLoading(false)
+        identifyingPathRef.current = null
       }
     }
     
     identifyCreator()
+    
+    // 清理函数：取消请求
+    return () => {
+      if (abortController) {
+        abortController.abort()
+      }
+    }
   }, [filePath])
 
   // 计算随机位置

@@ -217,7 +217,7 @@ export default function HomePage() {
   const [touchStartY, setTouchStartY] = useState<number | null>(null)
   const [touchStartX, setTouchStartX] = useState<number | null>(null)
   const [isSwiping, setIsSwiping] = useState(false)
-  const swipeThreshold = 50 // 滑动阈值（像素）
+  const swipeThreshold = 30 // 滑动阈值（像素），降低以提升灵敏度
   
   // 切换状态，防止连续快速点击
   const [isSwitching, setIsSwitching] = useState(false)
@@ -1549,6 +1549,14 @@ export default function HomePage() {
     // 只在移动端、全屏下启用（所有模式）
     if (!isMobile || !fullscreen) return
     
+    // 如果是多点触控（双指缩放），不处理滑动
+    if (e.touches.length > 1) {
+      setTouchStartY(null)
+      setTouchStartX(null)
+      setIsSwiping(false)
+      return
+    }
+    
     const touch = e.touches[0]
     setTouchStartY(touch.clientY)
     setTouchStartX(touch.clientX)
@@ -1560,6 +1568,14 @@ export default function HomePage() {
     // 只在移动端、全屏下启用（所有模式）
     if (!isMobile || !fullscreen) return
     if (touchStartY === null || touchStartX === null) return
+    
+    // 如果是多点触控（双指缩放），取消滑动状态
+    if (e.touches.length > 1) {
+      setTouchStartY(null)
+      setTouchStartX(null)
+      setIsSwiping(false)
+      return
+    }
     
     const touch = e.touches[0]
     const deltaY = touch.clientY - touchStartY
@@ -1577,6 +1593,15 @@ export default function HomePage() {
   const handleTouchEnd = (e: React.TouchEvent) => {
     // 只在移动端、全屏下启用（所有模式）
     if (!isMobile || !fullscreen) return
+    
+    // 如果还有其他触点（多点触控未完全结束），不处理
+    if (e.touches.length > 0) {
+      setTouchStartY(null)
+      setTouchStartX(null)
+      setIsSwiping(false)
+      return
+    }
+    
     if (touchStartY === null || !isSwiping) {
       setTouchStartY(null)
       setTouchStartX(null)
@@ -3390,7 +3415,7 @@ export default function HomePage() {
                       objectFit: 'contain',
                     }}
                   />
-                  {/* 博主标签 - 仅在有文件时显示 */}
+                  {/* 博主标签 - 仅在图片模式下显示 */}
                   {currentFile && (
                     <CreatorTag
                       key={creatorRefreshKey}
@@ -3405,9 +3430,14 @@ export default function HomePage() {
               )}
               
               {/* 移动端小视频：MobileVideoPlayer 组件 */}
-              {/* 初始化时也渲染（即使没有 currentFile），确保 ref 可用 */}
+              {/* 始终渲染以确保 ref 可用，但 CreatorTag 只在小视频时渲染 */}
               {isMobile && (
-                <Box sx={{ position: 'relative', width: '100%', height: '100%' }}>
+                <Box sx={{ 
+                  position: 'relative', 
+                  width: '100%', 
+                  height: '100%',
+                  display: mediaType === 'small-video' ? 'block' : 'none'
+                }}>
                   <MobileVideoPlayer
                     ref={mobileVideoRef}
                     src={mediaUrl || 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAAAu1tZGF0AAACrQYF//+c3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE1MiByMjg1NCBlOWE1OTAzIC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAxNyAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTEgcmVmPTMgZGVibG9jaz0xOjA6MCBhbmFseXNlPTB4MzoweDExMyBtZT1oZXggc3VibWU9NyBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0xIG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MSA4eDhkY3Q9MSBjcW09MCBkZWFkem9uZT0yMSwxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0tMiB0aHJlYWRzPTEgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0zIGJfcHlyYW1pZD0yIGJfYWRhcHQ9MSBiX2JpYXM9MCBkaXJlY3Q9MSB3ZWlnaHRiPTEgb3Blbl9nb3A9MCB3ZWlnaHRwPTIga2V5aW50PTI1MCBrZXlpbnRfbWluPTI1IHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19sb29rYWhlYWQ9NDAgcmM9Y3JmIG1idHJlZT0xIGNyZj0yMy4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02OSBxcHN0ZXA9NCBpcF9yYXRpbz0xLjQwIGFxPTE6MS4wMACAAAAA='}
@@ -3427,18 +3457,20 @@ export default function HomePage() {
                       console.log('[视频] 播放开始')
                     }}
                   />
-                  {/* 博主标签 - 仅在有文件且是小视频时显示 */}
-                  {currentFile && mediaType === 'small-video' && (
-                    <CreatorTag
-                      key={creatorRefreshKey}
-                      filePath={currentFile.filename}
-                      onCreatorIdentified={setCurrentCreator}
-                      onTagClick={() => {
-                        setCreatorDialogOpen(true)
-                      }}
-                    />
-                  )}
                 </Box>
+              )}
+              
+              {/* 移动端小视频的博主标签 - 独立渲染以避免重复调用 API */}
+              {isMobile && currentFile && mediaType === 'small-video' && (
+                <CreatorTag
+                  key={creatorRefreshKey}
+                  filePath={currentFile.filename}
+                  onCreatorIdentified={setCurrentCreator}
+                  onTagClick={() => {
+                    setCreatorDialogOpen(true)
+                  }}
+                  position={{ top: '15%', left: '15%' }}
+                />
               )}
               
               {/* 桌面端小视频：原生 video 元素 */}
