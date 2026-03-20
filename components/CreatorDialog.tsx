@@ -457,12 +457,28 @@ export default function CreatorDialog({
             freeSolo
             options={[]}
             value={otherNames}
-            onChange={(_, newValue) => setOtherNames(newValue)}
+            onChange={(_, newValue) => {
+              // 过滤掉空字符串,并去除首尾空格
+              const filtered = newValue
+                .map(v => typeof v === 'string' ? v.trim() : v)
+                .filter(v => v !== '')
+              setOtherNames(filtered)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                e.stopPropagation()
+              }
+            }}
             renderInput={(params) => (
               <TextField
                 {...params}
                 label="别名"
                 placeholder="输入别名后按回车添加"
+                inputProps={{
+                  ...params.inputProps,
+                  enterKeyHint: 'done'  // 移动端键盘显示"完成"而不是"下一步"
+                }}
               />
             )}
             renderTags={(value, getTagProps) =>
