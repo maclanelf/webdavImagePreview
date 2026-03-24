@@ -1433,6 +1433,21 @@ export const creators = {
     try {
       ensureInitialized()
       
+      // 提取第3个/到倒数第1个/之间的文字作为匹配路径
+      // 例如: /115open/115/700+网红大合集/001/抖音 Booty徐莉芝/1.jpg
+      // 提取: 700+网红大合集/001/抖音 Booty徐莉芝
+      const pathParts = filePath.split('/')
+      let matchPath = filePath
+      
+      if (pathParts.length > 4) {
+        // 从第3个/（索引2）到倒数第1个/（length-2）
+        const startIndex = 3 // 第3个/后面的内容
+        const endIndex = pathParts.length - 1 // 倒数第1个/前面的内容
+        matchPath = pathParts.slice(startIndex, endIndex).join('/')
+        console.log(`🔍 [路径提取] 原始路径: ${filePath}`)
+        console.log(`🔍 [路径提取] 匹配路径: ${matchPath}`)
+      }
+      
       // 使用缓存获取博主别名列表
       const cachedCreators = getCreatorAliasCache()
       
@@ -1440,8 +1455,8 @@ export const creators = {
       for (const creator of cachedCreators) {
         // 检查所有别名
         for (const alias of creator.aliases) {
-          if (filePath.includes(alias)) {
-            console.log(`🎯 [智能关联] 路径匹配成功: "${filePath}" 包含博主 "${creator.primaryName}" 的别名 "${alias}"`)
+          if (matchPath.includes(alias)) {
+            console.log(`🎯 [智能关联] 路径匹配成功: "${matchPath}" 包含博主 "${creator.primaryName}" 的别名 "${alias}"`)
             
             // 返回完整的博主信息
             return creators.get(creator.id)
