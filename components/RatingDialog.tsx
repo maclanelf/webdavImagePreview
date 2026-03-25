@@ -284,8 +284,14 @@ export default function RatingDialog({
             }}
             slotProps={{
               popper: {
+                placement: 'top-start',
                 container: container || undefined,
-                sx: { zIndex: 2200 }
+                sx: {
+                  zIndex: 2200,
+                  '&[data-popper-placement*="top"] .MuiAutocomplete-paper': {
+                    marginBottom: 0.5
+                  }
+                }
               }
             }}
             renderInput={(params) => (
@@ -337,8 +343,14 @@ export default function RatingDialog({
             }}
             slotProps={{
               popper: {
+                placement: 'top-start',
                 container: container || undefined,
-                sx: { zIndex: 2200 }
+                sx: {
+                  zIndex: 2200,
+                  '&[data-popper-placement*="top"] .MuiAutocomplete-paper': {
+                    marginBottom: 0.5
+                  }
+                }
               }
             }}
             renderInput={(params) => (

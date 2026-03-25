@@ -210,7 +210,7 @@ export default function CreatorMergeDialog({
               <Box
                 sx={{
                   position: 'absolute',
-                  top: '100%',
+                  bottom: '100%',
                   left: 0,
                   right: 0,
                   zIndex: 9999,
@@ -221,7 +221,7 @@ export default function CreatorMergeDialog({
                   boxShadow: 3,
                   maxHeight: 300,
                   overflowY: 'auto',
-                  mt: 0.5
+                  mb: 0.5
                 }}
               >
                 {searchResults.map((creator) => (

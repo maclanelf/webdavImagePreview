@@ -451,7 +451,7 @@ export default function CreatorDialog({
                 <Box
                   sx={{
                     position: 'absolute',
-                    top: '100%',
+                    bottom: '100%',
                     left: 0,
                     right: 0,
                     zIndex: 9999,
@@ -462,7 +462,7 @@ export default function CreatorDialog({
                     boxShadow: 3,
                     maxHeight: 300,
                     overflowY: 'auto',
-                    mt: 0.5
+                    mb: 0.5
                   }}
                 >
                   {searchResults.map((creator) => (
@@ -697,6 +697,14 @@ export default function CreatorDialog({
                 MenuProps: {
                   disablePortal: true,
                   container: container || undefined,
+                  anchorOrigin: {
+                    vertical: 'top',
+                    horizontal: 'left'
+                  },
+                  transformOrigin: {
+                    vertical: 'bottom',
+                    horizontal: 'left'
+                  },
                   PaperProps: {
                     sx: {
                       zIndex: 2301
