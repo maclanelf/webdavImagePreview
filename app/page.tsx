@@ -60,6 +60,8 @@ import {
   Download as DownloadIcon,
   Speed as SpeedIcon,
   OpenInNew as OpenInNewIcon,
+  BugReport as BugReportIcon,
+  Storage as StorageIcon,
 } from '@mui/icons-material'
 import { useRouter } from 'next/navigation'
 import RatingDialog from '@/components/RatingDialog'
@@ -80,8 +82,15 @@ import SettingsDrawer from '@/components/SettingsDrawer'
 import { QUICK_RATING_CONFIG } from '@/types'
 import type { WebDAVConfig, MediaFilter, ViewMode, ViewedFilter, AdvancedFilters, MediaFile, MediaType, MediaRating, GroupRating, QuickRatingConfig } from '@/types'
 
-
-
+// 主界面右上角的页面入口配置，统一集中在这里，便于后续复用和维护。
+const PAGE_LINKS = [
+  { label: '评价与分类管理', path: '/manage', icon: <ManageAccountsIcon fontSize="small" /> },
+  { label: 'WebDAV 设置', path: '/config', icon: <SettingsIcon fontSize="small" /> },
+  { label: '博主管理测试', path: '/creator-test', icon: <BugReportIcon fontSize="small" /> },
+  { label: '流播放测试', path: '/stream-test', icon: <BugReportIcon fontSize="small" /> },
+  { label: '随机抽取测试', path: '/random-test', icon: <BugReportIcon fontSize="small" /> },
+  { label: '数据库查询', path: '/admin/query-db', icon: <StorageIcon fontSize="small" /> },
+] as const
 
 export default function HomePage() {
   const router = useRouter()
@@ -256,6 +265,9 @@ export default function HomePage() {
   // 外部播放器菜单状态
   const [externalPlayerAnchor, setExternalPlayerAnchor] = useState<null | HTMLElement>(null)
   const externalPlayerMenuOpen = Boolean(externalPlayerAnchor)
+  // 页面入口菜单状态，用于控制右上角的下拉导航菜单。
+  const [pageMenuAnchor, setPageMenuAnchor] = useState<null | HTMLElement>(null)
+  const pageMenuOpen = Boolean(pageMenuAnchor)
   // 播放方式选择状态（在视频框中央显示）
   const [showPlayModeSelector, setShowPlayModeSelector] = useState(false)
 
@@ -2101,6 +2113,48 @@ export default function HomePage() {
     console.log(`[播放意图] 设置为 ${intent}`)
   }
 
+  // 页面入口菜单图标，使用静态 SVG 资源，方便多个页面复用同一套图形。
+  const PageMenuIcon = () => (
+    <Box
+      sx={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 18,
+        height: 18,
+      }}
+    >
+      <Box
+        component="img"
+        src="/icons/page-menu.svg"
+        alt=""
+        aria-hidden="true"
+        sx={{
+          width: 18,
+          height: 18,
+          display: 'block',
+          filter: 'invert(44%) sepia(96%) saturate(1138%) hue-rotate(192deg) brightness(90%) contrast(86%)',
+        }}
+      />
+    </Box>
+  )
+
+  // 打开页面入口菜单，并把当前按钮记录为菜单锚点。
+  const handlePageMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
+    setPageMenuAnchor(event.currentTarget)
+  }
+
+  // 关闭页面入口菜单。
+  const handlePageMenuClose = () => {
+    setPageMenuAnchor(null)
+  }
+
+  // 通过新标签页打开独立页面，并在打开后关闭当前菜单。
+  const openPageInNewTab = (path: string) => {
+    window.open(path, '_blank', 'noopener,noreferrer')
+    handlePageMenuClose()
+  }
+
   // 加载可用的评价标签和分类
   const loadAvailableFilters = async () => {
     try {
@@ -3360,24 +3414,50 @@ export default function HomePage() {
                 </Typography>
               </Box>
             )}
+            <Tooltip title="页面入口">
+              <IconButton
+                onClick={handlePageMenuOpen}
+                sx={{
+                  width: 30,
+                  height: 30,
+                  borderRadius: 0,
+                  border: 'none',
+                  backgroundColor: 'transparent',
+                  p: 0,
+                  '&:hover': {
+                    backgroundColor: 'rgba(25, 118, 210, 0.08)',
+                  },
+                }}
+              >
+                <PageMenuIcon />
+              </IconButton>
+            </Tooltip>
             <Tooltip title="筛选与统计">
               <IconButton onClick={toggleDrawer(true)} color="primary">
                 <FilterListIcon />
               </IconButton>
             </Tooltip>
-            <Tooltip title="评价与分类管理">
-              <IconButton onClick={() => router.push('/manage')}>
-                <ManageAccountsIcon />
-              </IconButton>
-            </Tooltip>
-            <Tooltip title="设置">
-              <IconButton onClick={() => router.push('/config')}>
-                <SettingsIcon />
-              </IconButton>
-            </Tooltip>
           </Box>
         </Box>
       </Box>
+
+      <Menu
+        anchorEl={pageMenuAnchor}
+        open={pageMenuOpen}
+        onClose={handlePageMenuClose}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+      >
+        {PAGE_LINKS.map((item) => (
+          <MenuItem key={item.path} onClick={() => openPageInNewTab(item.path)}>
+            <ListItemIcon sx={{ minWidth: 34 }}>
+              {item.icon}
+            </ListItemIcon>
+            <ListItemText>{item.label}</ListItemText>
+            <OpenInNewIcon fontSize="small" color="action" />
+          </MenuItem>
+        ))}
+      </Menu>
 
       {/* 主内容区 - 专注于媒体展示 */}
       <Container maxWidth="xl" sx={{ py: 2 }}>
