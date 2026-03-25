@@ -37,6 +37,7 @@ export default function CreatorTag({
   const [calculatedPosition, setCalculatedPosition] = useState<{ top: string; left: string } | null>(null)
   
   const identifyingKeyRef = useRef<string | null>(null) // 改为存储 filePath + refreshKey 的组合
+  const requestIdRef = useRef(0)
   const abortControllerRef = useRef<AbortController | null>(null)
 
   // 生成随机位置（更保守的策略，确保不会溢出和出现在黑边）
@@ -66,6 +67,8 @@ export default function CreatorTag({
 
   useEffect(() => {
     const identifyKey = `${filePath}:${refreshKey}`
+    const requestId = ++requestIdRef.current
+    let active = true
     
     // 如果正在识别相同的文件+key，跳过
     if (identifyingKeyRef.current === identifyKey) {
@@ -76,6 +79,7 @@ export default function CreatorTag({
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
     }
+    setLoading(true)
     
     // 创建新的 AbortController
     const abortController = new AbortController()
@@ -91,11 +95,15 @@ export default function CreatorTag({
           body: JSON.stringify({ filePath }),
           signal: abortController.signal
         })
+
+        if (!response.ok) {
+          throw new Error(`Identify request failed: ${response.status}`)
+        }
         
         const data = await response.json()
         
         // 检查请求是否已被取消
-        if (abortController.signal.aborted) {
+        if (abortController.signal.aborted || !active || requestId !== requestIdRef.current) {
           return
         }
         
@@ -107,14 +115,20 @@ export default function CreatorTag({
           if (onCreatorIdentified) onCreatorIdentified(null)
         }
       } catch (error: any) {
-        if (error.name !== 'AbortError') {
+        if (error.name !== 'AbortError' && active && requestId === requestIdRef.current) {
           console.error('[CreatorTag] 识别博主失败:', error)
           setCreatorName(null)
+          if (onCreatorIdentified) onCreatorIdentified(null)
         }
       } finally {
         // 无论请求是否被取消，都要设置 loading 为 false
-        setLoading(false)
-        identifyingKeyRef.current = null
+        if (active && requestId === requestIdRef.current) {
+          setLoading(false)
+          identifyingKeyRef.current = null
+          if (abortControllerRef.current === abortController) {
+            abortControllerRef.current = null
+          }
+        }
       }
     }
     
@@ -122,8 +136,13 @@ export default function CreatorTag({
     
     // 清理函数：取消请求
     return () => {
-      if (abortController) {
+      active = false
+      if (identifyingKeyRef.current === identifyKey) {
+        identifyingKeyRef.current = null
+      }
+      if (abortControllerRef.current === abortController) {
         abortController.abort()
+        abortControllerRef.current = null
       }
     }
   }, [filePath, refreshKey, onCreatorIdentified])
