@@ -1081,6 +1081,13 @@ export const creators = {
       
       // 处理别名：确保主名称也在别名列表中
       let otherNames = data.otherNames ? [...data.otherNames] : []
+      otherNames = Array.from(
+        new Set(
+          otherNames
+            .map((name) => name.trim())
+            .filter(Boolean)
+        )
+      )
       
       // 如果是新建博主，自动将主名称添加到别名列表
       if (!data.id && !otherNames.includes(data.primaryName)) {
@@ -1090,6 +1097,7 @@ export const creators = {
       const otherNamesStr = otherNames.length > 0 ? JSON.stringify(otherNames) : null
       
       let result
+      let creatorId: number
       if (data.id) {
         // 更新现有博主
         const stmt = db.prepare(`
@@ -1108,6 +1116,7 @@ export const creators = {
           data.avatarPath || null,
           data.id
         )
+        creatorId = data.id
       } else {
         // 创建新博主 - 先检查是否已存在同名博主
         const existingByName = db.prepare('SELECT id FROM creators WHERE primary_name = ?').get(data.primaryName) as { id: number } | undefined
@@ -1130,6 +1139,7 @@ export const creators = {
           )
           // 让调用方知道实际使用的 id
           ;(result as any).existingId = existingByName.id
+          creatorId = existingByName.id
         } else {
           const stmt = db.prepare(`
             INSERT INTO creators 
@@ -1144,6 +1154,23 @@ export const creators = {
             data.bio || null,
             data.avatarPath || null
           )
+          creatorId = Number(result.lastInsertRowid)
+        }
+      }
+
+      const aliasNamesToMerge = otherNames.filter((name) => name !== data.primaryName)
+      if (aliasNamesToMerge.length > 0) {
+        const placeholders = aliasNamesToMerge.map(() => '?').join(',')
+        const aliasRows = db.prepare(`
+          SELECT id
+          FROM creators
+          WHERE primary_name IN (${placeholders}) AND id != ?
+        `).all(...aliasNamesToMerge, creatorId) as Array<{ id: number }>
+
+        const sourceIds = Array.from(new Set(aliasRows.map((row) => row.id)))
+        if (sourceIds.length > 0) {
+          creators.merge(creatorId, sourceIds)
+          ;(result as any).mergedSourceIds = sourceIds
         }
       }
       
@@ -1167,6 +1194,16 @@ export const creators = {
         throw new Error('博主不存在')
       }
       
+      const normalizedNewName = newName.trim()
+      if (!normalizedNewName) {
+        throw new Error('新主名称不能为空')
+      }
+
+      const allowedNames = new Set([creator.primaryName, ...creator.otherNames])
+      if (!allowedNames.has(normalizedNewName)) {
+        throw new Error('新主名称必须是当前主名称或已有别名')
+      }
+
       const otherNames = [...creator.otherNames]
       
       // 如果需要，将旧的主名称添加到其他名称
@@ -1174,18 +1211,13 @@ export const creators = {
         otherNames.push(creator.primaryName)
       }
       
-      // 从其他名称中移除新的主名称（如果存在）
-      const index = otherNames.indexOf(newName)
-      if (index > -1) {
-        otherNames.splice(index, 1)
-      }
       
       const stmt = db.prepare(`
         UPDATE creators 
         SET primary_name = ?, other_names = ?, updated_at = datetime('now', 'localtime')
         WHERE id = ?
       `)
-      const result = stmt.run(newName, JSON.stringify(otherNames), id)
+      const result = stmt.run(normalizedNewName, JSON.stringify(otherNames), id)
       
       // 清除缓存
       clearCreatorAliasCache()
@@ -1273,10 +1305,17 @@ export const creators = {
       }
       
       // 使用事务确保数据一致性
+      const normalizedSourceIds = Array.from(
+        new Set(sourceIds.filter((sourceId) => Number.isInteger(sourceId) && sourceId !== targetId))
+      )
+      if (normalizedSourceIds.length === 0) {
+        throw new Error('请至少选择一个待合并博主')
+      }
+
       const mergeTransaction = db.transaction(() => {
         const allOtherNames = [...target.otherNames]
         
-        for (const sourceId of sourceIds) {
+        for (const sourceId of normalizedSourceIds) {
           const source = creators.get(sourceId)
           if (!source) continue
           

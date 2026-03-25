@@ -42,7 +42,25 @@ export async function PUT(
     const { id: idStr } = await params
     const id = parseInt(idStr)
     const body = await request.json()
-    
+
+    if (body?.action === 'changePrimaryName') {
+      if (!body.newPrimaryName) {
+        return NextResponse.json(
+          { success: false, error: '新主名称不能为空' },
+          { status: 400 }
+        )
+      }
+
+      creators.changePrimaryName(id, body.newPrimaryName)
+      const creator = creators.get(id)
+
+      return NextResponse.json({
+        success: true,
+        message: '主名称切换成功',
+        data: creator
+      })
+    }
+
     const result = creators.save({
       id,
       ...body

@@ -9,7 +9,9 @@ import { UNKNOWN_CREATOR_ID } from '@/lib/constants'
  */
 export async function POST(request: NextRequest) {
   try {
-    const { filePath } = await request.json()
+    const rawBody = await request.text()
+    const body = rawBody.trim() ? JSON.parse(rawBody) : {}
+    const { filePath } = body
     
     if (!filePath) {
       return NextResponse.json({

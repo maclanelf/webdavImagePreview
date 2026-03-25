@@ -15,10 +15,13 @@ import {
   Autocomplete,
   Alert,
   CircularProgress,
-  Stack
+  Stack,
+  IconButton,
+  MenuItem
 } from '@mui/material'
-import { Star, StarBorder } from '@mui/icons-material'
+import { Star, StarBorder, SwapHoriz } from '@mui/icons-material'
 import { UNKNOWN_CREATOR_ID } from '@/lib/constants'
+import CreatorMergeDialog from './CreatorMergeDialog'
 
 interface Creator {
   id: number
@@ -51,6 +54,9 @@ export default function CreatorDialog({
   const [mode, setMode] = useState<'view' | 'create' | 'edit'>('view')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [mergeDialogOpen, setMergeDialogOpen] = useState(false)
+  const [primaryNameDialogOpen, setPrimaryNameDialogOpen] = useState(false)
+  const [nextPrimaryName, setNextPrimaryName] = useState('')
   
   // 表单字段
   const [creatorId, setCreatorId] = useState<number | undefined>(undefined) // 选中已有博主时记录 id
@@ -94,6 +100,49 @@ export default function CreatorDialog({
     setSearchInputValue('')
     setSearchResults([])
     setError('')
+    setNextPrimaryName('')
+  }
+
+  const primaryNameOptions = Array.from(
+    new Set([primaryName, ...otherNames].filter(Boolean))
+  )
+  const switchablePrimaryNames = primaryNameOptions.filter((name) => name !== primaryName)
+
+  const handleOpenPrimaryNameDialog = () => {
+    if (primaryNameOptions.length === 0) return
+    setNextPrimaryName(primaryName)
+    setPrimaryNameDialogOpen(true)
+  }
+
+  const handleChangePrimaryName = async () => {
+    if (!existingCreator?.id || !nextPrimaryName) return
+
+    setLoading(true)
+    setError('')
+
+    try {
+      const response = await fetch(`/api/creators/${existingCreator.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'changePrimaryName',
+          newPrimaryName: nextPrimaryName
+        })
+      })
+
+      const data = await response.json()
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || '切换主名称失败')
+      }
+
+      setPrimaryNameDialogOpen(false)
+      onClose()
+      onSuccess?.()
+    } catch (err: any) {
+      setError(err.message || '切换主名称失败')
+    } finally {
+      setLoading(false)
+    }
   }
 
   // 搜索博主（直接在 useEffect 中防抖）
@@ -289,7 +338,14 @@ export default function CreatorDialog({
             <Typography variant="subtitle2" color="text.secondary" gutterBottom>
               博主名称
             </Typography>
-            <Typography variant="h6">{primaryName}</Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Typography variant="h6">{primaryName}</Typography>
+              {switchablePrimaryNames.length > 0 && (
+                <IconButton size="small" onClick={handleOpenPrimaryNameDialog} title="切换主名称">
+                  <SwapHoriz fontSize="small" />
+                </IconButton>
+              )}
+            </Box>
           </Box>
 
           {otherNames.length > 0 && (
@@ -336,6 +392,11 @@ export default function CreatorDialog({
 
       <DialogActions>
         <Button onClick={onClose}>关闭</Button>
+        {!!existingCreator?.id && (
+          <Button onClick={() => setMergeDialogOpen(true)} color="warning">
+            合并博主
+          </Button>
+        )}
         <Button
           onClick={markUnknown}
           color="warning"
@@ -588,6 +649,79 @@ export default function CreatorDialog({
 
       {mode === 'view' && renderViewMode()}
       {(mode === 'create' || mode === 'edit') && renderEditMode()}
+      <CreatorMergeDialog
+        open={mergeDialogOpen}
+        sourceCreator={existingCreator || null}
+        container={container}
+        onClose={() => setMergeDialogOpen(false)}
+        onSuccess={() => {
+          setMergeDialogOpen(false)
+          onClose()
+          onSuccess?.()
+        }}
+      />
+      <Dialog
+        open={primaryNameDialogOpen}
+        onClose={loading ? undefined : () => setPrimaryNameDialogOpen(false)}
+        maxWidth="xs"
+        fullWidth
+        container={container || undefined}
+        slotProps={{
+          backdrop: {
+            sx: { zIndex: 2199 }
+          }
+        }}
+        PaperProps={{
+          sx: { zIndex: 2200 }
+        }}
+        sx={{
+          zIndex: 2200,
+          '& .MuiDialog-container': {
+            zIndex: 2200
+          }
+        }}
+      >
+        <DialogTitle>切换主名称</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            <Typography variant="body2" color="text.secondary">
+              从现有别名里选择一个作为新的主名称。
+            </Typography>
+            <TextField
+              select
+              label="新的主名称"
+              value={nextPrimaryName}
+              onChange={(e) => setNextPrimaryName(e.target.value)}
+              fullWidth
+              SelectProps={{
+                MenuProps: {
+                  disablePortal: true,
+                  container: container || undefined,
+                  PaperProps: {
+                    sx: {
+                      zIndex: 2301
+                    }
+                  }
+                }
+              }}
+            >
+              {primaryNameOptions.map((name) => (
+                <MenuItem key={name} value={name}>
+                  {name}
+                </MenuItem>
+              ))}
+            </TextField>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPrimaryNameDialogOpen(false)} disabled={loading}>
+            取消
+          </Button>
+          <Button onClick={handleChangePrimaryName} variant="contained" disabled={loading || !nextPrimaryName || nextPrimaryName === primaryName}>
+            {loading ? '切换中...' : '确认切换'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Dialog>
   )
 }
