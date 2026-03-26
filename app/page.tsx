@@ -84,6 +84,7 @@ import type { WebDAVConfig, MediaFilter, ViewMode, ViewedFilter, AdvancedFilters
 
 // 主界面右上角的页面入口配置，统一集中在这里，便于后续复用和维护。
 const PAGE_LINKS = [
+  { label: '观看数据看板', path: '/dashboard', icon: <BarChartIcon fontSize="small" /> },
   { label: '评价与分类管理', path: '/manage', icon: <ManageAccountsIcon fontSize="small" /> },
   { label: 'WebDAV 设置', path: '/config', icon: <SettingsIcon fontSize="small" /> },
   { label: '博主管理测试', path: '/creator-test', icon: <BugReportIcon fontSize="small" /> },
