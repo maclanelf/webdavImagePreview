@@ -304,6 +304,23 @@ export function initDatabase() {
       )
     `)
 
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS video_highlights (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_path TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        start_seconds REAL NOT NULL,
+        end_seconds REAL NOT NULL,
+        duration_seconds REAL NOT NULL,
+        title TEXT,
+        note TEXT,
+        tags TEXT,
+        sort_order INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT (datetime('now', 'localtime')),
+        updated_at DATETIME DEFAULT (datetime('now', 'localtime'))
+      )
+    `)
+
     // 创建自定义评价标签表
     db.exec(`
       CREATE TABLE IF NOT EXISTS custom_evaluations (
@@ -368,6 +385,8 @@ export function initDatabase() {
     try {
       db.exec(`CREATE INDEX IF NOT EXISTS idx_media_ratings_creator ON media_ratings(creator_id)`)
       db.exec(`CREATE INDEX IF NOT EXISTS idx_group_ratings_creator ON group_ratings(creator_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_video_highlights_file_path ON video_highlights(file_path)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_video_highlights_file_range ON video_highlights(file_path, start_seconds, end_seconds)`)
       console.log('✅ 创建 creator_id 索引成功')
     } catch (e: any) {
       console.warn('⚠️ 创建 creator_id 索引失败:', e.message)
@@ -844,6 +863,143 @@ export const groupRatings = {
 }
 
 // 自定义评价标签相关操作
+export const videoHighlights = {
+  getByFilePath: (filePath: string) => {
+    try {
+      ensureInitialized()
+      const stmt = db.prepare(`
+        SELECT *
+        FROM video_highlights
+        WHERE file_path = ?
+        ORDER BY start_seconds ASC, id ASC
+      `)
+      return stmt.all(filePath)
+    } catch (error) {
+      console.error('获取精彩片段失败:', error)
+      return []
+    }
+  },
+
+  create: (data: {
+    filePath: string
+    fileName: string
+    startSeconds: number
+    endSeconds: number
+    title?: string
+    note?: string
+    tags?: string[]
+    sortOrder?: number
+  }) => {
+    ensureInitialized()
+
+    const overlap = db.prepare(`
+      SELECT id
+      FROM video_highlights
+      WHERE file_path = ?
+        AND NOT (end_seconds <= ? OR start_seconds >= ?)
+      LIMIT 1
+    `).get(data.filePath, data.startSeconds, data.endSeconds) as { id: number } | undefined
+
+    if (overlap) {
+      throw new Error('时间重叠')
+    }
+
+    const durationSeconds = Number((data.endSeconds - data.startSeconds).toFixed(3))
+    const stmt = db.prepare(`
+      INSERT INTO video_highlights
+      (file_path, file_name, start_seconds, end_seconds, duration_seconds, title, note, tags, sort_order)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+
+    return stmt.run(
+      data.filePath,
+      data.fileName,
+      data.startSeconds,
+      data.endSeconds,
+      durationSeconds,
+      data.title?.trim() || null,
+      data.note?.trim() || null,
+      data.tags && data.tags.length > 0 ? JSON.stringify(data.tags) : null,
+      data.sortOrder ?? 0
+    )
+  },
+
+  update: (id: number, data: {
+    startSeconds: number
+    endSeconds: number
+    title?: string
+    note?: string
+    tags?: string[]
+    sortOrder?: number
+  }) => {
+    ensureInitialized()
+
+    const existing = db.prepare(`
+      SELECT id, file_path
+      FROM video_highlights
+      WHERE id = ?
+      LIMIT 1
+    `).get(id) as { id: number; file_path: string } | undefined
+
+    if (!existing) {
+      throw new Error('精彩时刻不存在')
+    }
+
+    // 更新时也必须执行时间重叠校验。
+    // 这里直接复用已查询到的 file_path，避免依赖 JOIN current 的隐式存在性；
+    // 一旦目标记录不存在，上面的存在性检查会先返回 404，而不是静默更新 0 行。
+    const overlap = db.prepare(`
+      SELECT id
+      FROM video_highlights
+      WHERE file_path = ?
+        AND id != ?
+        AND NOT (end_seconds <= ? OR start_seconds >= ?)
+      LIMIT 1
+    `).get(existing.file_path, id, data.startSeconds, data.endSeconds) as { id: number } | undefined
+
+    if (overlap) {
+      // 与创建逻辑保持一致：一旦区间重叠，直接抛出业务错误，交由 API 层映射为 409。
+      throw new Error('时间重叠')
+    }
+
+    const durationSeconds = Number((data.endSeconds - data.startSeconds).toFixed(3))
+    const stmt = db.prepare(`
+      UPDATE video_highlights
+      SET start_seconds = ?, end_seconds = ?, duration_seconds = ?, title = ?, note = ?, tags = ?, sort_order = ?, updated_at = datetime('now', 'localtime')
+      WHERE id = ?
+    `)
+
+    const result = stmt.run(
+      data.startSeconds,
+      data.endSeconds,
+      durationSeconds,
+      data.title?.trim() || null,
+      data.note?.trim() || null,
+      data.tags && data.tags.length > 0 ? JSON.stringify(data.tags) : null,
+      data.sortOrder ?? 0,
+      id
+    )
+
+    if (result.changes === 0) {
+      throw new Error('精彩时刻不存在')
+    }
+
+    return result
+  },
+
+  delete: (id: number) => {
+    ensureInitialized()
+    const stmt = db.prepare('DELETE FROM video_highlights WHERE id = ?')
+    const result = stmt.run(id)
+
+    if (result.changes === 0) {
+      throw new Error('精彩时刻不存在')
+    }
+
+    return result
+  }
+}
+
 export const customEvaluations = {
   // 获取所有标签
   getAll: () => {

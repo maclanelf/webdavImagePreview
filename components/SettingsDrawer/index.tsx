@@ -33,6 +33,8 @@ interface SettingsDrawerProps {
   preloadStatus: { cacheSize: number; maxCacheSize: number } | null
   onClearCache: () => void
   onResetButtonPositions: () => void
+  highlightContinuousPlayEnabled: boolean
+  onHighlightContinuousPlayEnabledChange: (enabled: boolean) => void
   // 已看过筛选相关
   viewedFilter: ViewedFilter
   onViewedFilterChange: (filter: ViewedFilter) => void
@@ -74,6 +76,8 @@ export default function SettingsDrawer({
   preloadStatus,
   onClearCache,
   onResetButtonPositions,
+  highlightContinuousPlayEnabled,
+  onHighlightContinuousPlayEnabledChange,
   viewedFilter,
   onViewedFilterChange,
   stats,
@@ -148,6 +152,8 @@ export default function SettingsDrawer({
           preloadStatus={preloadStatus}
           onClearCache={onClearCache}
           onResetButtonPositions={onResetButtonPositions}
+          highlightContinuousPlayEnabled={highlightContinuousPlayEnabled}
+          onHighlightContinuousPlayEnabledChange={onHighlightContinuousPlayEnabledChange}
         />
 
         <Divider sx={{ mb: 3 }} />

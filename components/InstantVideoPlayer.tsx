@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useEffect, useState, forwardRef, useImperativeHandle } from 'react'
+import { useRef, useEffect, useState, useCallback, forwardRef, useImperativeHandle, useId } from 'react'
 import { Box, CircularProgress, Typography, IconButton, Menu, MenuItem } from '@mui/material'
 import { 
   PlayArrow as PlayArrowIcon, 
@@ -35,6 +35,14 @@ interface InstantVideoPlayerProps {
   alwaysOverlay?: React.ReactNode
   // 控制栏显示状态变化回调
   onControlsVisibilityChange?: (visible: boolean) => void
+  onRestartCurrentVideo?: () => void
+  // 精彩时刻片段，用于在进度条上显示标记
+  highlights?: Array<{
+    id: number
+    startSeconds: number
+    endSeconds: number
+  }>
+  selectedHighlightId?: number | null
 }
 
 export interface InstantVideoPlayerRef {
@@ -92,6 +100,9 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   fullscreenOverlay,
   alwaysOverlay,
   onControlsVisibilityChange,
+  onRestartCurrentVideo,
+  highlights = [],
+  selectedHighlightId = null,
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement>(null) // 视频元素引用
   const [loading, setLoading] = useState(true) // 加载状态
@@ -106,6 +117,10 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   const [isMuted, setIsMuted] = useState(false) // 静音状态
   const [playbackRate, setPlaybackRate] = useState(1) // 播放速度
   const [speedMenuAnchor, setSpeedMenuAnchor] = useState<null | HTMLElement>(null) // 倍速菜单锚点
+  const [isScrubbing, setIsScrubbing] = useState(false)
+  // 自定义进度条轨道引用，用于把鼠标/手指的横坐标换算成具体播放时间。
+  const progressTrackRef = useRef<HTMLDivElement>(null)
+  const progressGradientId = useId()
   
   // 转码降级状态
   const [isUsingTranscode, setIsUsingTranscode] = useState(false) // 是否正在使用转码流
@@ -815,6 +830,199 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     handleSpeedMenuClose()
   }
 
+  /**
+   * 把指针横坐标映射成视频时间。
+   * 由于这里使用的是自定义进度条，而不是原生 range，所以需要自己完成坐标换算。
+   */
+  const seekToClientX = useCallback((clientX: number) => {
+    const track = progressTrackRef.current
+    if (!track || !videoRef.current || !duration || !isFinite(duration)) return
+
+    const rect = track.getBoundingClientRect()
+    if (rect.width <= 0) return
+
+    const percent = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))
+    const nextTime = percent * duration
+    setCurrentTime(nextTime)
+    videoRef.current.currentTime = nextTime
+  }, [duration])
+
+  // 开始拖拽进度条：先进入 scrubbing 状态，再立即跳到按下位置，保证点击和拖动体验一致。
+  const beginScrubbing = useCallback((clientX: number) => {
+    setIsScrubbing(true)
+    seekToClientX(clientX)
+  }, [seekToClientX])
+
+  // 结束拖拽后恢复普通进度条样式和交互状态。
+  const endScrubbing = useCallback(() => {
+    setIsScrubbing(false)
+  }, [])
+
+  useEffect(() => {
+    if (!isScrubbing) return
+
+    const handlePointerMove = (event: PointerEvent) => {
+      seekToClientX(event.clientX)
+    }
+
+    const handlePointerUp = () => {
+      endScrubbing()
+    }
+
+    const handleTouchMove = (event: TouchEvent) => {
+      if (event.touches.length > 0) {
+        seekToClientX(event.touches[0].clientX)
+      }
+    }
+
+    const handleTouchEnd = () => {
+      endScrubbing()
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointercancel', handlePointerUp)
+    window.addEventListener('touchmove', handleTouchMove, { passive: true })
+    window.addEventListener('touchend', handleTouchEnd)
+    window.addEventListener('touchcancel', handleTouchEnd)
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', handlePointerUp)
+      window.removeEventListener('touchmove', handleTouchMove)
+      window.removeEventListener('touchend', handleTouchEnd)
+      window.removeEventListener('touchcancel', handleTouchEnd)
+    }
+  }, [endScrubbing, isScrubbing, seekToClientX])
+
+  /**
+   * 在进度条上渲染精彩时刻标记。
+   * 这里只渲染起点/终点细条，而不是整段覆盖块，目的是减少对播放进度主色的遮挡。
+   */
+  const renderProgressMarkers = () => {
+    if (!duration || !isFinite(duration) || highlights.length === 0) return null
+    const markerHeight = isScrubbing ? 8 : 4
+
+    return (
+      <Box
+        sx={{
+          position: 'absolute',
+          inset: 0,
+          pointerEvents: 'none',
+          zIndex: 3,
+        }}
+      >
+        <svg
+          width="100%"
+          height="100%"
+          viewBox={`0 0 100 ${markerHeight}`}
+          preserveAspectRatio="none"
+          shapeRendering="crispEdges"
+          style={{ display: 'block', overflow: 'visible' }}
+        >
+          {highlights.flatMap((highlight) => {
+            const startPercent = Math.min(100, Math.max(0, (highlight.startSeconds / duration) * 100))
+            const endPercent = Math.min(100, Math.max(0, (highlight.endSeconds / duration) * 100))
+            const isSelected = selectedHighlightId === highlight.id
+            const markerWidth = isSelected ? 2 : 1
+            const startX = Math.round(startPercent) - (markerWidth / 2)
+            const endX = Math.round(endPercent) - (markerWidth / 2)
+
+            return [
+              <rect
+                key={`highlight-start-${highlight.id}`}
+                x={startX}
+                y="0"
+                width={markerWidth}
+                height={markerHeight}
+                fill={isSelected ? '#22d3ee' : '#67e8f9'}
+                shapeRendering="crispEdges"
+              />,
+              <rect
+                key={`highlight-end-${highlight.id}`}
+                x={endX}
+                y="0"
+                width={markerWidth}
+                height={markerHeight}
+                fill={isSelected ? '#818cf8' : '#a5b4fc'}
+                shapeRendering="crispEdges"
+              />,
+            ]
+          })}
+        </svg>
+      </Box>
+    )
+  }
+
+  /**
+   * 渲染自定义进度条。
+   * 使用 SVG 后更容易叠加精彩时刻标记、拖拽态增粗和渐变填充，
+   * 也能避开不同浏览器对原生 range 样式支持差异较大的问题。
+   */
+  const renderCustomProgressBar = () => {
+    const progressPercent = duration && isFinite(duration)
+      ? Math.min(100, Math.max(0, (currentTime / duration) * 100))
+      : 0
+    const trackHeight = isScrubbing ? 8 : 4
+    const trackRadius = 1
+
+    return (
+      <Box
+        ref={progressTrackRef}
+        onMouseDown={(e) => beginScrubbing(e.clientX)}
+        onTouchStart={(e) => {
+          if (e.touches.length > 0) beginScrubbing(e.touches[0].clientX)
+        }}
+        sx={{
+          position: 'relative',
+          width: '100%',
+          height: `${trackHeight}px`,
+          borderRadius: 999,
+          cursor: 'pointer',
+          transition: 'height 120ms ease',
+          overflow: 'hidden',
+          touchAction: 'none',
+        }}
+      >
+        <svg
+          width="100%"
+          height="100%"
+          viewBox={`0 0 100 ${trackHeight}`}
+          preserveAspectRatio="none"
+          shapeRendering="geometricPrecision"
+          style={{ display: 'block', overflow: 'hidden' }}
+        >
+          <rect
+            x="0"
+            y={0}
+            width="100"
+            height={trackHeight}
+            rx={trackRadius}
+            ry={trackRadius}
+            fill="rgba(255,255,255,0.18)"
+          />
+          <rect
+            x="0"
+            y={0}
+            width={progressPercent}
+            height={trackHeight}
+            rx={trackRadius}
+            ry={trackRadius}
+            fill={`url(#${progressGradientId})`}
+          />
+          <defs>
+            <linearGradient id={progressGradientId} x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stopColor="rgba(34,211,238,0.96)" />
+              <stop offset="100%" stopColor="rgba(59,130,246,0.92)" />
+            </linearGradient>
+          </defs>
+        </svg>
+        {renderProgressMarkers()}
+      </Box>
+    )
+  }
+
   // 监听全屏状态变化
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -842,31 +1050,68 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   }, [showControls, onControlsVisibilityChange])
 
   // 重试播放函数（直接播放）
-  const retryPlayback = () => {
-    console.log('🔄 [即点即播] 用户点击重试（直接播放）')
+  /**
+   * 从指定播放源重新开始当前视频。
+   * 这个函数同时服务普通“重新播放”与错误后的“重试播放”场景，
+   * 因而会一并重置时间、缓冲、播放 Promise 和转码状态，保证播放器回到干净起点。
+   */
+  const restartPlaybackFromSource = async (targetSrc: string, useTranscode: boolean) => {
     setError(null)
     setLoading(true)
-    setHasAttemptedAutoPlay(false)
+    setCurrentTime(0)
+    setDuration(0)
+    onRestartCurrentVideo?.()
+    setHasAttemptedAutoPlay(true)
     setBufferedPercent(0)
     setDownloadSpeed(0)
-    setIsUsingTranscode(false)
+    setIsPlaying(false)
+    setIsUsingTranscode(useTranscode)
+    setHasTriedTranscode(useTranscode)
     lastBufferedEndRef.current = 0
     lastUpdateTimeRef.current = Date.now()
-    
-    if (videoRef.current) {
-      // 重新加载原始视频
-      videoRef.current.src = src
-      videoRef.current.load()
-      
-      // 尝试播放
-      if (autoPlay || playIntentRef.current) {
-        videoRef.current.muted = true
-        setIsMutedForAutoplay(true)
-        videoRef.current.play().catch(err => {
-          console.log('⚠️ [即点即播] 重试播放失败:', err)
-        })
-      }
+
+    if (!videoRef.current) return
+
+    const video = videoRef.current
+    const shouldStayMuted = video.muted
+
+    if (playPromise) {
+      playPromise.catch(() => {
+        // 忽略旧播放请求的异常，当前以新的重播操作为准
+      })
+      setPlayPromise(null)
     }
+
+    video.pause()
+    video.currentTime = 0
+    video.src = targetSrc
+    video.muted = shouldStayMuted
+    setIsMuted(shouldStayMuted)
+    setIsMutedForAutoplay(shouldStayMuted)
+    video.load()
+
+    try {
+      const promise = video.play()
+      setPlayPromise(promise)
+      await promise
+      setPlayPromise(null)
+    } catch (err) {
+      console.log('重播当前视频失败:', err)
+      setPlayPromise(null)
+    }
+  }
+
+  // 按当前实际使用的播放源（原始流 / 转码流）重新播放，保留用户当前选择。
+  const restartCurrentPlayback = async (e?: React.MouseEvent) => {
+    e?.stopPropagation()
+    const useTranscode = Boolean(isUsingTranscode && transcodeUrl)
+    const targetSrc = useTranscode ? transcodeUrl! : src
+    await restartPlaybackFromSource(targetSrc, useTranscode)
+  }
+
+  // 错误面板里的“重试”固定回到原始源，优先验证最直接的播放链路是否已经恢复。
+  const retryPlayback = () => {
+    void restartPlaybackFromSource(src, false)
   }
 
   // 使用转码播放函数
@@ -1165,33 +1410,12 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
                 width: '100%', 
                 mb: 1,
                 px: 1,
+                position: 'relative',
               }} 
               onClick={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}
             >
-              <input
-                type="range"
-                min="0"
-                max={duration || 100}
-                value={currentTime}
-                onChange={(e) => {
-                  const newTime = parseFloat(e.target.value)
-                  setCurrentTime(newTime)
-                  if (videoRef.current) {
-                    videoRef.current.currentTime = newTime
-                  }
-                }}
-                style={{
-                  width: '100%',
-                  height: '8px',
-                  background: `linear-gradient(to right, #4caf50 ${(currentTime / (duration || 1)) * 100}%, rgba(255, 255, 255, 0.3) ${(currentTime / (duration || 1)) * 100}%)`,
-                  outline: 'none',
-                  cursor: 'pointer',
-                  borderRadius: '4px',
-                  WebkitAppearance: 'none',
-                  appearance: 'none',
-                }}
-              />
+              {renderCustomProgressBar()}
             </Box>
             
             {/* 控制按钮 */}
@@ -1211,6 +1435,15 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
               </Box>
               
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 0 }}>
+                <IconButton
+                  size="small"
+                  disableRipple
+                  sx={{ color: '#fff', p: 0.5 }}
+                  onClick={(e) => { void restartCurrentPlayback(e) }}
+                  title="重新播放当前视频"
+                >
+                  <ReplayIcon fontSize="small" />
+                </IconButton>
                 <IconButton size="small" disableRipple sx={{ color: '#fff', p: 0.5 }} onClick={toggleMute}>
                   {isMuted ? <VolumeOffIcon fontSize="small" /> : <VolumeUpIcon fontSize="small" />}
                 </IconButton>
@@ -1282,33 +1515,12 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
               width: '100%', 
               mb: 1,
               px: 1,
+              position: 'relative',
             }} 
             onClick={(e) => e.stopPropagation()}
             onTouchStart={(e) => e.stopPropagation()}
           >
-            <input
-              type="range"
-              min="0"
-              max={duration || 100}
-              value={currentTime}
-              onChange={(e) => {
-                const newTime = parseFloat(e.target.value)
-                setCurrentTime(newTime)
-                if (videoRef.current) {
-                  videoRef.current.currentTime = newTime
-                }
-              }}
-              style={{
-                width: '100%',
-                height: '8px', // 增加高度，更容易点击
-                background: `linear-gradient(to right, #4caf50 ${(currentTime / (duration || 1)) * 100}%, rgba(255, 255, 255, 0.3) ${(currentTime / (duration || 1)) * 100}%)`,
-                outline: 'none',
-                cursor: 'pointer',
-                borderRadius: '4px',
-                WebkitAppearance: 'none',
-                appearance: 'none',
-              }}
-            />
+            {renderCustomProgressBar()}
           </Box>
           
           {/* 控制按钮行 */}
@@ -1348,6 +1560,20 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
                 onClick={toggleMute}
               >
                 {isMuted ? <VolumeOffIcon fontSize="small" /> : <VolumeUpIcon fontSize="small" />}
+              </IconButton>
+              <IconButton
+                size="small"
+                disableRipple
+                sx={{ 
+                  color: '#fff', 
+                  p: 0.5,
+                  '&:active': { opacity: 0.7 },
+                  order: -1,
+                }}
+                onClick={(e) => { void restartCurrentPlayback(e) }}
+                title="重新播放当前视频"
+              >
+                <ReplayIcon fontSize="small" />
               </IconButton>
               
               {/* 倍速按钮 */}

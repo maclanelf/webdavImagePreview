@@ -33,7 +33,6 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
-  TextField,
 } from '@mui/material'
 import {
   Shuffle as ShuffleIcon,
@@ -75,6 +74,7 @@ import InstantVideoPlayer from '@/components/InstantVideoPlayer'
 import MobileVideoPlayer from '@/components/MobileVideoPlayer'
 import CreatorTag from '@/components/CreatorTag'
 import CreatorDialog from '@/components/CreatorDialog'
+import { useVideoHighlightsModule } from '@/components/VideoHighlightsModule'
 import databasePreloadManager from '@/lib/databasePreloadManager'
 import { getPlaybackStrategy, buildVideoStreamUrl } from '@/lib/videoFormat'
 import { initEruda, getErudaEnabled, setErudaEnabled } from '@/lib/erudaInit'
@@ -197,7 +197,7 @@ export default function HomePage() {
   const [currentRating, setCurrentRating] = useState<MediaRating | GroupRating | null>(null)
   // 评分类型：单个媒体或图组
   const [ratingType, setRatingType] = useState<'media' | 'group'>('media')
-  
+
   // 博主对话框打开状态
   const [creatorDialogOpen, setCreatorDialogOpen] = useState(false)
   // 当前识别的博主
@@ -294,7 +294,7 @@ export default function HomePage() {
       setStreamVideoTagVisible(false)
     }
   }, [currentFile, mediaType])
-  
+
   // 监听原生全屏状态变化（仅用于视频）
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -2018,6 +2018,11 @@ export default function HomePage() {
     return (bytes / (1024 * 1024)).toFixed(2) + ' MB'
   }
 
+  const getInstantVideoCurrentTime = useCallback(() => {
+    const currentTime = instantVideoRef.current?.getCurrentTime?.()
+    return typeof currentTime === 'number' && Number.isFinite(currentTime) ? currentTime : 0
+  }, [])
+
   /**
    * 检测媒体类型变化并处理全屏状态切换
    * 由于现在图片和视频都使用网页容器全屏（CSS 方式），不再需要特殊处理
@@ -2997,6 +3002,59 @@ export default function HomePage() {
     setSnackbarOpen(false)
   }
 
+  // 将 Snackbar 三段式状态封装成统一通知函数，便于精彩时刻模块直接复用页面通知能力。
+  const notify = useCallback((message: string, severity: 'success' | 'error' | 'info' | 'warning') => {
+    setSnackbarMessage(message)
+    setSnackbarSeverity(severity)
+    setSnackbarOpen(true)
+  }, [])
+
+  // 精彩时刻模块组合器：向模块注入当前文件、播放器控制与通知能力，
+  // 再统一取回 UI 片段、进度条标记和连续播放控制方法。
+  const videoHighlightsModule = useVideoHighlightsModule({
+    currentFile: currentFile ? { filename: currentFile.filename, basename: currentFile.basename } : null,
+    mediaType,
+    viewMode,
+    fullscreen,
+    streamVideoTagVisible,
+    getCurrentTime: getInstantVideoCurrentTime,
+    onSeek: (seconds: number) => {
+      instantVideoRef.current?.setCurrentTime?.(seconds)
+    },
+    onPlay: async () => {
+      await instantVideoRef.current?.play?.()
+    },
+    onNotify: notify,
+    onContinuousPlaybackEnd: () => {
+      notify('精彩时刻连续播放完成', 'info')
+    },
+    fullscreenDialogContainer: instantVideoRef.current?.getContainerElement?.() || null,
+    inlineDialogContainer: videoPlayerContainerRef.current,
+  })
+
+  // 恢复用户上次保存的“连续播放精彩时刻”偏好，只在首次挂载时读取一次即可。
+  useEffect(() => {
+    const savedContinuousPlay = localStorage.getItem('highlight_continuous_play_enabled')
+    if (savedContinuousPlay !== null) {
+      videoHighlightsModule.setHighlightContinuousPlayEnabled(savedContinuousPlay === 'true')
+    }
+  }, [])
+
+  /**
+   * 处理“连续播放精彩时刻”开关变化：
+   * 1. 更新模块内部状态；
+   * 2. 同步到 localStorage 持久化；
+   * 3. 关闭时立即终止当前连播，避免残留推进状态继续生效。
+   */
+  const handleHighlightContinuousPlayEnabledChange = useCallback((enabled: boolean) => {
+    videoHighlightsModule.setHighlightContinuousPlayEnabled(enabled)
+    localStorage.setItem('highlight_continuous_play_enabled', enabled.toString())
+    if (!enabled) {
+      videoHighlightsModule.stopContinuousHighlightPlayback()
+    }
+    notify(enabled ? '已启用连续播放精彩时刻' : '已关闭连续播放精彩时刻', 'info')
+  }, [notify, videoHighlightsModule])
+
   // 处理重新开始观看（清空本地记录和缓存，重新预加载）
   const handleRestartViewing = async () => {
     setShowRestartDialog(false)
@@ -3200,13 +3258,17 @@ export default function HomePage() {
   const handleInstantVideoTimeUpdate = useCallback((currentTime: number, duration: number) => {
     // 检查 duration 是否有效
     if (!duration || !isFinite(duration)) return
+
+    videoHighlightsModule.syncSelectedHighlightByTime(currentTime)
     
     const progress = currentTime / duration
     // 播放超过80%时自动标记
     if (progress >= 0.8) {
       performAutoRating()
     }
-  }, [performAutoRating])
+
+    videoHighlightsModule.handleContinuousPlaybackProgress(currentTime)
+  }, [performAutoRating, videoHighlightsModule])
 
   // 视频播放结束监听（触发自动评分）
   const handleVideoEnded = useCallback(() => {
@@ -3245,13 +3307,26 @@ export default function HomePage() {
         event.preventDefault()
         openRatingDialog('group')
       }
+
+      // 大视频模式下，A/B 用于精彩片段打点
+      if (viewMode === 'large-video' && mediaType === 'stream-video') {
+        if (key === 'a') {
+          event.preventDefault()
+          videoHighlightsModule.handleMarkHighlightStart()
+        }
+
+        if (key === 'b') {
+          event.preventDefault()
+          videoHighlightsModule.handleMarkHighlightEnd()
+        }
+      }
     }
 
     window.addEventListener('keydown', handleKeyPress)
     return () => {
       window.removeEventListener('keydown', handleKeyPress)
     }
-  }, [currentFile, handleQuickRate, viewMode, currentGroup])
+  }, [currentFile, handleQuickRate, viewMode, currentGroup, mediaType, videoHighlightsModule])
 
   // 清理定时器
   useEffect(() => {
@@ -3716,23 +3791,55 @@ export default function HomePage() {
                     onTimeUpdate={handleInstantVideoTimeUpdate}
                     onEnded={handleVideoEnded}
                     onNext={loadRandomMedia} // 换一个按钮
+                    highlights={videoHighlightsModule.progressHighlights.map((highlight) => ({
+                      id: highlight.id,
+                      startSeconds: highlight.startSeconds,
+                      endSeconds: highlight.endSeconds,
+                    }))}
+                    selectedHighlightId={videoHighlightsModule.selectedHighlightId}
+                    onRestartCurrentVideo={() => {
+                      videoHighlightsModule.clearSelectedHighlight()
+                      videoHighlightsModule.stopContinuousHighlightPlayback()
+                    }}
                     onControlsVisibilityChange={(visible) => {
                       setStreamVideoTagVisible(visible)
                     }}
                     alwaysOverlay={
                       currentFile ? (
-                        <CreatorTag
-                          filePath={currentFile.filename}
-                          onCreatorIdentified={setCurrentCreator}
-                          onTagClick={() => setCreatorDialogOpen(true)}
-                          visible={streamVideoTagVisible}
-                          refreshKey={creatorRefreshKey}
-                        />
+                        <>
+                          <CreatorTag
+                            filePath={currentFile.filename}
+                            onCreatorIdentified={setCurrentCreator}
+                            onTagClick={() => setCreatorDialogOpen(true)}
+                            visible={streamVideoTagVisible}
+                            refreshKey={creatorRefreshKey}
+                          />
+                          {!fullscreen && videoHighlightsModule.inlineMarkerControls}
+                        </>
                       ) : undefined
                     }
                     // 全屏覆盖层 - 在原生全屏模式下显示评分组件
                     fullscreenOverlay={
                       <>
+                        {videoHighlightsModule.fullscreenMarkerControls}
+                        <Box
+                          sx={{
+                            position: 'absolute',
+                            left: 20,
+                            right: 20,
+                            bottom: 88,
+                            zIndex: 2001,
+                            opacity: streamVideoTagVisible ? 1 : 0,
+                            transform: 'translateY(0)',
+                            visibility: streamVideoTagVisible ? 'visible' : 'hidden',
+                            transition: 'opacity 0.15s ease-out, visibility 0.15s ease-out',
+                            pointerEvents: streamVideoTagVisible ? 'auto' : 'none',
+                            willChange: 'opacity',
+                          }}
+                        >
+                          {videoHighlightsModule.fullscreenStrip}
+                        </Box>
+
                         {/* 左侧边：星星等级设置 - 纵向显示，可拖动 */}
                         <DraggableBox
                           storageKey="fullscreen_rating_stream"
@@ -4298,7 +4405,21 @@ export default function HomePage() {
                   compact
                 />
               </Box>
-              
+
+              {mediaType === 'stream-video' && (
+                <Box sx={{ mt: 1.25 }}>
+                  <Box
+                    sx={{
+                      px: 0,
+                      py: 0,
+                      backgroundColor: 'transparent',
+                    }}
+                  >
+                    {videoHighlightsModule.inlineStrip}
+                  </Box>
+                </Box>
+              )}
+               
               {/* 视频操作按钮 - 仅视频文件显示 */}
               {isVideo(currentFile.filename) && (
                 <Box sx={{ mt: 1.5 }}>
@@ -4508,6 +4629,8 @@ export default function HomePage() {
           preloadStatus={preloadStatus}
           onClearCache={handleClearCache}
           onResetButtonPositions={handleResetButtonPositions}
+          highlightContinuousPlayEnabled={videoHighlightsModule.highlightContinuousPlayEnabled}
+          onHighlightContinuousPlayEnabledChange={handleHighlightContinuousPlayEnabledChange}
           // 已看过筛选相关
           viewedFilter={viewedFilter}
           onViewedFilterChange={handleViewedFilterChangeWrapper}
@@ -4748,6 +4871,8 @@ export default function HomePage() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {videoHighlightsModule.editorDialog}
 
       {/* 全屏过渡遮罩 - 用于图片全屏切换到视频全屏时的平滑过渡 */}
       {fullscreenTransitionOverlay && (

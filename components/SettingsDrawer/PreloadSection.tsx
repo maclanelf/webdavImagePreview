@@ -13,6 +13,8 @@ interface PreloadSectionProps {
   preloadStatus: { cacheSize: number; maxCacheSize: number } | null
   onClearCache: () => void
   onResetButtonPositions: () => void
+  highlightContinuousPlayEnabled: boolean
+  onHighlightContinuousPlayEnabledChange: (enabled: boolean) => void
 }
 
 export default function PreloadSection({
@@ -27,6 +29,8 @@ export default function PreloadSection({
   preloadStatus,
   onClearCache,
   onResetButtonPositions,
+  highlightContinuousPlayEnabled,
+  onHighlightContinuousPlayEnabledChange,
 }: PreloadSectionProps) {
   return (
     <Box sx={{ mb: 3 }}>
@@ -81,6 +85,23 @@ export default function PreloadSection({
             onClick={() => onErudaEnabledChange(!erudaEnabled)}
           >
             {erudaEnabled ? '已启用' : '已禁用'}
+          </Button>
+        </Box>
+
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Box>
+            <Typography variant="body2">连续播放精彩时刻</Typography>
+            <Typography variant="caption" color="text.secondary" display="block">
+              点击片段后自动顺序播放后续高光
+            </Typography>
+          </Box>
+          <Button
+            size="small"
+            variant={highlightContinuousPlayEnabled ? 'contained' : 'outlined'}
+            color="primary"
+            onClick={() => onHighlightContinuousPlayEnabledChange(!highlightContinuousPlayEnabled)}
+          >
+            {highlightContinuousPlayEnabled ? '已启用' : '已禁用'}
           </Button>
         </Box>
 

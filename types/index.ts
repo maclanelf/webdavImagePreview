@@ -54,12 +54,20 @@ export interface GroupRating {
   category?: string | string[]
   isViewed?: boolean
 }
-export interface GroupRating {
-  rating?: number
-  recommendationReason?: string
-  customEvaluation?: string | string[]
-  category?: string | string[]
-  isViewed?: boolean
+
+export interface VideoHighlight {
+  id: number
+  filePath: string
+  fileName: string
+  startSeconds: number
+  endSeconds: number
+  durationSeconds: number
+  title?: string
+  note?: string
+  tags?: string[]
+  sortOrder?: number
+  createdAt: string
+  updatedAt: string
 }
 
 // 快速评分配置
