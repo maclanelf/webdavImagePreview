@@ -61,6 +61,7 @@ import {
   OpenInNew as OpenInNewIcon,
   BugReport as BugReportIcon,
   Storage as StorageIcon,
+  Apps as AppsIcon,
 } from '@mui/icons-material'
 import { useRouter } from 'next/navigation'
 import RatingDialog from '@/components/RatingDialog'
@@ -2119,32 +2120,6 @@ export default function HomePage() {
     console.log(`[播放意图] 设置为 ${intent}`)
   }
 
-  // 页面入口菜单图标，使用静态 SVG 资源，方便多个页面复用同一套图形。
-  const PageMenuIcon = () => (
-    <Box
-      sx={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        width: 18,
-        height: 18,
-      }}
-    >
-      <Box
-        component="img"
-        src="/icons/page-menu.svg"
-        alt=""
-        aria-hidden="true"
-        sx={{
-          width: 18,
-          height: 18,
-          display: 'block',
-          filter: 'invert(44%) sepia(96%) saturate(1138%) hue-rotate(192deg) brightness(90%) contrast(86%)',
-        }}
-      />
-    </Box>
-  )
-
   // 打开页面入口菜单，并把当前按钮记录为菜单锚点。
   const handlePageMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
     setPageMenuAnchor(event.currentTarget)
@@ -3493,19 +3468,10 @@ export default function HomePage() {
             <Tooltip title="页面入口">
               <IconButton
                 onClick={handlePageMenuOpen}
-                sx={{
-                  width: 30,
-                  height: 30,
-                  borderRadius: 0,
-                  border: 'none',
-                  backgroundColor: 'transparent',
-                  p: 0,
-                  '&:hover': {
-                    backgroundColor: 'rgba(25, 118, 210, 0.08)',
-                  },
-                }}
+                color="primary"
+                aria-label="页面入口"
               >
-                <PageMenuIcon />
+                <AppsIcon />
               </IconButton>
             </Tooltip>
             <Tooltip title="筛选与统计">
