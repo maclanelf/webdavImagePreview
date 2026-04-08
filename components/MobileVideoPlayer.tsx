@@ -2,7 +2,7 @@
 
 import { useRef, useState, useEffect, TouchEvent, forwardRef, useImperativeHandle } from 'react'
 import { Box, IconButton } from '@mui/material'
-import { Fullscreen as FullscreenIcon } from '@mui/icons-material'
+import { Fullscreen as FullscreenIcon, Link as LinkIcon } from '@mui/icons-material'
 
 interface MobileVideoPlayerProps {
   src: string
@@ -12,6 +12,9 @@ interface MobileVideoPlayerProps {
   onEnded?: () => void
   onPlay?: () => void
   isVisible?: boolean // 控制组件可见性（用于图片时隐藏）
+  showDirectPlayButton?: boolean // 是否显示右下角的直链快捷入口
+  onDirectPlay?: () => void // 点击直链入口后的回调，由父组件负责切换播放源
+  directPlayLoading?: boolean // 预留给切源中的 loading 态，避免重复点击
 }
 
 export interface MobileVideoPlayerRef {
@@ -20,7 +23,7 @@ export interface MobileVideoPlayerRef {
   changeSrc: (newSrc: string) => void // 换 src 并播放
 }
 
-const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProps>(({
+const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProps>(({ 
   src,
   autoPlay = true,
   isParentFullscreen = false,
@@ -28,6 +31,9 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
   onEnded,
   onPlay,
   isVisible = true,
+  showDirectPlayButton = false,
+  onDirectPlay,
+  directPlayLoading = false,
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -306,7 +312,7 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
   const handleVideoClick = (e: React.MouseEvent) => {
     // 如果点击的是进度条区域或全屏按钮，不处理
     const target = e.target as HTMLElement
-    if (target.closest('.progress-bar-container') || target.closest('.fullscreen-button')) {
+    if (target.closest('.progress-bar-container') || target.closest('.fullscreen-button') || target.closest('.direct-play-button')) {
       return
     }
 
@@ -626,6 +632,47 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
           }}
         >
           {formatTime(currentTime)} / {formatTime(duration)}
+        </Box>
+      )}
+
+      {showDirectPlayButton && (
+        // 直链按钮跟随控制层显示，避免常驻遮挡画面，同时复用已有的触控显隐节奏。
+        <Box
+          className="direct-play-button"
+          sx={{
+            position: 'absolute',
+            right: 16,
+            bottom: 22,
+            zIndex: 12,
+            opacity: showControls || isDragging || directPlayLoading ? 1 : 0,
+            pointerEvents: showControls || isDragging || directPlayLoading ? 'auto' : 'none',
+            transition: 'opacity 0.2s ease',
+          }}
+        >
+          <IconButton
+            onClick={(e) => {
+              e.stopPropagation()
+              onDirectPlay?.()
+            }}
+            disabled={directPlayLoading}
+            sx={{
+              backgroundColor: 'rgba(0, 0, 0, 0.55)',
+              color: '#fff',
+              width: 32,
+              height: 32,
+              border: '1px solid rgba(255, 255, 255, 0.28)',
+              backdropFilter: 'blur(8px)',
+              '&:hover': {
+                backgroundColor: 'rgba(33, 150, 243, 0.35)',
+              },
+              '&:active': {
+                transform: 'scale(0.95)',
+              },
+            }}
+            title="直链播放"
+          >
+            <LinkIcon sx={{ fontSize: 16, opacity: directPlayLoading ? 0.45 : 1 }} />
+          </IconButton>
         </Box>
       )}
 
