@@ -20,7 +20,6 @@ interface MobileVideoPlayerProps {
 export interface MobileVideoPlayerRef {
   getVideoElement: () => HTMLVideoElement | null
   warmUp: () => void // 首次用户交互时调用，取消静音
-  changeSrc: (newSrc: string) => void // 换 src 并播放
 }
 
 const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProps>(({ 
@@ -48,6 +47,8 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
   const [isLandscape, setIsLandscape] = useState(false)
   const [isNativeFullscreen, setIsNativeFullscreen] = useState(false)
   const [videoDisplayRect, setVideoDisplayRect] = useState<{ bottom: number } | null>(null)
+  const [isSwitchingSource, setIsSwitchingSource] = useState(false)
+  const [readySrc, setReadySrc] = useState(src)
   
   // 控制条自动隐藏定时器
   const hideControlsTimerRef = useRef<NodeJS.Timeout | null>(null)
@@ -57,6 +58,8 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
   
   // 追踪是否已取消静音
   const hasUnmutedRef = useRef(false)
+  const latestRequestedSrcRef = useRef(src)
+  const sourceApplyFrameRef = useRef<number | null>(null)
   
   // 同步 autoPlay 到 ref
   useEffect(() => {
@@ -71,17 +74,6 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
       const video = videoRef.current
       if (video) {
         video.muted = false
-      }
-    },
-    changeSrc: (newSrc: string) => {
-      const video = videoRef.current
-      if (video) {
-        const shouldBeMuted = !hasUnmutedRef.current
-        video.src = newSrc
-        video.muted = shouldBeMuted
-        video.play().catch(err => {
-          console.error('[MobileVideoPlayer] 播放失败:', err)
-        })
       }
     }
   }))
@@ -262,11 +254,33 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
 
   // 追踪是否已初始化（只在首次设置静音）
   const isInitializedRef = useRef(false)
+  const sourceReadyRef = useRef(false)
+  const shouldHideVideoElement = Boolean(src && isVisible && src !== readySrc) || isSwitchingSource
 
   // 初始化：首次加载时静音播放
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
+
+    latestRequestedSrcRef.current = src
+    sourceReadyRef.current = false
+    setIsSwitchingSource(Boolean(src && isVisible))
+
+    if (sourceApplyFrameRef.current !== null) {
+      cancelAnimationFrame(sourceApplyFrameRef.current)
+      sourceApplyFrameRef.current = null
+    }
+
+    if (!src || !isVisible) {
+      video.pause()
+      video.removeAttribute('src')
+      video.load()
+      setReadySrc('')
+      setIsSwitchingSource(false)
+      return
+    }
+
+    setReadySrc(prev => (prev === src ? prev : ''))
 
     // 优先检查 warmUp 标记
     if (hasUnmutedRef.current) {
@@ -286,19 +300,91 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
       
       video.play().catch(error => {
         console.log('[MobileVideoPlayer] 自动播放失败:', error)
+        if (latestRequestedSrcRef.current === src) {
+          sourceReadyRef.current = true
+          setReadySrc(src)
+          setIsSwitchingSource(false)
+        }
       })
     }
 
-    if (video.readyState >= 2) {
-      tryPlay()
-    } else {
-      video.addEventListener('loadeddata', tryPlay, { once: true })
+    const applySource = () => {
+      if (latestRequestedSrcRef.current !== src) return
+
+      const shouldBeMuted = !hasUnmutedRef.current
+
+      video.pause()
+      video.removeAttribute('src')
+      video.load()
+      video.muted = shouldBeMuted
+      video.src = src
+      video.load()
+
+      if (autoPlayRef.current) {
+        tryPlay()
+      } else {
+        sourceReadyRef.current = true
+        setReadySrc(src)
+        setIsSwitchingSource(false)
+      }
     }
+
+    sourceApplyFrameRef.current = requestAnimationFrame(() => {
+      sourceApplyFrameRef.current = null
+      applySource()
+    })
     
     return () => {
-      video.removeEventListener('loadeddata', tryPlay)
+      if (sourceApplyFrameRef.current !== null) {
+        cancelAnimationFrame(sourceApplyFrameRef.current)
+        sourceApplyFrameRef.current = null
+      }
     }
-  }, [src])
+  }, [src, isVisible])
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+
+    const handleSourceReady = () => {
+      if (latestRequestedSrcRef.current !== src) return
+      sourceReadyRef.current = true
+      setReadySrc(latestRequestedSrcRef.current)
+      setIsSwitchingSource(false)
+    }
+
+    const handleWaiting = () => {
+      if (!sourceReadyRef.current && src && isVisible) {
+        setIsSwitchingSource(true)
+      }
+    }
+
+    const handleLoadStart = () => {
+      if (latestRequestedSrcRef.current !== src) return
+      sourceReadyRef.current = false
+      if (src && isVisible) {
+        setIsSwitchingSource(true)
+      }
+    }
+
+    const handleError = () => {
+      if (latestRequestedSrcRef.current !== src) return
+      setReadySrc(latestRequestedSrcRef.current)
+      setIsSwitchingSource(false)
+    }
+
+    video.addEventListener('loadstart', handleLoadStart)
+    video.addEventListener('playing', handleSourceReady)
+    video.addEventListener('waiting', handleWaiting)
+    video.addEventListener('error', handleError)
+
+    return () => {
+      video.removeEventListener('loadstart', handleLoadStart)
+      video.removeEventListener('playing', handleSourceReady)
+      video.removeEventListener('waiting', handleWaiting)
+      video.removeEventListener('error', handleError)
+    }
+  }, [src, isVisible])
 
   // 格式化时间显示
   const formatTime = (seconds: number) => {
@@ -478,7 +564,6 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
       {/* 视频元素 */}
       <video
         ref={videoRef}
-        src={src}
         playsInline
         webkit-playsinline="true"
         preload="metadata"
@@ -487,11 +572,24 @@ const MobileVideoPlayer = forwardRef<MobileVideoPlayerRef, MobileVideoPlayerProp
           width: '100%',
           height: '100%',
           objectFit: 'contain',
+          display: shouldHideVideoElement ? 'none' : 'block',
         }}
       />
 
+      {shouldHideVideoElement && (
+        <Box
+          sx={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 4,
+            backgroundColor: '#000',
+            pointerEvents: 'none',
+          }}
+        />
+      )}
+
       {/* 中央播放按钮 - 暂停时显示（圆角三角形） */}
-      {!isPlaying && (
+      {!isPlaying && !shouldHideVideoElement && (
         <Box
           onClick={handleCenterPlayClick}
           sx={{

@@ -2827,44 +2827,156 @@ export const scanFiles = {
     isViewed?: boolean
     excludeParentPath?: string
     maxFileSize?: number  // 最大文件大小（字节），用于过滤大视频
+    ratings?: number[]
+    evaluations?: string[]
+    categories?: string[]
+    reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword'
+    reasonKeyword?: string
+    ratingEmptyFilter?: boolean
+    evaluationEmptyFilter?: boolean
+    categoryEmptyFilter?: boolean
   }) => {
     try {
       ensureInitialized()
       
       if (cacheIds.length === 0) return { files: [], parentPath: null }
       
-      const { fileType, isViewed, excludeParentPath, maxFileSize } = options || {}
+      const {
+        fileType,
+        isViewed,
+        excludeParentPath,
+        maxFileSize,
+        ratings,
+        evaluations,
+        categories,
+        reasonFilter,
+        reasonKeyword,
+        ratingEmptyFilter,
+        evaluationEmptyFilter,
+        categoryEmptyFilter,
+      } = options || {}
       const placeholders = cacheIds.map(() => '?').join(',')
+      const needsRatingJoin = ratings?.length || evaluations?.length || categories?.length ||
+        (reasonFilter && reasonFilter !== 'all') ||
+        ratingEmptyFilter !== undefined || evaluationEmptyFilter !== undefined || categoryEmptyFilter !== undefined
       
-      // 构建查询条件
-      let whereClause = `cache_id IN (${placeholders})`
-      const params: any[] = [...cacheIds]
-      
-      if (fileType) {
-        whereClause += ` AND file_type = ?`
-        params.push(fileType)
+      const buildWhereClause = (includeParentPath?: string) => {
+        let whereClause = needsRatingJoin ? `sf.cache_id IN (${placeholders})` : `cache_id IN (${placeholders})`
+        const params: any[] = [...cacheIds]
+        const prefix = needsRatingJoin ? 'sf.' : ''
+
+        if (includeParentPath) {
+          whereClause += ` AND ${prefix}parent_path = ?`
+          params.push(includeParentPath)
+        }
+        if (fileType) {
+          whereClause += ` AND ${prefix}file_type = ?`
+          params.push(fileType)
+        }
+        if (isViewed !== undefined) {
+          whereClause += ` AND ${prefix}is_viewed = ?`
+          params.push(isViewed ? 1 : 0)
+        }
+        if (excludeParentPath) {
+          whereClause += ` AND ${prefix}parent_path != ?`
+          params.push(excludeParentPath)
+        }
+        if (maxFileSize !== undefined && maxFileSize > 0) {
+          whereClause += ` AND ${prefix}file_size <= ?`
+          params.push(maxFileSize)
+        }
+
+        if (needsRatingJoin) {
+          if (ratings && ratings.length > 0) {
+            if (ratingEmptyFilter === true) {
+              const ratingPlaceholders = ratings.map(() => '?').join(',')
+              whereClause += ` AND (mr.rating IN (${ratingPlaceholders}) OR mr.rating IS NULL)`
+              params.push(...ratings)
+            } else if (ratingEmptyFilter === false) {
+              const ratingPlaceholders = ratings.map(() => '?').join(',')
+              whereClause += ` AND (mr.rating IN (${ratingPlaceholders}) OR (mr.rating IS NOT NULL AND mr.rating NOT IN (${ratingPlaceholders})))`
+              params.push(...ratings, ...ratings)
+            } else {
+              const ratingPlaceholders = ratings.map(() => '?').join(',')
+              whereClause += ` AND mr.rating IN (${ratingPlaceholders})`
+              params.push(...ratings)
+            }
+          } else if (ratingEmptyFilter === true) {
+            whereClause += ` AND mr.rating IS NULL`
+          } else if (ratingEmptyFilter === false) {
+            whereClause += ` AND mr.rating IS NOT NULL`
+          }
+
+          if (evaluations && evaluations.length > 0) {
+            const evalConditions = evaluations.map(() => `(mr.custom_evaluation LIKE ? OR mr.custom_evaluation = ?)`).join(' OR ')
+            if (evaluationEmptyFilter === true) {
+              whereClause += ` AND ((${evalConditions}) OR mr.custom_evaluation IS NULL OR mr.custom_evaluation = '')`
+            } else if (evaluationEmptyFilter === false) {
+              whereClause += ` AND ((${evalConditions}) OR (mr.custom_evaluation IS NOT NULL AND mr.custom_evaluation != ''))`
+            } else {
+              whereClause += ` AND (${evalConditions})`
+            }
+            evaluations.forEach((evaluation) => {
+              params.push(`%"${evaluation}"%`)
+              params.push(evaluation)
+            })
+          } else if (evaluationEmptyFilter === true) {
+            whereClause += ` AND (mr.custom_evaluation IS NULL OR mr.custom_evaluation = '')`
+          } else if (evaluationEmptyFilter === false) {
+            whereClause += ` AND (mr.custom_evaluation IS NOT NULL AND mr.custom_evaluation != '')`
+          }
+
+          if (categories && categories.length > 0) {
+            const catConditions = categories.map(() => `(mr.category LIKE ? OR mr.category = ?)`).join(' OR ')
+            if (categoryEmptyFilter === true) {
+              whereClause += ` AND ((${catConditions}) OR mr.category IS NULL OR mr.category = '')`
+            } else if (categoryEmptyFilter === false) {
+              whereClause += ` AND ((${catConditions}) OR (mr.category IS NOT NULL AND mr.category != ''))`
+            } else {
+              whereClause += ` AND (${catConditions})`
+            }
+            categories.forEach((category) => {
+              params.push(`%"${category}"%`)
+              params.push(category)
+            })
+          } else if (categoryEmptyFilter === true) {
+            whereClause += ` AND (mr.category IS NULL OR mr.category = '')`
+          } else if (categoryEmptyFilter === false) {
+            whereClause += ` AND (mr.category IS NOT NULL AND mr.category != '')`
+          }
+
+          if (reasonFilter === 'empty') {
+            whereClause += ` AND (mr.recommendation_reason IS NULL OR mr.recommendation_reason = '')`
+          } else if (reasonFilter === 'nonempty') {
+            whereClause += ` AND mr.recommendation_reason IS NOT NULL AND mr.recommendation_reason != ''`
+          } else if (reasonFilter === 'keyword' && reasonKeyword) {
+            whereClause += ` AND mr.recommendation_reason LIKE ?`
+            params.push(`%${reasonKeyword}%`)
+          }
+        }
+
+        return { whereClause, params }
       }
-      if (isViewed !== undefined) {
-        whereClause += ` AND is_viewed = ?`
-        params.push(isViewed ? 1 : 0)
-      }
-      if (excludeParentPath) {
-        whereClause += ` AND parent_path != ?`
-        params.push(excludeParentPath)
-      }
-      if (maxFileSize !== undefined && maxFileSize > 0) {
-        whereClause += ` AND file_size <= ?`
-        params.push(maxFileSize)
-      }
+
+      const { whereClause, params } = buildWhereClause()
       
       // 获取所有符合条件的目录
-      const groupsSql = `
-        SELECT parent_path, COUNT(*) as file_count 
-        FROM scan_files 
-        WHERE ${whereClause}
-        GROUP BY parent_path
-        HAVING file_count > 0
-      `
+      const groupsSql = needsRatingJoin
+        ? `
+            SELECT sf.parent_path, COUNT(*) as file_count
+            FROM scan_files sf
+            INNER JOIN media_ratings mr ON sf.filename = mr.file_path
+            WHERE ${whereClause}
+            GROUP BY sf.parent_path
+            HAVING file_count > 0
+          `
+        : `
+            SELECT parent_path, COUNT(*) as file_count 
+            FROM scan_files 
+            WHERE ${whereClause}
+            GROUP BY parent_path
+            HAVING file_count > 0
+          `
       const groups = db.prepare(groupsSql).all(...params) as Array<{ parent_path: string, file_count: number }>
       
       if (groups.length === 0) {
@@ -2876,24 +2988,22 @@ export const scanFiles = {
       const selectedParentPath = randomGroup.parent_path
       
       // 获取该目录下的所有文件
-      let filesSql = `SELECT * FROM scan_files WHERE cache_id IN (${placeholders}) AND parent_path = ?`
-      const filesParams: any[] = [...cacheIds, selectedParentPath]
-      
-      if (fileType) {
-        filesSql += ` AND file_type = ?`
-        filesParams.push(fileType)
-      }
-      if (isViewed !== undefined) {
-        filesSql += ` AND is_viewed = ?`
-        filesParams.push(isViewed ? 1 : 0)
-      }
-      if (maxFileSize !== undefined && maxFileSize > 0) {
-        filesSql += ` AND file_size <= ?`
-        filesParams.push(maxFileSize)
-      }
-      
-      filesSql += ` ORDER BY basename`
-      
+      const { whereClause: fileWhereClause, params: filesParams } = buildWhereClause(selectedParentPath)
+      let filesSql = needsRatingJoin
+        ? `
+            SELECT sf.*
+            FROM scan_files sf
+            INNER JOIN media_ratings mr ON sf.filename = mr.file_path
+            WHERE ${fileWhereClause}
+          `
+        : `
+            SELECT *
+            FROM scan_files
+            WHERE ${fileWhereClause}
+          `
+
+      filesSql += needsRatingJoin ? ` ORDER BY sf.basename` : ` ORDER BY basename`
+       
       const files = db.prepare(filesSql).all(...filesParams)
       
       // 使用自然排序对文件进行排序（解决 "1 (10).jpeg" 排在 "1 (2).jpeg" 前面的问题）

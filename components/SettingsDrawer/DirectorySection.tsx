@@ -5,11 +5,11 @@ import type { WebDAVConfig } from '@/types'
 interface DirectorySectionProps {
   config: WebDAVConfig
   loading: boolean
-  isSwitching: boolean
+  isSwitching?: boolean
   onNavigateToManage: () => void
 }
 
-export default function DirectorySection({ config, loading, isSwitching, onNavigateToManage }: DirectorySectionProps) {
+export default function DirectorySection({ config, loading, isSwitching = false, onNavigateToManage }: DirectorySectionProps) {
   return (
     <Box>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>

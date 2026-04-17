@@ -5,6 +5,22 @@ import { scanFiles, scanCache } from '@/lib/database'
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
+    const parseJsonArray = <T,>(value: string | null): T[] | undefined => {
+      if (!value) return undefined
+      try {
+        const parsed = JSON.parse(value)
+        return Array.isArray(parsed) && parsed.length > 0 ? parsed as T[] : undefined
+      } catch {
+        return undefined
+      }
+    }
+    const parseBoolean = (value: string | null): boolean | undefined => {
+      if (value === null) return undefined
+      if (value === 'true') return true
+      if (value === 'false') return false
+      return undefined
+    }
+
     const webdavUrl = searchParams.get('webdavUrl')
     const webdavUsername = searchParams.get('webdavUsername')
     const paths = searchParams.get('paths') // 逗号分隔的路径列表
@@ -12,6 +28,14 @@ export async function GET(request: NextRequest) {
     const isViewed = searchParams.get('isViewed')
     const excludeParentPath = searchParams.get('excludeParentPath') // 排除的目录路径
     const maxFileSize = searchParams.get('maxFileSize') // 最大文件大小（字节）
+    const ratings = parseJsonArray<number>(searchParams.get('ratings'))
+    const evaluations = parseJsonArray<string>(searchParams.get('evaluations'))
+    const categories = parseJsonArray<string>(searchParams.get('categories'))
+    const reasonFilter = searchParams.get('reasonFilter') as 'all' | 'empty' | 'nonempty' | 'keyword' | null
+    const reasonKeyword = searchParams.get('reasonKeyword')
+    const ratingEmptyFilter = parseBoolean(searchParams.get('ratingEmptyFilter'))
+    const evaluationEmptyFilter = parseBoolean(searchParams.get('evaluationEmptyFilter'))
+    const categoryEmptyFilter = parseBoolean(searchParams.get('categoryEmptyFilter'))
 
     if (!webdavUrl || !webdavUsername || !paths) {
       return NextResponse.json(
@@ -50,7 +74,15 @@ export async function GET(request: NextRequest) {
       fileType: fileType || undefined,
       isViewed: isViewed !== null ? isViewed === 'true' : undefined,
       excludeParentPath: excludeParentPath || undefined,
-      maxFileSize: maxFileSize ? parseInt(maxFileSize) : undefined
+      maxFileSize: maxFileSize ? parseInt(maxFileSize) : undefined,
+      ratings,
+      evaluations,
+      categories,
+      reasonFilter: reasonFilter || undefined,
+      reasonKeyword: reasonKeyword || undefined,
+      ratingEmptyFilter,
+      evaluationEmptyFilter,
+      categoryEmptyFilter,
     })
 
     return NextResponse.json({

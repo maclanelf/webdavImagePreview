@@ -52,7 +52,7 @@ interface SettingsDrawerProps {
   // 配置相关
   config: WebDAVConfig
   loading: boolean
-  isSwitching: boolean
+  isSwitching?: boolean
   onNavigateToManage: () => void
 }
 
@@ -169,8 +169,8 @@ export default function SettingsDrawer({
 
         <Divider sx={{ mb: 3 }} />
 
-        {/* 高级过滤条件（仅已看过模式且非图组模式） */}
-        {viewedFilter === 'viewed' && viewMode !== 'gallery' && (
+        {/* 高级过滤条件（仅已看过模式） */}
+        {viewedFilter === 'viewed' && (
           <>
             <AdvancedFilterSection
               advancedFilters={advancedFilters}

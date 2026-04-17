@@ -54,6 +54,7 @@ export interface InstantVideoPlayerRef {
   getVideoElement: () => HTMLVideoElement | null
   isPaused: () => boolean
   getContainerElement: () => HTMLDivElement | null  // 获取容器元素，用于在全屏模式下渲染对话框
+  warmUp: () => void
 }
 
 /**
@@ -128,6 +129,9 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   
   // 播放意图引用 - 用于安卓浏览器自动播放
   const playIntentRef = useRef(playIntent)
+  // 记录用户是否已经产生过“允许带声音播放”的交互。
+  // 一旦用户点过播放/视频区域，就不应该再被后续的自动播放兜底逻辑重新强制静音。
+  const hasUserActivatedAudioRef = useRef(false)
   // 是否需要静音播放（安卓浏览器自动播放策略）- 初始为 false，只有播放失败时才设置为 true
   const [isMutedForAutoplay, setIsMutedForAutoplay] = useState(false)
   
@@ -168,21 +172,13 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     console.log(`  旧 src: ${prevSrc?.substring(0, 50)}...`)
     console.log(`  新 src: ${src?.substring(0, 50)}...`)
     
-    // ⭐ 关键修复：在设置新 src 之前，先彻底清理旧的视频连接
+    // 在保持同一个 video 元素的前提下，不再在 src 变化时主动把 src 清空。
+    // 否则第二次及之后切换视频时，会把 React 已经设置好的新 src 又清回空字符串，
+    // 直接导致“换一个”之后下一个视频无法开始播放。
     if (videoRef.current && prevSrc) {
       const video = videoRef.current
-      
-      // 1. 立即暂停
       video.pause()
-      
-      // 2. 清空 src 以中断网络请求
-      // 这会触发浏览器取消当前的网络请求
-      video.src = ''
-      
-      // 3. 调用 load() 强制浏览器释放资源
-      video.load()
-      
-      console.log('🗑️ [即点即播] 已清理旧视频连接')
+      console.log('🧹 [即点即播] 保留同一个 video 元素，等待浏览器接管新 src 切换')
     }
     
     // 重置所有播放状态
@@ -209,54 +205,6 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
       setPlayPromise(null)
     }
   }, [src, playPromise])
-
-  // 模仿主页面的自动播放逻辑：先静音播放，成功后取消静音
-  // ⭐ 修复：移除 load() 调用，避免双重请求
-  useEffect(() => {
-    if (!src || !videoRef.current || !(autoPlay || playIntentRef.current)) return
-    
-    const video = videoRef.current
-    
-    console.log('🎬 [即点即播] 尝试自动播放，playIntent:', playIntentRef.current)
-    
-    // 确保视频是静音的
-    video.muted = true
-    setIsMutedForAutoplay(true)
-    
-    // ⭐ 移除 video.load() 调用，因为 React 更新 src 属性时浏览器会自动加载
-    // 这样可以避免双重网络请求
-    
-    console.log('🎬 [即点即播] 等待视频加载完成后尝试播放')
-    
-    // 设置事件监听，等待视频准备好后再播放
-    const handleAutoPlay = () => {
-      if (video.paused && (autoPlay || playIntentRef.current)) {
-        console.log('🎬 [即点即播] 视频准备就绪，尝试播放')
-        video.muted = true
-        setIsMutedForAutoplay(true)
-        video.play().then(() => {
-          console.log('✅ [即点即播] 播放成功')
-          // 播放成功后延迟取消静音
-          setTimeout(() => {
-            if (video.muted && !video.paused) {
-              video.muted = false
-              setIsMutedForAutoplay(false)
-              console.log('🔊 [即点即播] 已取消静音')
-            }
-          }, 500)
-        }).catch(err => {
-          console.error('❌ [即点即播] 播放失败:', err)
-        })
-      }
-    }
-    
-    // 添加事件监听（优先使用 loadeddata，它比 canplay 更早触发）
-    video.addEventListener('loadeddata', handleAutoPlay, { once: true })
-    
-    return () => {
-      video.removeEventListener('loadeddata', handleAutoPlay)
-    }
-  }, [src, autoPlay])
 
   // 清理函数
   useEffect(() => {
@@ -341,6 +289,14 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     getVideoElement: () => videoRef.current,
     isPaused: () => videoRef.current?.paused || true,
     getContainerElement: () => containerRef.current,
+    warmUp: () => {
+      hasUserActivatedAudioRef.current = true
+      if (videoRef.current) {
+        videoRef.current.muted = false
+      }
+      setIsMuted(false)
+      setIsMutedForAutoplay(false)
+    },
   }))
 
   // 视频事件处理
@@ -518,6 +474,18 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
       
       // 重置播放意图
       playIntentRef.current = false
+
+      // 如果此前用户已经明确交互允许有声音播放，
+      // 则播放一旦开始，立即尝试恢复到非静音，避免卡在“已播放但仍静音”的状态。
+      if (hasUserActivatedAudioRef.current && videoRef.current.muted) {
+        Promise.resolve().then(() => {
+          const activeVideo = videoRef.current
+          if (!activeVideo) return
+          activeVideo.muted = false
+          setIsMuted(false)
+          setIsMutedForAutoplay(false)
+        })
+      }
       
       // 注意：安卓浏览器不能自动取消静音，否则会暂停播放
       // 静音状态会在用户点击播放器时通过 togglePlayPause 取消
@@ -726,10 +694,14 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
     }
     
     if (!videoRef.current) return
+
+    // 用户一旦主动点了播放/暂停，后续应视为已允许带声音播放。
+    hasUserActivatedAudioRef.current = true
     
     // 用户交互时取消静音（安卓浏览器需要用户交互才能取消静音）
     if (videoRef.current.muted && isMutedForAutoplay) {
       videoRef.current.muted = false
+      setIsMuted(false)
       setIsMutedForAutoplay(false)
       console.log('🔊 [即点即播] 用户交互，已取消静音')
     }
@@ -774,9 +746,13 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   const toggleControls = () => {
     setShowControls(prev => !prev)
     
+    // 点击视频区域本身也应被视为一次有效的用户音频授权交互。
+    hasUserActivatedAudioRef.current = true
+
     // 用户交互时取消静音（安卓浏览器需要用户交互才能取消静音）
     if (videoRef.current?.muted && isMutedForAutoplay) {
       videoRef.current.muted = false
+      setIsMuted(false)
       setIsMutedForAutoplay(false)
       console.log('🔊 [即点即播] 用户点击视频区域，已取消静音')
     }
@@ -805,8 +781,12 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
   const toggleMute = (e: React.MouseEvent) => {
     e.stopPropagation()
     if (videoRef.current) {
+      hasUserActivatedAudioRef.current = true
       videoRef.current.muted = !videoRef.current.muted
       setIsMuted(videoRef.current.muted)
+      if (!videoRef.current.muted) {
+        setIsMutedForAutoplay(false)
+      }
     }
   }
 
@@ -1255,10 +1235,8 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
           </Box>
         </Box>
       )}
-      {/* 视频元素 */}
-      {/* ⭐ 修复：使用 key 属性强制 React 在 src 变化时重新创建元素，避免双重请求 */}
+      {/* 视频元素：保持同一个 video 实例，避免切换源时丢失已建立的播放/音频上下文 */}
       <video
-        key={src} // 添加 key，确保 src 变化时完全重新创建元素
         ref={videoRef}
         src={src}
         controls={false} // 使用自定义控件

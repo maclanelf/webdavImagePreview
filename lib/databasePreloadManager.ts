@@ -185,6 +185,50 @@ class DatabasePreloadManager {
   
   //#endregion
 
+  //#region 图组筛选参数辅助
+
+  private appendAdvancedFilterParams(params: URLSearchParams, advancedFilters?: {
+    ratings?: number[]
+    evaluations?: string[]
+    categories?: string[]
+    reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword'
+    reasonKeyword?: string
+    ratingEmptyFilter?: boolean
+    evaluationEmptyFilter?: boolean
+    categoryEmptyFilter?: boolean
+  }) {
+    if (!advancedFilters) {
+      return
+    }
+
+    if (advancedFilters.ratings && advancedFilters.ratings.length > 0) {
+      params.set('ratings', JSON.stringify(advancedFilters.ratings))
+    }
+    if (advancedFilters.evaluations && advancedFilters.evaluations.length > 0) {
+      params.set('evaluations', JSON.stringify(advancedFilters.evaluations))
+    }
+    if (advancedFilters.categories && advancedFilters.categories.length > 0) {
+      params.set('categories', JSON.stringify(advancedFilters.categories))
+    }
+    if (advancedFilters.reasonFilter && advancedFilters.reasonFilter !== 'all') {
+      params.set('reasonFilter', advancedFilters.reasonFilter)
+    }
+    if (advancedFilters.reasonKeyword) {
+      params.set('reasonKeyword', advancedFilters.reasonKeyword)
+    }
+    if (advancedFilters.ratingEmptyFilter !== undefined) {
+      params.set('ratingEmptyFilter', String(advancedFilters.ratingEmptyFilter))
+    }
+    if (advancedFilters.evaluationEmptyFilter !== undefined) {
+      params.set('evaluationEmptyFilter', String(advancedFilters.evaluationEmptyFilter))
+    }
+    if (advancedFilters.categoryEmptyFilter !== undefined) {
+      params.set('categoryEmptyFilter', String(advancedFilters.categoryEmptyFilter))
+    }
+  }
+  
+  //#endregion
+
   //#region 文件预加载核心方法
   
   // 预加载单个文件（带并发控制和快速重试）
@@ -646,6 +690,13 @@ class DatabasePreloadManager {
     this.nextGroupCache.clear()
   }
 
+  // 清理图组模式运行时状态
+  clearGalleryRuntimeState() {
+    this.currentGroupFiles = []
+    this.nextGroupFiles = []
+    this.currentGroupPreloadTriggered = false
+  }
+
   // 获取缓存状态
   getCacheStatus() {
     return {
@@ -1044,6 +1095,7 @@ class DatabasePreloadManager {
       if (excludeParentPath) {
         params.set('excludeParentPath', excludeParentPath)
       }
+      this.appendAdvancedFilterParams(params, advancedFilters)
       
       const response = await fetch(`/api/scan-files/random-group?${params.toString()}`)
       if (!response.ok) {
@@ -1143,7 +1195,17 @@ class DatabasePreloadManager {
   async preloadNextGroupFromDatabase(
     config: any,
     count: number = 10,
-    viewedFilter: string = 'unviewed'
+    viewedFilter: string = 'unviewed',
+    advancedFilters?: {
+      ratings?: number[]
+      evaluations?: string[]
+      categories?: string[]
+      reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword'
+      reasonKeyword?: string
+      ratingEmptyFilter?: boolean
+      evaluationEmptyFilter?: boolean
+      categoryEmptyFilter?: boolean
+    }
   ): Promise<void> {
     console.log(`[数据库模式] 开始后台预加载下一组图组...`)
     
@@ -1174,6 +1236,7 @@ class DatabasePreloadManager {
       if (currentParentPath) {
         params.set('excludeParentPath', currentParentPath)
       }
+      this.appendAdvancedFilterParams(params, advancedFilters)
       
       const response = await fetch(`/api/scan-files/random-group?${params.toString()}`)
       if (!response.ok) {
@@ -1636,9 +1699,19 @@ class DatabasePreloadManager {
     config: any,
     _allFiles: any[], // 忽略，数据库模式不需要文件列表
     count: number = 10,
-    viewedFilter: string = 'unviewed'
+    viewedFilter: string = 'unviewed',
+    advancedFilters?: {
+      ratings?: number[]
+      evaluations?: string[]
+      categories?: string[]
+      reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword'
+      reasonKeyword?: string
+      ratingEmptyFilter?: boolean
+      evaluationEmptyFilter?: boolean
+      categoryEmptyFilter?: boolean
+    }
   ): Promise<void> {
-    return this.preloadNextGroupFromDatabase(config, count, viewedFilter)
+    return this.preloadNextGroupFromDatabase(config, count, viewedFilter, advancedFilters)
   }
 
   // 兼容 preloadManager.smartPreload - 智能预加载（支持一次预加载多个文件，带补充重试）
