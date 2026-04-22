@@ -18,6 +18,8 @@ interface UseVideoHighlightsModuleProps {
   onContinuousPlaybackEnd?: () => void
   fullscreenDialogContainer?: Element | null
   inlineDialogContainer?: Element | null
+  fullscreenMarkerTopOffset?: number | string
+  fullscreenMarkerZIndex?: number
 }
 
 /**
@@ -38,6 +40,8 @@ export function useVideoHighlightsModule({
   onContinuousPlaybackEnd,
   fullscreenDialogContainer,
   inlineDialogContainer,
+  fullscreenMarkerTopOffset,
+  fullscreenMarkerZIndex,
 }: UseVideoHighlightsModuleProps) {
   const formatHighlightTime = (seconds: number) => {
     if (!Number.isFinite(seconds) || seconds < 0) return '00:00'
@@ -66,6 +70,7 @@ export function useVideoHighlightsModule({
 
   const shouldRenderHighlights = mediaType === 'stream-video'
     && (highlights.highlightsLoadedFilePath === currentFile?.filename || highlights.highlightsLoading)
+  const hasHighlightItems = highlights.videoHighlights.length > 0
 
   /**
    * 统一处理“点击精彩时刻后跳转播放”的流程。
@@ -88,7 +93,7 @@ export function useVideoHighlightsModule({
   // - A/B 打点、选中态同步、连续播放等控制函数
   // 这样页面只负责接线，不需要了解精彩时刻内部状态细节。
   return {
-    inlineStrip: shouldRenderHighlights ? (
+    inlineStrip: shouldRenderHighlights && hasHighlightItems ? (
       <VideoHighlightsStrip
         mode="inline"
         highlights={highlights.videoHighlights}
@@ -117,7 +122,7 @@ export function useVideoHighlightsModule({
         formatHighlightTime={formatHighlightTime}
       />
     ) : null,
-    fullscreenStrip: shouldRenderHighlights ? (
+    fullscreenStrip: shouldRenderHighlights && hasHighlightItems ? (
       <VideoHighlightsStrip
         mode="fullscreen"
         highlights={highlights.videoHighlights}
@@ -144,6 +149,8 @@ export function useVideoHighlightsModule({
         onMarkStart={highlights.handleMarkHighlightStart}
         onMarkEnd={highlights.handleMarkHighlightEnd}
         formatHighlightTime={formatHighlightTime}
+        topOffset={fullscreenMarkerTopOffset}
+        zIndex={fullscreenMarkerZIndex}
       />
     ),
     editorDialog: (

@@ -41,6 +41,7 @@ import { useSplitMainBootstrap } from '@/app/split-main/useSplitMainBootstrap'
 import { useSplitMainPreload } from '@/app/split-main/useSplitMainPreload'
 import { useSharedRatingActions } from '@/app/split-main/useSharedRatingActions'
 import CreatorDialog from '@/components/CreatorDialog'
+import CreatorDetailDrawer from '../components/CreatorDetailDrawer'
 import SettingsDrawer from '@/components/SettingsDrawer'
 import GalleryModePage from '@/components/split-main/modes/GalleryModePage'
 import LargeVideoModePage from '@/components/split-main/modes/LargeVideoModePage'
@@ -50,6 +51,8 @@ import { setErudaEnabled } from '@/lib/erudaInit'
 import { QUICK_RATING_CONFIG } from '@/types'
 import type {
   AdvancedFilters,
+  CreatorGroupCard,
+  CreatorMediaCard,
   GroupRating,
   MediaFile,
   MediaFilter,
@@ -126,6 +129,28 @@ export default function HomePage() {
   const [creatorDialogOpen, setCreatorDialogOpen] = useState(false)
   const [currentCreator, setCurrentCreator] = useState<any>(null)
   const [creatorRefreshKey, setCreatorRefreshKey] = useState(0)
+  
+  // ========== 博主详情相关状态 ==========
+  /** 博主详情抽屉是否打开 */
+  const [creatorDetailOpen, setCreatorDetailOpen] = useState(false)
+  /** 博主详情是否正在加载 */
+  const [creatorDetailLoading, setCreatorDetailLoading] = useState(false)
+  /** 博主详情的媒体列表 */
+  const [creatorDetailMedia, setCreatorDetailMedia] = useState<CreatorMediaCard[]>([])
+  /** 博主详情的图组列表 */
+  const [creatorDetailGroups, setCreatorDetailGroups] = useState<CreatorGroupCard[]>([])
+  /** 博主详情的可用标签列表 */
+  const [creatorDetailAvailableTags, setCreatorDetailAvailableTags] = useState<string[]>([])
+  /** 博主详情打开时，是否暂停主页大视频预览 */
+  const [creatorDetailSuspended, setCreatorDetailSuspended] = useState(false)
+  
+  // ========== 博主预览相关状态 ==========
+  /** 博主预览是否打开 */
+  const [creatorPreviewOpen, setCreatorPreviewOpen] = useState(false)
+  /** 博主预览的媒体列表 */
+  const [creatorPreviewList, setCreatorPreviewList] = useState<CreatorMediaCard[]>([])
+  /** 博主预览的当前索引 */
+  const [creatorPreviewIndex, setCreatorPreviewIndex] = useState(0)
 
   const [autoMarkTimer, setAutoMarkTimer] = useState<ReturnType<typeof setTimeout> | null>(null)
   const [isMobile, setIsMobile] = useState(false)
@@ -162,6 +187,9 @@ export default function HomePage() {
   const isVideoRef = useRef<(filename: string) => boolean>(() => false)
 
   const [mediaType, setMediaType] = useState<MediaType>('image')
+
+  /** 当前预览的博主媒体项 */
+  const creatorPreviewCurrent = creatorPreviewList[creatorPreviewIndex] || null
 
   const filteredStats = useMemo(() => {
     if (mediaFilter === 'images') {
@@ -479,6 +507,99 @@ export default function HomePage() {
     handlePageMenuClose()
   }, [handlePageMenuClose])
 
+  /**
+   * 打开博主详情抽屉
+   * 
+   * 功能：
+   * 1. 如果没有博主信息，则打开博主对话框
+   * 2. 退出全屏模式
+   * 3. 从 API 获取博主的媒体、图组和标签数据
+   * 4. 打开博主详情抽屉
+   * 
+   * @param creator - 博主信息（可选，默认使用 currentCreator）
+   */
+  const openCreatorDetail = useCallback(async (creator?: any | null) => {
+    const targetCreator = creator || currentCreator
+    if (!targetCreator?.id) {
+      setCreatorDialogOpen(true)
+      return
+    }
+
+    const shouldSuspendLargeVideo = viewMode === 'large-video' && mediaType === 'stream-video'
+
+    setFullscreen(false)
+    setCreatorDetailSuspended(shouldSuspendLargeVideo)
+    setCreatorDetailOpen(true)
+    setCreatorDetailLoading(true)
+
+    try {
+      const response = await fetch(`/api/creators/${targetCreator.id}/media`)
+      const data = await response.json()
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || '获取博主详情失败')
+      }
+
+      setCurrentCreator(data.data.creator || targetCreator)
+      setCreatorDetailMedia(data.data.media || [])
+      setCreatorDetailGroups(data.data.groups || [])
+      setCreatorDetailAvailableTags(data.data.filters?.availableTags || [])
+    } catch (detailError: any) {
+      notify(detailError.message || '获取博主详情失败', 'error')
+      setCreatorDetailOpen(false)
+      setCreatorDetailSuspended(false)
+    } finally {
+      setCreatorDetailLoading(false)
+    }
+  }, [currentCreator, mediaType, notify, viewMode])
+
+  /**
+   * 打开博主预览
+   * 
+   * @param media - 要预览的媒体项
+   * @param list - 媒体列表
+   */
+  const openCreatorPreview = useCallback((media: CreatorMediaCard, list: CreatorMediaCard[]) => {
+    const index = list.findIndex((item) => item.id === media.id)
+    setCreatorPreviewList(list)
+    setCreatorPreviewIndex(index >= 0 ? index : 0)
+    setCreatorPreviewOpen(true)
+  }, [])
+
+  /**
+   * 关闭博主预览
+   * 重置预览相关状态
+   */
+  const closeCreatorPreview = useCallback(() => {
+    setCreatorPreviewOpen(false)
+    setCreatorPreviewList([])
+    setCreatorPreviewIndex(0)
+  }, [])
+
+  /**
+   * 更新博主预览列表
+   * 用于分页加载更多媒体时更新列表
+   * 
+   * @param list - 新的媒体列表
+   */
+  const updateCreatorPreviewList = useCallback((list: CreatorMediaCard[]) => {
+    setCreatorPreviewList(list)
+  }, [])
+
+  /**
+   * 博主预览导航
+   * 
+   * @param direction - 导航方向（'prev' 上一个，'next' 下一个）
+   */
+  const goCreatorPreview = useCallback((direction: 'prev' | 'next') => {
+    setCreatorPreviewIndex((prev) => {
+      if (creatorPreviewList.length === 0) return prev
+      if (direction === 'prev') {
+        return prev > 0 ? prev - 1 : prev
+      }
+      return prev < creatorPreviewList.length - 1 ? prev + 1 : prev
+    })
+  }, [creatorPreviewList.length])
+
   loadCurrentRatingRef.current = loadCurrentRating
   startAutoMarkTimerRef.current = startAutoMarkTimer
   handleMediaTypeChangeInFullscreenRef.current = handleMediaTypeChangeInFullscreen
@@ -613,6 +734,12 @@ export default function HomePage() {
       }
     }
   }, [autoMarkTimer])
+
+  useEffect(() => {
+    if (!creatorDetailOpen) {
+      setCreatorDetailSuspended(false)
+    }
+  }, [creatorDetailOpen])
 
   if (!config) {
     return (
@@ -752,6 +879,7 @@ export default function HomePage() {
             handleQuickRate={handleQuickRate}
             openRatingDialog={openRatingDialog}
             onOpenCreatorDialog={() => setCreatorDialogOpen(true)}
+            onOpenCreatorDetail={openCreatorDetail}
             ratingDialogOpen={ratingDialogOpen}
             closeRatingDialog={closeRatingDialog}
             saveRatingManual={saveRatingManual}
@@ -815,6 +943,7 @@ export default function HomePage() {
             handleQuickRate={handleQuickRate}
             openRatingDialog={openRatingDialog}
             onOpenCreatorDialog={() => setCreatorDialogOpen(true)}
+            onOpenCreatorDetail={openCreatorDetail}
             ratingDialogOpen={ratingDialogOpen}
             closeRatingDialog={closeRatingDialog}
             saveRatingManual={saveRatingManual}
@@ -871,6 +1000,7 @@ export default function HomePage() {
             handleQuickRate={handleQuickRate}
             openRatingDialog={openRatingDialog}
             onOpenCreatorDialog={() => setCreatorDialogOpen(true)}
+            onOpenCreatorDetail={openCreatorDetail}
             ratingDialogOpen={ratingDialogOpen}
             closeRatingDialog={closeRatingDialog}
             saveRatingManual={saveRatingManual}
@@ -893,6 +1023,7 @@ export default function HomePage() {
             setSnackbarSeverity={setSnackbarSeverity}
             setSnackbarOpen={setSnackbarOpen}
             highlightContinuousPlayEnabled={highlightContinuousPlayEnabled}
+            suspended={creatorDetailSuspended}
           />
         ) : null}
       </Container>
@@ -950,6 +1081,30 @@ export default function HomePage() {
             void loadMediaRating(currentFile.filename)
           }
         }}
+      />
+
+      <CreatorDetailDrawer
+        open={creatorDetailOpen}
+        creator={currentCreator}
+        media={creatorDetailMedia}
+        groups={creatorDetailGroups}
+        availableTags={creatorDetailAvailableTags}
+        loading={creatorDetailLoading}
+        onClose={() => {
+          setCreatorDetailOpen(false)
+          setCreatorDetailSuspended(false)
+          closeCreatorPreview()
+        }}
+        onPreviewMedia={openCreatorPreview}
+        previewOpen={creatorPreviewOpen}
+        previewList={creatorPreviewList}
+        previewMedia={creatorPreviewCurrent}
+        previewIndex={creatorPreviewIndex}
+        previewTotal={creatorPreviewList.length}
+        onClosePreview={closeCreatorPreview}
+        onPreviewPrev={() => goCreatorPreview('prev')}
+        onPreviewNext={() => goCreatorPreview('next')}
+        onPreviewListChange={updateCreatorPreviewList}
       />
 
       <Snackbar

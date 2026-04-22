@@ -28,6 +28,22 @@ export async function GET(request: NextRequest) {
   // 生成唯一的请求 ID
   const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
   let isAborted = false
+
+  const isExpectedStreamTerminationError = (error: unknown) => {
+    if (isAborted || abortController.signal.aborted) {
+      return true
+    }
+
+    const message = error instanceof Error ? error.message : String(error || '')
+    const normalized = message.toLowerCase()
+    return (
+      normalized.includes('abort')
+      || normalized.includes('aborted')
+      || normalized.includes('stream closed')
+      || normalized.includes('client closed')
+      || normalized.includes('premature close')
+    )
+  }
   
   // ⭐ 关键：为每个请求创建 AbortController
   // 这是唯一能真正取消 webdav 库底层 fetch 请求的方法
@@ -38,7 +54,7 @@ export async function GET(request: NextRequest) {
     console.log(`🛑 [即点即播] 客户端断开连接 (${requestId})`)
     isAborted = true
     cleanupStream(requestId, '客户端断开')
-  })
+  }, { once: true })
   
   try {
     const { searchParams } = new URL(request.url)
@@ -239,6 +255,14 @@ export async function GET(request: NextRequest) {
           unregisterStream(requestId)
         })
         sourceStream.on('error', (error: any) => {
+          if (isExpectedStreamTerminationError(error)) {
+            console.log(`ℹ️ [即点即播] Range流按预期结束 (${requestId}): ${error?.message || '已取消'}`)
+            unregisterStream(requestId)
+            if (!passThrough.destroyed) {
+              passThrough.end()
+            }
+            return
+          }
           console.error(`❌ [即点即播] Range流错误 (${requestId}):`, error.message)
           unregisterStream(requestId)
           passThrough.destroy(error)
@@ -312,11 +336,19 @@ export async function GET(request: NextRequest) {
         console.log(`📦 [即点即播] 完整流传输完成 (${requestId})`)
         unregisterStream(requestId)
       })
-      sourceStream.on('error', (error: any) => {
-        console.error(`❌ [即点即播] 完整流错误 (${requestId}):`, error.message)
-        unregisterStream(requestId)
-        passThrough.destroy(error)
-      })
+        sourceStream.on('error', (error: any) => {
+          if (isExpectedStreamTerminationError(error)) {
+            console.log(`ℹ️ [即点即播] 完整流按预期结束 (${requestId}): ${error?.message || '已取消'}`)
+            unregisterStream(requestId)
+            if (!passThrough.destroyed) {
+              passThrough.end()
+            }
+            return
+          }
+          console.error(`❌ [即点即播] 完整流错误 (${requestId}):`, error.message)
+          unregisterStream(requestId)
+          passThrough.destroy(error)
+        })
       sourceStream.on('close', () => {
         console.log(`🔒 [即点即播] 完整流已关闭 (${requestId})`)
         unregisterStream(requestId)

@@ -35,15 +35,13 @@ export function cleanupStream(requestId: string, reason: string): boolean {
       
       const stream = streamInfo.stream
       if (stream) {
-        // 尝试多种方式关闭流
-        if (typeof stream.destroy === 'function') {
-          stream.destroy(new Error(`Stream closed: ${reason}`))
-        }
+        // 主动清理属于预期内的资源回收流程，不应再人为构造 Error，
+        // 否则客户端断开/切换视频会被升级成未捕获异常。
         if (typeof stream.unpipe === 'function') {
           stream.unpipe()
         }
-        if (typeof stream.removeAllListeners === 'function') {
-          stream.removeAllListeners()
+        if (!streamInfo.abortController && typeof stream.destroy === 'function' && !stream.destroyed) {
+          stream.destroy()
         }
       }
     } catch (error) {

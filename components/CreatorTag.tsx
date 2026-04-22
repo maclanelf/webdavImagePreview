@@ -1,8 +1,10 @@
 'use client'
 
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Box, Typography, keyframes } from '@mui/material'
 import { TouchApp as TouchAppIcon, ChevronRight as ChevronRightIcon } from '@mui/icons-material'
+
+import { useCreatorIdentification } from '@/hooks/useCreatorIdentification'
 
 const breatheAnimation = keyframes`
   0%, 100% {
@@ -32,13 +34,8 @@ export default function CreatorTag({
   visible = true,
   refreshKey = 0
 }: CreatorTagProps) {
-  const [creatorName, setCreatorName] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
   const [calculatedPosition, setCalculatedPosition] = useState<{ top: string; left: string } | null>(null)
-  
-  const identifyingKeyRef = useRef<string | null>(null) // 改为存储 filePath + refreshKey 的组合
-  const requestIdRef = useRef(0)
-  const abortControllerRef = useRef<AbortController | null>(null)
+  const { creatorName, identifiedCreator, loading } = useCreatorIdentification(filePath, refreshKey)
 
   // 生成随机位置（更保守的策略，确保不会溢出和出现在黑边）
   const generateRandomPosition = () => {
@@ -66,86 +63,10 @@ export default function CreatorTag({
   }
 
   useEffect(() => {
-    const identifyKey = `${filePath}:${refreshKey}`
-    const requestId = ++requestIdRef.current
-    let active = true
-    
-    // 如果正在识别相同的文件+key，跳过
-    if (identifyingKeyRef.current === identifyKey) {
-      return
+    if (!loading) {
+      onCreatorIdentified?.(identifiedCreator)
     }
-    
-    // 取消之前的请求
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort()
-    }
-    setLoading(true)
-    
-    // 创建新的 AbortController
-    const abortController = new AbortController()
-    abortControllerRef.current = abortController
-    identifyingKeyRef.current = identifyKey
-    
-    // 调用识别 API
-    const identifyCreator = async () => {
-      try {
-        const response = await fetch('/api/creators/identify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ filePath }),
-          signal: abortController.signal
-        })
-
-        if (!response.ok) {
-          throw new Error(`Identify request failed: ${response.status}`)
-        }
-        
-        const data = await response.json()
-        
-        // 检查请求是否已被取消
-        if (abortController.signal.aborted || !active || requestId !== requestIdRef.current) {
-          return
-        }
-        
-        if (data.success && data.identified && data.creator) {
-          setCreatorName(data.creator.primaryName)
-          if (onCreatorIdentified) onCreatorIdentified(data.creator)
-        } else {
-          setCreatorName(null)
-          if (onCreatorIdentified) onCreatorIdentified(null)
-        }
-      } catch (error: any) {
-        if (error.name !== 'AbortError' && active && requestId === requestIdRef.current) {
-          console.error('[CreatorTag] 识别博主失败:', error)
-          setCreatorName(null)
-          if (onCreatorIdentified) onCreatorIdentified(null)
-        }
-      } finally {
-        // 无论请求是否被取消，都要设置 loading 为 false
-        if (active && requestId === requestIdRef.current) {
-          setLoading(false)
-          identifyingKeyRef.current = null
-          if (abortControllerRef.current === abortController) {
-            abortControllerRef.current = null
-          }
-        }
-      }
-    }
-    
-    identifyCreator()
-    
-    // 清理函数：取消请求
-    return () => {
-      active = false
-      if (identifyingKeyRef.current === identifyKey) {
-        identifyingKeyRef.current = null
-      }
-      if (abortControllerRef.current === abortController) {
-        abortController.abort()
-        abortControllerRef.current = null
-      }
-    }
-  }, [filePath, refreshKey, onCreatorIdentified])
+  }, [identifiedCreator, loading, onCreatorIdentified])
 
   // 计算随机位置
   useEffect(() => {
@@ -180,6 +101,7 @@ export default function CreatorTag({
         cursor: 'pointer',
         zIndex: 1000,
         userSelect: 'none',
+        WebkitTapHighlightColor: 'transparent',
         opacity: 0.6, // 降低整体透明度
         transition: 'opacity 0.3s ease',
         '&:hover': {
@@ -246,7 +168,8 @@ export default function CreatorTag({
           gap: 0.5,
           maxWidth: '200px', // 限制最大宽度，防止过长溢出
           overflow: 'hidden',
-          textOverflow: 'ellipsis'
+          textOverflow: 'ellipsis',
+          WebkitTapHighlightColor: 'transparent'
         }}
       >
         {/* 左侧手势图标 */}

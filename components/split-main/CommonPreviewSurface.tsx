@@ -56,6 +56,8 @@ export default function CommonPreviewSurface({
     <Box
       sx={{
         position: 'relative',
+        overflow: fullscreen ? 'hidden' : 'visible',
+        overscrollBehavior: fullscreen ? 'none' : 'auto',
         ...(fullscreen && {
           position: 'fixed',
           top: 0,
@@ -75,6 +77,8 @@ export default function CommonPreviewSurface({
           borderRadius: fullscreen ? 0 : 2,
           overflow: 'hidden',
           backgroundColor: fullscreen ? '#000' : 'transparent',
+          touchAction: fullscreen ? 'none' : 'auto',
+          overscrollBehavior: fullscreen ? 'none' : 'auto',
           ...(fullscreen && {
             position: 'absolute',
             top: 0,
@@ -99,6 +103,8 @@ export default function CommonPreviewSurface({
                 : 'transparent',
             borderRadius: fullscreen ? 0 : 2,
             overflow: 'hidden',
+            touchAction: fullscreen ? 'none' : 'auto',
+            overscrollBehavior: fullscreen ? 'none' : 'auto',
             minHeight:
               reservedPreviewMinHeight,
             height:

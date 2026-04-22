@@ -30,6 +30,7 @@ interface Creator {
   appearanceRating?: number
   bodyRating?: number
   bio?: string
+  avatarPath?: string | null
 }
 
 interface CreatorDialogProps {
@@ -40,6 +41,8 @@ interface CreatorDialogProps {
   onSuccess?: () => void
   onMarkUnknown?: () => void
   container?: Element | null
+  initialMode?: 'view' | 'create' | 'edit'
+  skipLinkOnSave?: boolean
 }
 
 export default function CreatorDialog({
@@ -49,7 +52,9 @@ export default function CreatorDialog({
   existingCreator,
   onSuccess,
   onMarkUnknown,
-  container
+  container,
+  initialMode = 'view',
+  skipLinkOnSave = false,
 }: CreatorDialogProps) {
   const [mode, setMode] = useState<'view' | 'create' | 'edit'>('view')
   const [loading, setLoading] = useState(false)
@@ -77,7 +82,7 @@ export default function CreatorDialog({
   useEffect(() => {
     if (open) {
       if (existingCreator) {
-        setMode('view')
+        setMode(initialMode)
         setPrimaryName(existingCreator.primaryName)
         setOtherNames(existingCreator.otherNames || [])
         setAppearanceRating(existingCreator.appearanceRating || 0)
@@ -88,7 +93,7 @@ export default function CreatorDialog({
         resetForm()
       }
     }
-  }, [open, existingCreator])
+  }, [open, existingCreator, initialMode])
 
   const resetForm = () => {
     setCreatorId(undefined)
@@ -224,8 +229,10 @@ export default function CreatorDialog({
         throw new Error(data.error || '保存失败')
       }
 
-      // 关联到当前文件
-      await linkCreatorToFile(data.creator.id)
+      if (!skipLinkOnSave && filePath) {
+        // 关联到当前文件
+        await linkCreatorToFile(data.creator.id)
+      }
 
       onClose()
       if (onSuccess) {
@@ -321,6 +328,20 @@ export default function CreatorDialog({
         throw new Error('关联媒体失败')
       }
     }
+  }
+
+  const handleCancelEdit = () => {
+    if (initialMode === 'edit') {
+      onClose()
+      return
+    }
+
+    if (existingCreator) {
+      setMode('view')
+      return
+    }
+
+    onClose()
   }
 
   const renderViewMode = () => (
@@ -596,7 +617,7 @@ export default function CreatorDialog({
       </DialogContent>
 
       <DialogActions>
-        <Button onClick={() => existingCreator ? setMode('view') : onClose()} disabled={loading}>
+        <Button onClick={handleCancelEdit} disabled={loading}>
           取消
         </Button>
         <Button

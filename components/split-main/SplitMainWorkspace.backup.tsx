@@ -974,6 +974,7 @@ export default function SplitMainWorkspace({
             handleQuickRate={handleQuickRate}
             openRatingDialog={openRatingDialog}
             onOpenCreatorDialog={() => setCreatorDialogOpen(true)}
+            onOpenCreatorDetail={() => {}}
             ratingDialogOpen={ratingDialogOpen}
             closeRatingDialog={closeRatingDialog}
             saveRatingManual={saveRatingManual}
@@ -1037,6 +1038,7 @@ export default function SplitMainWorkspace({
             handleQuickRate={handleQuickRate}
             openRatingDialog={openRatingDialog}
             onOpenCreatorDialog={() => setCreatorDialogOpen(true)}
+            onOpenCreatorDetail={() => {}}
             ratingDialogOpen={ratingDialogOpen}
             closeRatingDialog={closeRatingDialog}
             saveRatingManual={saveRatingManual}
@@ -1093,6 +1095,7 @@ export default function SplitMainWorkspace({
             handleQuickRate={handleQuickRate}
             openRatingDialog={openRatingDialog}
             onOpenCreatorDialog={() => setCreatorDialogOpen(true)}
+            onOpenCreatorDetail={() => {}}
             ratingDialogOpen={ratingDialogOpen}
             closeRatingDialog={closeRatingDialog}
             saveRatingManual={saveRatingManual}

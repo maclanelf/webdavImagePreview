@@ -34,6 +34,7 @@ import {
 
 import { useGalleryMode } from '@/app/split-main/gallery/useGalleryMode'
 import CreatorTag from '@/components/CreatorTag'
+import CreatorDetailTag from '../../CreatorDetailTag'
 import DraggableFab from '@/components/DraggableFab'
 import MobileVideoPlayer from '@/components/MobileVideoPlayer'
 import QuickRating from '@/components/QuickRating'
@@ -113,6 +114,7 @@ interface GalleryModePageProps {
   handleQuickRate: (rating: number, evaluation: string) => Promise<void>
   openRatingDialog: (type: 'media' | 'group') => void
   onOpenCreatorDialog: () => void
+  onOpenCreatorDetail?: (creator?: any | null) => void
   ratingDialogOpen: boolean
   closeRatingDialog: () => void
   saveRatingManual: (data: MediaRating | GroupRating, file?: MediaFile) => Promise<void>
@@ -187,6 +189,7 @@ export default function GalleryModePage({
   handleQuickRate,
   openRatingDialog,
   onOpenCreatorDialog,
+  onOpenCreatorDetail,
   ratingDialogOpen,
   closeRatingDialog,
   saveRatingManual,
@@ -599,6 +602,13 @@ export default function GalleryModePage({
                     refreshKey={creatorRefreshKey}
                   />
                 )}
+                {currentFile && (
+                  <CreatorDetailTag
+                    filePath={currentFile.filename}
+                    onTagClick={(creator: any | null) => onOpenCreatorDetail?.(creator)}
+                    refreshKey={creatorRefreshKey}
+                  />
+                )}
               </>
             )}
 
@@ -639,6 +649,14 @@ export default function GalleryModePage({
                 onCreatorIdentified={setCurrentCreator}
                 onTagClick={onOpenCreatorDialog}
                 position={{ top: '15%', left: '15%' }}
+                refreshKey={creatorRefreshKey}
+              />
+            )}
+            {isMobile && currentFile && mediaType === 'small-video' && (
+              <CreatorDetailTag
+                filePath={currentFile.filename}
+                onTagClick={(creator: any | null) => onOpenCreatorDetail?.(creator)}
+                position={{ top: '22%', right: '10%' }}
                 refreshKey={creatorRefreshKey}
               />
             )}
@@ -735,6 +753,14 @@ export default function GalleryModePage({
                     filePath={currentFile.filename}
                     onCreatorIdentified={setCurrentCreator}
                     onTagClick={onOpenCreatorDialog}
+                    refreshKey={creatorRefreshKey}
+                  />
+                )}
+                {currentFile && (
+                  <CreatorDetailTag
+                    filePath={currentFile.filename}
+                    onTagClick={(creator: any | null) => onOpenCreatorDetail?.(creator)}
+                    position={{ top: '22%', right: '10%' }}
                     refreshKey={creatorRefreshKey}
                   />
                 )}

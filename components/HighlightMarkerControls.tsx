@@ -14,6 +14,8 @@ interface HighlightMarkerControlsProps {
   onMarkStart: () => void
   onMarkEnd: () => void
   formatHighlightTime: (seconds: number) => string
+  topOffset?: number | string
+  zIndex?: number
 }
 
 export default function HighlightMarkerControls({
@@ -28,6 +30,8 @@ export default function HighlightMarkerControls({
   onMarkStart,
   onMarkEnd,
   formatHighlightTime,
+  topOffset,
+  zIndex,
 }: HighlightMarkerControlsProps) {
   const markerButtonSize = 34
   const shellHeight = 40
@@ -52,10 +56,10 @@ export default function HighlightMarkerControls({
     <Box
       sx={{
         position: 'absolute',
-        top: mode === 'fullscreen' ? 18 : 14,
+        top: topOffset ?? (mode === 'fullscreen' ? 18 : 14),
         left: '50%',
         transform: 'translateX(-50%)',
-        zIndex: 2002,
+        zIndex: zIndex ?? 2002,
         pointerEvents: 'auto',
       }}
     >

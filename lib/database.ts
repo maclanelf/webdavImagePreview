@@ -25,12 +25,59 @@ declare global {
   var __db: Database.Database | undefined
   var __dbInitialized: boolean | undefined
   var __checkpointTimer: NodeJS.Timeout | undefined
+  var __dbCleanupInProgress: boolean | undefined
+  var __dbClosed: boolean | undefined
+  var __processCleanupHandlersRegistered: boolean | undefined
+  var __checkpointBeforeExitHandlerRegistered: boolean | undefined
+}
+
+function getActiveDatabaseConnection(): Database.Database | null {
+  try {
+    if (globalThis.__db && (globalThis.__db as any).open !== false) {
+      return globalThis.__db
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    if (db && (db as any).open !== false) {
+      return db
+    }
+  } catch {
+    // ignore
+  }
+
+  return null
+}
+
+function isExpectedStreamLifecycleError(error: unknown): boolean {
+  const name = error instanceof Error ? error.name : ''
+  const message = error instanceof Error ? error.message : String(error || '')
+  const normalized = message.trim().toLowerCase()
+
+  return /Stream closed: (客户端断开|切换到新视频|新请求替代旧请求|PassThrough 关闭)/.test(message)
+    || normalized.includes('premature close')
+    || normalized.includes('client closed')
+    || (
+      name === 'AbortError'
+      && (
+        normalized === 'the operation was aborted'
+        || normalized === 'this operation was aborted'
+      )
+    )
 }
 
 // 🔧 通用函数：执行 WAL checkpoint
 export function performCheckpoint(mode: 'PASSIVE' | 'FULL' | 'RESTART' | 'TRUNCATE' = 'RESTART'): any {
   try {
-    const result = db.pragma(`wal_checkpoint(${mode})`, { simple: true })
+    const connection = getActiveDatabaseConnection()
+    if (!connection) {
+      console.log(`ℹ️ [Checkpoint] 跳过 ${mode} checkpoint：数据库连接未打开`)
+      return null
+    }
+
+    const result = connection.pragma(`wal_checkpoint(${mode})`, { simple: true })
     console.log(`✅ [Checkpoint] 执行 ${mode} checkpoint 成功:`, result)
     return result
   } catch (error) {
@@ -42,10 +89,15 @@ export function performCheckpoint(mode: 'PASSIVE' | 'FULL' | 'RESTART' | 'TRUNCA
 // 🔧 通用函数：获取数据库状态信息
 export function getDatabaseStatus() {
   try {
-    const journalMode = db.pragma('journal_mode', { simple: true })
-    const walCheckpoint = db.pragma('wal_checkpoint')
-    const pageCount = db.pragma('page_count', { simple: true })
-    const pageSize = db.pragma('page_size', { simple: true })
+    const connection = getActiveDatabaseConnection()
+    if (!connection) {
+      return null
+    }
+
+    const journalMode = connection.pragma('journal_mode', { simple: true })
+    const walCheckpoint = connection.pragma('wal_checkpoint')
+    const pageCount = connection.pragma('page_count', { simple: true })
+    const pageSize = connection.pragma('page_size', { simple: true })
     
     return {
       journalMode,
@@ -93,12 +145,15 @@ function startCheckpointTimer() {
   }, intervalMs)
   
   // 确保进程退出时清理定时器
-  process.on('beforeExit', () => {
-    if (globalThis.__checkpointTimer) {
-      clearInterval(globalThis.__checkpointTimer)
-      console.log('🛑 [Checkpoint] 清理定时 checkpoint 任务')
-    }
-  })
+  if (!globalThis.__checkpointBeforeExitHandlerRegistered) {
+    globalThis.__checkpointBeforeExitHandlerRegistered = true
+    process.on('beforeExit', () => {
+      if (globalThis.__checkpointTimer) {
+        clearInterval(globalThis.__checkpointTimer)
+        console.log('🛑 [Checkpoint] 清理定时 checkpoint 任务')
+      }
+    })
+  }
 }
 
 // 🔧 停止定时 checkpoint 任务
@@ -117,6 +172,12 @@ export function stopCheckpointTimer() {
 //   - true: 完全关闭（服务器退出时）
 //   - false: 只清理缓存（浏览器关闭时，服务器继续运行）
 export function cleanupDatabase(closeDatabase: boolean = true) {
+  if (globalThis.__dbCleanupInProgress) {
+    console.log('ℹ️ [Cleanup] 已有清理进行中，跳过重复调用')
+    return
+  }
+
+  globalThis.__dbCleanupInProgress = true
   console.log(`🧹 [Cleanup] 开始清理服务端资源... (关闭数据库: ${closeDatabase})`)
 
   try {
@@ -145,36 +206,48 @@ export function cleanupDatabase(closeDatabase: boolean = true) {
     // 客户端资源由浏览器在页面关闭时自动释放
 
     // 3. 执行 checkpoint（服务端）
-    if (db) {
+    const connection = getActiveDatabaseConnection()
+    if (connection) {
       console.log('🔄 [Cleanup] 执行 checkpoint...')
       performCheckpoint('PASSIVE') // 使用 PASSIVE 模式，不阻塞
     }
 
     // 4. 关闭数据库连接（仅在服务器退出时）
-    if (closeDatabase && db) {
-      console.log('🔒 [Cleanup] 关闭数据库连接...')
-      
-      // 停止定时 checkpoint 任务
-      stopCheckpointTimer()
-      
-      // 执行最终 checkpoint
-      performCheckpoint('RESTART')
-      
-      // 关闭连接
-      db.close()
-      globalThis.__db = undefined
-      globalThis.__dbInitialized = undefined
+    if (closeDatabase) {
+      if (globalThis.__dbClosed) {
+        console.log('ℹ️ [Cleanup] 数据库连接已关闭，跳过重复关闭')
+      } else {
+        console.log('🔒 [Cleanup] 关闭数据库连接...')
+
+        // 停止定时 checkpoint 任务
+        stopCheckpointTimer()
+
+        // 执行最终 checkpoint
+        performCheckpoint('RESTART')
+
+        const activeConnection = getActiveDatabaseConnection()
+        if (activeConnection) {
+          activeConnection.close()
+        }
+
+        globalThis.__db = undefined
+        globalThis.__dbInitialized = undefined
+        globalThis.__dbClosed = true
+      }
     }
 
     console.log('✅ [Cleanup] 服务端资源清理完成')
   } catch (error) {
     console.error('❌ [Cleanup] 清理服务端资源失败:', error)
+  } finally {
+    globalThis.__dbCleanupInProgress = false
   }
 }
 
 
 // 注册进程退出时的清理函数
-if (typeof process !== 'undefined') {
+if (typeof process !== 'undefined' && !globalThis.__processCleanupHandlersRegistered) {
+  globalThis.__processCleanupHandlersRegistered = true
   // 正常退出
   process.on('exit', () => {
     console.log('🚪 [Process] 进程退出，清理资源...')
@@ -197,6 +270,11 @@ if (typeof process !== 'undefined') {
   
   // 未捕获的异常
   process.on('uncaughtException', (error) => {
+    if (isExpectedStreamLifecycleError(error)) {
+      console.warn('ℹ️ [Process] 忽略预期内的流关闭异常:', error)
+      return
+    }
+
     console.error('💥 [Process] 未捕获的异常:', error)
     cleanupDatabase()
     process.exit(1)
@@ -207,6 +285,7 @@ if (typeof process !== 'undefined') {
 let db: Database.Database
 if (globalThis.__db) {
   db = globalThis.__db
+  globalThis.__dbClosed = false
   console.log('♻️ 复用已有数据库连接')
 } else {
   try {
@@ -258,6 +337,7 @@ if (globalThis.__db) {
     
     // 缓存到 globalThis
     globalThis.__db = db
+    globalThis.__dbClosed = false
   } catch (error) {
     console.error('数据库连接失败:', error)
     console.error('数据库路径:', dbPath)

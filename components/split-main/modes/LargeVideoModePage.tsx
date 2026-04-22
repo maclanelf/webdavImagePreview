@@ -30,6 +30,7 @@ import {
 
 import { useLargeVideoMode } from '@/app/split-main/large-video/useLargeVideoMode'
 import CreatorTag from '@/components/CreatorTag'
+import CreatorDetailTag from '../../CreatorDetailTag'
 import DraggableFab from '@/components/DraggableFab'
 import InstantVideoPlayer from '@/components/InstantVideoPlayer'
 import QuickRating from '@/components/QuickRating'
@@ -85,6 +86,7 @@ interface LargeVideoModePageProps {
   handleQuickRate: (rating: number, evaluation: string) => Promise<void>
   openRatingDialog: (type: 'media' | 'group') => void
   onOpenCreatorDialog: () => void
+  onOpenCreatorDetail?: (creator?: any | null) => void
   ratingDialogOpen: boolean
   closeRatingDialog: () => void
   saveRatingManual: (data: MediaRating | GroupRating, file?: MediaFile) => Promise<void>
@@ -107,6 +109,7 @@ interface LargeVideoModePageProps {
   setSnackbarSeverity: (severity: SnackbarSeverity) => void
   setSnackbarOpen: (open: boolean) => void
   highlightContinuousPlayEnabled: boolean
+  suspended?: boolean
 }
 
 /**
@@ -152,6 +155,7 @@ export default function LargeVideoModePage({
   handleQuickRate,
   openRatingDialog,
   onOpenCreatorDialog,
+  onOpenCreatorDetail,
   ratingDialogOpen,
   closeRatingDialog,
   saveRatingManual,
@@ -174,6 +178,7 @@ export default function LargeVideoModePage({
   setSnackbarSeverity,
   setSnackbarOpen,
   highlightContinuousPlayEnabled,
+  suspended = false,
 }: LargeVideoModePageProps) {
   /**
    * 大视频模式自己的播放器运行时状态。
@@ -193,6 +198,7 @@ export default function LargeVideoModePage({
   const [showPlayModeSelector, setShowPlayModeSelector] = useState(false)
   const fullscreenActionOverlayZIndex = 2202
   const [isNativeVideoFullscreen, setIsNativeVideoFullscreen] = useState(false)
+  const activeMediaUrl = suspended ? null : mediaUrl
   const { isSwitching, runSwitch: saveAndSwitch } = useModeSwitchGuard({
     currentFile,
     setPreloadStatus,
@@ -275,6 +281,15 @@ export default function LargeVideoModePage({
   useEffect(() => {
     setHighlightContinuousPlayEnabled(highlightContinuousPlayEnabled)
   }, [highlightContinuousPlayEnabled, setHighlightContinuousPlayEnabled])
+
+  useEffect(() => {
+    if (!suspended) {
+      return
+    }
+
+    setShowPlayModeSelector(false)
+    instantVideoRef.current?.pause?.()
+  }, [suspended])
 
   /**
    * 大视频模式核心数据加载入口。
@@ -414,7 +429,7 @@ export default function LargeVideoModePage({
    */
   useEffect(() => {
     const handleKeyPress = (event: KeyboardEvent) => {
-      if (!currentFile || mediaType !== 'stream-video') {
+      if (suspended || !currentFile || mediaType !== 'stream-video') {
         return
       }
 
@@ -440,7 +455,7 @@ export default function LargeVideoModePage({
     return () => {
       window.removeEventListener('keydown', handleKeyPress)
     }
-  }, [currentFile, mediaType, videoHighlightsModule])
+  }, [currentFile, mediaType, suspended, videoHighlightsModule])
 
   /**
    * 大视频模式手势开始处理。
@@ -534,7 +549,7 @@ export default function LargeVideoModePage({
        */}
       <CommonPreviewSurface
         currentFile={currentFile}
-        mediaUrl={mediaUrl}
+        mediaUrl={activeMediaUrl}
         mediaType={mediaType}
         fullscreen={fullscreen}
         isMobile={isMobile}
@@ -550,13 +565,13 @@ export default function LargeVideoModePage({
               width: '100%',
               height: fullscreen ? '100%' : 'min(56.25vw, calc(100vh - 150px))',
               minHeight: fullscreen ? undefined : 300,
-              display: mediaType === 'stream-video' && mediaUrl ? 'block' : 'none',
+              display: mediaType === 'stream-video' && activeMediaUrl ? 'block' : 'none',
             }}
           >
               {/* 大视频模式专属流式播放器，承接高亮条、打点与“下一个视频”行为。 */}
               <InstantVideoPlayer
                 ref={instantVideoRef}
-                src={mediaUrl || ''}
+                src={activeMediaUrl || ''}
                 autoPlay
                 playIntent={playIntentRef.current}
                 isParentFullscreen={fullscreen}
@@ -584,6 +599,13 @@ export default function LargeVideoModePage({
                         onCreatorIdentified={setCurrentCreator}
                         onTagClick={onOpenCreatorDialog}
                         visible={streamVideoTagVisible}
+                        refreshKey={creatorRefreshKey}
+                      />
+                      <CreatorDetailTag
+                        filePath={currentFile.filename}
+                        onTagClick={(creator: any | null) => onOpenCreatorDetail?.(creator)}
+                        visible={streamVideoTagVisible}
+                        position={{ top: '26%', right: '10%' }}
                         refreshKey={creatorRefreshKey}
                       />
                       {!fullscreen && !isNativeVideoFullscreen && videoHighlightsModule.inlineMarkerControls}
@@ -913,7 +935,7 @@ export default function LargeVideoModePage({
       />
 
       {/* 大视频模式专属右上角全屏入口。 */}
-      {!fullscreen && currentFile && mediaUrl && (
+      {!fullscreen && currentFile && activeMediaUrl && (
         <Tooltip title="全屏查看" placement="left">
           <Button
             variant="contained"
