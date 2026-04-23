@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { groupRatings, customEvaluations, categories, ensureInitialized, performCheckpoint } from '@/lib/database'
+import db, { groupRatings, customEvaluations, categories, ensureInitialized, performCheckpoint } from '@/lib/database'
 import { UNKNOWN_CREATOR_ID } from '@/lib/constants'
 
 // 辅助函数：解析JSON字段
@@ -28,6 +28,45 @@ function tryParseJSON(value: string) {
   }
 }
 
+function normalizeGroupPath(groupPath: string) {
+  const trimmed = groupPath.trim()
+  if (!trimmed || trimmed === '/') {
+    return '/'
+  }
+
+  return trimmed.replace(/\/+$/, '') || '/'
+}
+
+function getGroupNameFromPath(groupPath: string) {
+  if (groupPath === '/') {
+    return '根目录'
+  }
+
+  const parts = groupPath.split('/').filter(Boolean)
+  return parts[parts.length - 1] || '根目录'
+}
+
+function resolveGroupMetadata(groupPath: string) {
+  const existing = groupRatings.get(groupPath) as any
+  if (existing) {
+    return {
+      groupName: existing.group_name || getGroupNameFromPath(groupPath),
+      fileCount: existing.file_count ?? 0,
+    }
+  }
+
+  const countRow = db.prepare(`
+    SELECT COUNT(*) AS fileCount
+    FROM scan_files
+    WHERE parent_path = ?
+  `).get(groupPath) as { fileCount?: number } | undefined
+
+  return {
+    groupName: getGroupNameFromPath(groupPath),
+    fileCount: countRow?.fileCount ?? 0,
+  }
+}
+
 export async function GET(request: NextRequest) {
   try {
     // 确保数据库已初始化
@@ -36,10 +75,11 @@ export async function GET(request: NextRequest) {
     const groupPath = searchParams.get('groupPath')
 
     if (groupPath) {
+      const normalizedGroupPath = normalizeGroupPath(groupPath)
       // 获取单个图组评分
-      const groupName = groupPath.split('/').pop() || groupPath
+      const groupName = getGroupNameFromPath(normalizedGroupPath)
       console.log(`🔍 [API GET] 获取图组评分: ${groupName}`)
-      const rating = groupRatings.get(groupPath)
+      const rating = groupRatings.get(normalizedGroupPath)
       console.log(`✅ [API GET] 图组评分获取完成: ${groupName}`)
       return NextResponse.json({ rating: parseRatingData(rating) })
     } else {
@@ -76,20 +116,27 @@ export async function POST(request: NextRequest) {
       creatorId
     } = body
 
-    console.log(`💾 [API POST] 保存图组评分: ${groupName} (${rating}星, ${fileCount}个文件)`)
-
-    if (!groupPath || !groupName || fileCount === undefined) {
-      console.log(`❌ [API POST] 缺少必要参数: ${groupName}`)
+    if (!groupPath) {
+      console.log('❌ [API POST] 缺少图组路径')
       return NextResponse.json(
-        { error: '缺少必要参数' },
+        { error: '缺少图组路径参数' },
         { status: 400 }
       )
     }
 
+    const normalizedGroupPath = normalizeGroupPath(groupPath)
+    const resolvedMetadata = (!groupName || fileCount === undefined)
+      ? resolveGroupMetadata(normalizedGroupPath)
+      : null
+    const resolvedGroupName = groupName || resolvedMetadata?.groupName || getGroupNameFromPath(normalizedGroupPath)
+    const resolvedFileCount = fileCount ?? resolvedMetadata?.fileCount ?? 0
+
+    console.log(`💾 [API POST] 保存图组评分: ${resolvedGroupName} (${rating}星, ${resolvedFileCount}个文件)`)
+
     const result = groupRatings.save({
-      groupPath,
-      groupName,
-      fileCount,
+      groupPath: normalizedGroupPath,
+      groupName: resolvedGroupName,
+      fileCount: resolvedFileCount,
       rating,
       recommendationReason,
       customEvaluation,
@@ -155,7 +202,7 @@ export async function DELETE(request: NextRequest) {
       )
     }
 
-    const result = groupRatings.delete(groupPath)
+    const result = groupRatings.delete(normalizeGroupPath(groupPath))
     return NextResponse.json({ 
       success: true, 
       changes: result.changes 

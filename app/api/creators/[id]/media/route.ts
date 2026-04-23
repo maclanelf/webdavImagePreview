@@ -119,9 +119,10 @@ export async function GET(
       return NextResponse.json({ success: false, error: '博主不存在' }, { status: 404 })
     }
 
-    // 获取博主的所有别名（用于模糊匹配）
-    const aliases = [creator.primaryName, ...(creator.otherNames || [])].filter(Boolean)
-    
+    const aliases = [creator.primaryName, ...(creator.otherNames || [])]
+      .map((alias) => String(alias).trim())
+      .filter(Boolean)
+
     // 解析查询参数
     const searchParams = request.nextUrl.searchParams
     const fileTypeParam = searchParams.get('fileType')
@@ -140,7 +141,7 @@ export async function GET(
 
     // 构建媒体查询条件
     const aliasConditions = aliases.map(() => '(sf.parent_path LIKE ? OR sf.filename LIKE ?)').join(' OR ')
-    const mediaWhere = [`(mr.creator_id = ? OR (${aliasConditions}))`]
+    const mediaWhere = [`(sfc.creator_id = ? OR ((sfc.file_path IS NULL OR sfc.creator_id IS NULL) AND (${aliasConditions})))`]
     const mediaParams: any[] = [creatorId]
     aliases.forEach((alias) => {
       mediaParams.push(`%${alias}%`, `%${alias}%`)
@@ -187,8 +188,9 @@ export async function GET(
         mr.custom_evaluation AS customEvaluation,
         mr.category,
         COALESCE(mr.is_viewed, sf.is_viewed, 0) AS isViewed,
-        COALESCE(mr.creator_id, ?) AS creatorId
+        COALESCE(sfc.creator_id, ?) AS creatorId
       FROM scan_files sf
+      LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
       LEFT JOIN media_ratings mr ON mr.file_path = sf.filename
       WHERE ${mediaWhere.join(' AND ')}
       ORDER BY COALESCE(mr.is_viewed, sf.is_viewed, 0) DESC, COALESCE(mr.rating, 0) DESC, sf.parent_path ASC, sf.basename COLLATE NOCASE ASC
@@ -223,12 +225,24 @@ export async function GET(
       }
     })
 
-    // 构建图组查询条件
-    // 图组目录必须由目录路径本身命中博主别名来确定，
-    // 不能因为某一个文件名命中，就把整个目录提升为图组。
-    // 否则会出现“目录里只有一个命中文件，却占用了整个图组目录”的问题。
     const groupAliasConditions = aliases.map(() => '(sf.parent_path LIKE ?)').join(' OR ')
-    const groupWhere = [`(gr.creator_id = ? OR (${groupAliasConditions}))`]
+    const groupWhere = [`(
+      EXISTS (
+        SELECT 1
+        FROM scan_file_creators sfc_group
+        WHERE sfc_group.parent_path = sf.parent_path
+          AND sfc_group.creator_id = ?
+      )
+      OR (
+        NOT EXISTS (
+          SELECT 1
+          FROM scan_file_creators sfc_group_linked
+          WHERE sfc_group_linked.parent_path = sf.parent_path
+            AND sfc_group_linked.creator_id IS NOT NULL
+        )
+        AND (${groupAliasConditions})
+      )
+    )`]
     const groupParams: any[] = [creatorId]
     aliases.forEach((alias) => {
       groupParams.push(`%${alias}%`)
@@ -239,7 +253,11 @@ export async function GET(
       SELECT
         sf.parent_path AS groupPath,
         gr.group_name AS groupName,
-        COUNT(*) AS fileCount,
+        (
+          SELECT COUNT(*)
+          FROM scan_files sfi
+          WHERE sfi.parent_path = sf.parent_path
+        ) AS fileCount,
         (
           SELECT sfi.filename
           FROM scan_files sfi
@@ -247,17 +265,17 @@ export async function GET(
             AND sfi.file_type = 'image'
           ORDER BY RANDOM()
           LIMIT 1
-        ) AS coverFilePath,
-        COALESCE(gr.is_viewed, MIN(sf.is_viewed)) AS isViewed,
-        gr.rating,
-        gr.recommendation_reason AS recommendationReason,
-        gr.custom_evaluation AS customEvaluation,
-        gr.category,
-        COALESCE(gr.creator_id, ?) AS creatorId
+      ) AS coverFilePath,
+      COALESCE(gr.is_viewed, MIN(sf.is_viewed)) AS isViewed,
+      gr.rating,
+      gr.recommendation_reason AS recommendationReason,
+      gr.custom_evaluation AS customEvaluation,
+      gr.category,
+      ? AS creatorId
       FROM scan_files sf
       LEFT JOIN group_ratings gr ON gr.group_path = sf.parent_path
       WHERE ${groupWhere.join(' AND ')}
-      GROUP BY sf.parent_path, gr.group_name, gr.is_viewed, gr.rating, gr.recommendation_reason, gr.custom_evaluation, gr.category, gr.creator_id
+      GROUP BY sf.parent_path, gr.group_name, gr.is_viewed, gr.rating, gr.recommendation_reason, gr.custom_evaluation, gr.category
       HAVING COUNT(*) > 0
       ORDER BY COALESCE(gr.is_viewed, MIN(sf.is_viewed)) DESC, COALESCE(gr.rating, 0) DESC, sf.parent_path ASC
     `).all(creatorId, ...groupParams).map((row: any) => {

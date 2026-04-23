@@ -267,16 +267,17 @@ export async function GET() {
 
     const topCreators = (db.prepare(`
       SELECT
-        mr.creator_id AS creatorId,
+        sfc.creator_id AS creatorId,
         c.primary_name AS creatorName,
         COUNT(*) AS count,
         ROUND(AVG(mr.rating), 2) AS avgRating
       FROM media_ratings mr
-      LEFT JOIN creators c ON mr.creator_id = c.id
+      INNER JOIN scan_file_creators sfc ON sfc.file_path = mr.file_path
+      LEFT JOIN creators c ON sfc.creator_id = c.id
       WHERE mr.is_viewed = 1
-        AND mr.creator_id IS NOT NULL
-        AND mr.creator_id != -1
-      GROUP BY mr.creator_id, c.primary_name
+        AND sfc.creator_id IS NOT NULL
+        AND sfc.creator_id != -1
+      GROUP BY sfc.creator_id, c.primary_name
       ORDER BY count DESC, avgRating DESC
       LIMIT 10
     `).all() as CreatorRow[]).map((row) => ({
@@ -288,17 +289,18 @@ export async function GET() {
 
     const favoriteCreators = (db.prepare(`
       SELECT
-        mr.creator_id AS creatorId,
+        sfc.creator_id AS creatorId,
         c.primary_name AS creatorName,
         COUNT(*) AS count,
         ROUND(AVG(mr.rating), 2) AS avgRating
       FROM media_ratings mr
-      LEFT JOIN creators c ON mr.creator_id = c.id
+      INNER JOIN scan_file_creators sfc ON sfc.file_path = mr.file_path
+      LEFT JOIN creators c ON sfc.creator_id = c.id
       WHERE mr.is_viewed = 1
-        AND mr.creator_id IS NOT NULL
-        AND mr.creator_id != -1
+        AND sfc.creator_id IS NOT NULL
+        AND sfc.creator_id != -1
         AND mr.rating IS NOT NULL
-      GROUP BY mr.creator_id, c.primary_name
+      GROUP BY sfc.creator_id, c.primary_name
       HAVING COUNT(*) >= 3
       ORDER BY avgRating DESC, count DESC
       LIMIT 10
@@ -358,10 +360,11 @@ export async function GET() {
 
     const creatorLinkedCount = (db.prepare(`
       SELECT COUNT(*) AS count
-      FROM media_ratings
-      WHERE is_viewed = 1
-        AND creator_id IS NOT NULL
-        AND creator_id != -1
+      FROM media_ratings mr
+      INNER JOIN scan_file_creators sfc ON sfc.file_path = mr.file_path
+      WHERE mr.is_viewed = 1
+        AND sfc.creator_id IS NOT NULL
+        AND sfc.creator_id != -1
     `).get() as CountRow).count ?? 0
 
     const highScoreCount = (db.prepare(`

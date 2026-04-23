@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { mediaRatings, groupRatings, creators } from '@/lib/database'
+import { mediaRatings, groupRatings, creators, scanFileCreators } from '@/lib/database'
 
 // GET /api/test-creator-data - 测试数据和关联
 export async function GET() {
@@ -9,9 +9,13 @@ export async function GET() {
     const allGroupRatings = groupRatings.getAll()
     const allCreators = creators.getAll()
     
-    // 统计有 creator_id 的记录
-    const mediaWithCreator = allMediaRatings.filter((r: any) => r.creator_id !== null)
-    const groupWithCreator = allGroupRatings.filter((r: any) => r.creator_id !== null)
+    const allFileCreatorLinks = scanFileCreators.getAll() as any[]
+    const mediaWithCreator = allFileCreatorLinks.filter((r: any) => r.creator_id !== null)
+    const groupWithCreator = new Set(
+      allFileCreatorLinks
+        .filter((r: any) => r.creator_id !== null && r.parent_path)
+        .map((r: any) => r.parent_path)
+    )
     
     // 获取一些示例路径
     const samplePaths = allMediaRatings.slice(0, 10).map((r: any) => r.file_path)
@@ -23,7 +27,7 @@ export async function GET() {
         totalGroupRatings: allGroupRatings.length,
         totalCreators: allCreators.length,
         mediaWithCreator: mediaWithCreator.length,
-        groupWithCreator: groupWithCreator.length,
+        groupWithCreator: groupWithCreator.size,
         samplePaths,
         creators: allCreators.map((c: any) => ({
           id: c.id,

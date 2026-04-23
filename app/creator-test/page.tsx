@@ -191,7 +191,7 @@ export default function CreatorTestPage() {
         // 根据实际情况显示消息
         let msg = data.message || '操作成功'
         if (batchUpdate && data.data) {
-          msg = data.message || `批量关联了 ${data.data.totalUpdated || 0} 条记录`
+          msg = data.message || `批量关联了 ${data.data.filesUpdated || 0} 个文件，涉及 ${data.data.groupsAffected || 0} 个图组`
         }
         setMessage({ type: 'success', text: msg })
         setNewAliasName('')

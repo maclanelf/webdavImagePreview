@@ -18,7 +18,7 @@ export async function POST(request: NextRequest) {
     
     return NextResponse.json({ 
       success: true, 
-      message: `批量关联完成，共更新 ${result.totalUpdated} 条记录`,
+      message: `批量关联完成，关联 ${result.filesUpdated} 个文件，涉及 ${result.groupsAffected} 个图组`,
       data: result
     })
   } catch (error: any) {

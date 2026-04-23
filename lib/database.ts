@@ -441,35 +441,13 @@ export function initDatabase() {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_creators_primary_name ON creators(primary_name)`)
     db.exec(`CREATE INDEX IF NOT EXISTS idx_creators_usage ON creators(usage_count DESC)`)
     
-    // 为 media_ratings 添加 creator_id 字段（如果表已存在）
+    // 创建通用索引
     try {
-      db.exec(`ALTER TABLE media_ratings ADD COLUMN creator_id INTEGER REFERENCES creators(id)`)
-      console.log('✅ 添加 media_ratings.creator_id 字段成功')
-    } catch (e: any) {
-      if (!e.message?.includes('duplicate column name')) {
-        console.warn('⚠️ 添加 media_ratings.creator_id 字段失败:', e.message)
-      }
-    }
-    
-    // 为 group_ratings 添加 creator_id 字段（如果表已存在）
-    try {
-      db.exec(`ALTER TABLE group_ratings ADD COLUMN creator_id INTEGER REFERENCES creators(id)`)
-      console.log('✅ 添加 group_ratings.creator_id 字段成功')
-    } catch (e: any) {
-      if (!e.message?.includes('duplicate column name')) {
-        console.warn('⚠️ 添加 group_ratings.creator_id 字段失败:', e.message)
-      }
-    }
-    
-    // 创建 creator_id 索引
-    try {
-      db.exec(`CREATE INDEX IF NOT EXISTS idx_media_ratings_creator ON media_ratings(creator_id)`)
-      db.exec(`CREATE INDEX IF NOT EXISTS idx_group_ratings_creator ON group_ratings(creator_id)`)
       db.exec(`CREATE INDEX IF NOT EXISTS idx_video_highlights_file_path ON video_highlights(file_path)`)
       db.exec(`CREATE INDEX IF NOT EXISTS idx_video_highlights_file_range ON video_highlights(file_path, start_seconds, end_seconds)`)
-      console.log('✅ 创建 creator_id 索引成功')
+      console.log('✅ 创建通用索引成功')
     } catch (e: any) {
-      console.warn('⚠️ 创建 creator_id 索引失败:', e.message)
+      console.warn('⚠️ 创建通用索引失败:', e.message)
     }
     
     // 创建特殊的"不认识"博主记录（ID = -1，不影响 AUTOINCREMENT 序列）
@@ -650,7 +628,36 @@ export function initDatabase() {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_files_query ON scan_files(cache_id, file_type, is_viewed)`)
     // 为 filename 单独创建索引，用于 mediaRatings.save 中的同步更新
     db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_files_filename ON scan_files(filename)`)
-    
+
+    // 创建文件级博主关联表（以 file_path 作为唯一关联键）
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS scan_file_creators (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_path TEXT NOT NULL UNIQUE,
+        parent_path TEXT NOT NULL,
+        creator_id INTEGER REFERENCES creators(id),
+        created_at DATETIME DEFAULT (datetime('now', 'localtime')),
+        updated_at DATETIME DEFAULT (datetime('now', 'localtime'))
+      )
+    `)
+
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_file_creators_file_path ON scan_file_creators(file_path)`)
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_file_creators_parent_path ON scan_file_creators(parent_path)`)
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_scan_file_creators_creator_id ON scan_file_creators(creator_id)`)
+
+    try {
+      const backfillFilesResult = db.prepare(`
+        INSERT INTO scan_file_creators (file_path, parent_path)
+        SELECT sf.filename, sf.parent_path
+        FROM scan_files sf
+        LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
+        WHERE sfc.file_path IS NULL
+      `).run()
+      console.log(`✅ 回填 scan_file_creators 文件记录成功: ${backfillFilesResult.changes} 条`)
+    } catch (error: any) {
+      console.warn('⚠️ 回填 scan_file_creators 文件记录失败:', error.message)
+    }
+
     // 创建 media_ratings 索引（支持高级过滤查询）
     console.log('创建 media_ratings 索引（支持高级过滤）...')
     try {
@@ -727,16 +734,6 @@ export const mediaRatings = {
       const existing = mediaRatings.get(data.filePath)
       console.log(`⏱️ [mediaRatings.save] get existing: ${Date.now() - getStartTime}ms`)
     
-    // 智能关联博主：如果没有提供 creatorId，尝试从路径匹配
-    let creatorId = data.creatorId
-    if (creatorId === undefined && !existing) {
-      const matchedCreator = creators.findCreatorByPath(data.filePath)
-      if (matchedCreator) {
-        creatorId = matchedCreator.id
-        console.log(`✨ [智能关联] 自动关联博主: ${matchedCreator.primaryName} (ID: ${creatorId})`)
-      }
-    }
-    
     // 将数组转换为JSON字符串
     const customEvaluationStr = data.customEvaluation 
       ? (Array.isArray(data.customEvaluation) 
@@ -757,7 +754,7 @@ export const mediaRatings = {
       const stmt = db.prepare(`
         UPDATE media_ratings 
         SET rating = ?, recommendation_reason = ?, custom_evaluation = ?, 
-            category = ?, is_viewed = ?, creator_id = ?, updated_at = datetime('now', 'localtime')
+            category = ?, is_viewed = ?, updated_at = datetime('now', 'localtime')
         WHERE file_path = ?
       `)
       result = stmt.run(
@@ -766,7 +763,6 @@ export const mediaRatings = {
         customEvaluationStr !== null ? customEvaluationStr : (existing as any).custom_evaluation,
         categoryStr !== null ? categoryStr : (existing as any).category,
         data.isViewed !== undefined ? (data.isViewed ? 1 : 0) : (existing as any).is_viewed,
-        creatorId !== undefined ? creatorId : (existing as any).creator_id,
         data.filePath
       )
     } else {
@@ -774,8 +770,8 @@ export const mediaRatings = {
       const stmt = db.prepare(`
         INSERT INTO media_ratings 
         (file_path, file_name, file_type, rating, recommendation_reason, 
-         custom_evaluation, category, is_viewed, creator_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         custom_evaluation, category, is_viewed)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `)
       result = stmt.run(
         data.filePath,
@@ -785,10 +781,18 @@ export const mediaRatings = {
         data.recommendationReason || null,
         customEvaluationStr,
         categoryStr,
-        data.isViewed ? 1 : 0,
-        creatorId || null
+        data.isViewed ? 1 : 0
       )
     }
+
+    if (data.creatorId !== undefined) {
+      scanFileCreators.save({
+        filePath: data.filePath,
+        parentPath: getParentPath(data.filePath),
+        creatorId: data.creatorId,
+      })
+    }
+
     console.log(`⏱️ [mediaRatings.save] ${existing ? 'UPDATE' : 'INSERT'} media_ratings: ${Date.now() - dbStartTime}ms`)
     
     // 同步更新 scan_files 表的 is_viewed 状态
@@ -863,16 +867,6 @@ export const groupRatings = {
       ensureInitialized()
       const existing = groupRatings.get(data.groupPath)
     
-    // 智能关联博主：如果没有提供 creatorId，尝试从路径匹配
-    let creatorId = data.creatorId
-    if (creatorId === undefined && !existing) {
-      const matchedCreator = creators.findCreatorByPath(data.groupPath)
-      if (matchedCreator) {
-        creatorId = matchedCreator.id
-        console.log(`✨ [智能关联] 自动关联博主: ${matchedCreator.primaryName} (ID: ${creatorId})`)
-      }
-    }
-    
     // 将数组转换为JSON字符串
     const customEvaluationStr = data.customEvaluation 
       ? (Array.isArray(data.customEvaluation) 
@@ -886,21 +880,21 @@ export const groupRatings = {
           : data.category)
       : null
     
+    let result
     if (existing) {
       // 更新
       const stmt = db.prepare(`
         UPDATE group_ratings 
         SET rating = ?, recommendation_reason = ?, custom_evaluation = ?, 
-            category = ?, is_viewed = ?, creator_id = ?, updated_at = datetime(\'now\', \'localtime\')
+            category = ?, is_viewed = ?, updated_at = datetime(\'now\', \'localtime\')
         WHERE group_path = ?
       `)
-      return stmt.run(
+      result = stmt.run(
         data.rating || null,
         data.recommendationReason || null,
         customEvaluationStr,
         categoryStr,
         data.isViewed ? 1 : 0,
-        creatorId !== undefined ? creatorId : (existing as any).creator_id,
         data.groupPath
       )
     } else {
@@ -908,10 +902,10 @@ export const groupRatings = {
       const stmt = db.prepare(`
         INSERT INTO group_ratings 
         (group_path, group_name, file_count, rating, recommendation_reason, 
-         custom_evaluation, category, is_viewed, creator_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         custom_evaluation, category, is_viewed)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      return stmt.run(
+      result = stmt.run(
         data.groupPath,
         data.groupName,
         data.fileCount,
@@ -919,10 +913,16 @@ export const groupRatings = {
         data.recommendationReason || null,
         customEvaluationStr,
         categoryStr,
-        data.isViewed ? 1 : 0,
-        creatorId || null
+        data.isViewed ? 1 : 0
       )
     }
+
+    if (data.creatorId !== undefined) {
+      scanFileCreators.setByParentPath(data.groupPath, data.creatorId ?? null)
+    }
+
+    return result
+
     } catch (error) {
       console.error('保存图组评分失败:', error)
       throw error
@@ -1565,11 +1565,11 @@ export const creators = {
             }
           })
           
-          // 更新所有引用该博主的评分记录
-          db.prepare('UPDATE media_ratings SET creator_id = ? WHERE creator_id = ?')
-            .run(targetId, sourceId)
-          db.prepare('UPDATE group_ratings SET creator_id = ? WHERE creator_id = ?')
-            .run(targetId, sourceId)
+          db.prepare(`
+            UPDATE scan_file_creators
+            SET creator_id = ?, updated_at = datetime('now', 'localtime')
+            WHERE creator_id = ?
+          `).run(targetId, sourceId)
           
           // 删除源博主
           db.prepare('DELETE FROM creators WHERE id = ?').run(sourceId)
@@ -1580,14 +1580,12 @@ export const creators = {
           UPDATE creators 
           SET other_names = ?, 
               usage_count = (
-                SELECT COUNT(*) FROM media_ratings WHERE creator_id = ?
-              ) + (
-                SELECT COUNT(*) FROM group_ratings WHERE creator_id = ?
+                SELECT COUNT(*) FROM scan_file_creators WHERE creator_id = ?
               ),
               updated_at = datetime('now', 'localtime')
           WHERE id = ?
         `)
-        stmt.run(JSON.stringify(allOtherNames), targetId, targetId, targetId)
+        stmt.run(JSON.stringify(allOtherNames), targetId, targetId)
       })
       
       mergeTransaction()
@@ -1609,9 +1607,11 @@ export const creators = {
       
       // 使用事务确保数据一致性
       const deleteTransaction = db.transaction(() => {
-        // 清除评分表中的关联
-        db.prepare('UPDATE media_ratings SET creator_id = NULL WHERE creator_id = ?').run(id)
-        db.prepare('UPDATE group_ratings SET creator_id = NULL WHERE creator_id = ?').run(id)
+        db.prepare(`
+          UPDATE scan_file_creators
+          SET creator_id = NULL, updated_at = datetime('now', 'localtime')
+          WHERE creator_id = ?
+        `).run(id)
         
         // 删除博主
         db.prepare('DELETE FROM creators WHERE id = ?').run(id)
@@ -1638,13 +1638,44 @@ export const creators = {
       const results: any = { media: [], groups: [] }
       
       if (!type || type === 'media') {
-        const stmt = db.prepare('SELECT * FROM media_ratings WHERE creator_id = ? ORDER BY updated_at DESC')
+        const stmt = db.prepare(`
+          SELECT
+            sfc.file_path,
+            sfc.parent_path,
+            sfc.creator_id,
+            sfc.created_at AS linked_at,
+            sfc.updated_at AS linked_updated_at,
+            mr.*
+          FROM scan_file_creators sfc
+          LEFT JOIN media_ratings mr ON mr.file_path = sfc.file_path
+          WHERE sfc.creator_id = ?
+          ORDER BY COALESCE(mr.updated_at, sfc.updated_at) DESC
+        `)
         results.media = stmt.all(id)
       }
       
       if (!type || type === 'group') {
-        const stmt = db.prepare('SELECT * FROM group_ratings WHERE creator_id = ? ORDER BY updated_at DESC')
-        results.groups = stmt.all(id)
+        const stmt = db.prepare(`
+          SELECT
+            sfc.parent_path AS group_path,
+            COALESCE(gr.group_name, sfc.parent_path) AS group_name,
+            COUNT(*) AS file_count,
+            gr.rating,
+            gr.recommendation_reason,
+            gr.custom_evaluation,
+            gr.category,
+            gr.is_viewed,
+            gr.created_at,
+            gr.updated_at,
+            ? AS creator_id
+          FROM scan_file_creators sfc
+          LEFT JOIN group_ratings gr ON gr.group_path = sfc.parent_path
+          WHERE sfc.creator_id = ?
+            AND sfc.parent_path IS NOT NULL
+          GROUP BY sfc.parent_path, gr.group_name, gr.rating, gr.recommendation_reason, gr.custom_evaluation, gr.category, gr.is_viewed, gr.created_at, gr.updated_at
+          ORDER BY COALESCE(gr.updated_at, MAX(sfc.updated_at)) DESC
+        `)
+        results.groups = stmt.all(id, id)
       }
       
       return results
@@ -1664,18 +1695,24 @@ export const creators = {
           COUNT(*) as total,
           COUNT(CASE WHEN rating IS NOT NULL THEN 1 END) as rated,
           AVG(rating) as avg_rating
-        FROM media_ratings 
-        WHERE creator_id = ?
+        FROM scan_file_creators sfc
+        LEFT JOIN media_ratings mr ON mr.file_path = sfc.file_path
+        WHERE sfc.creator_id = ?
       `)
       const mediaStats = mediaStmt.get(id) as any
       
       const groupStmt = db.prepare(`
         SELECT 
           COUNT(*) as total,
-          COUNT(CASE WHEN rating IS NOT NULL THEN 1 END) as rated,
-          AVG(rating) as avg_rating
-        FROM group_ratings 
-        WHERE creator_id = ?
+          COUNT(CASE WHEN gr.rating IS NOT NULL THEN 1 END) as rated,
+          AVG(gr.rating) as avg_rating
+        FROM (
+          SELECT DISTINCT sfc.parent_path
+          FROM scan_file_creators sfc
+          WHERE sfc.parent_path IS NOT NULL
+            AND sfc.creator_id = ?
+        ) creator_groups
+        LEFT JOIN group_ratings gr ON gr.group_path = creator_groups.parent_path
       `)
       const groupStats = groupStmt.get(id) as any
       
@@ -1754,32 +1791,32 @@ export const creators = {
       // 查询 media_ratings 中包含该名称的记录
       const mediaStmt = db.prepare(`
         SELECT COUNT(*) as count 
-        FROM media_ratings 
-        WHERE file_path LIKE ?
+        FROM scan_files 
+        WHERE filename LIKE ? OR parent_path LIKE ?
       `)
-      const mediaResult = mediaStmt.get(`%${namePattern}%`) as { count: number }
+      const mediaResult = mediaStmt.get(`%${namePattern}%`, `%${namePattern}%`) as { count: number }
       
-      // 查询 group_ratings 中包含该名称的记录
+      // 查询匹配目录数量
       const groupStmt = db.prepare(`
-        SELECT COUNT(*) as count 
-        FROM group_ratings 
-        WHERE group_path LIKE ?
+        SELECT COUNT(DISTINCT parent_path) as count 
+        FROM scan_files 
+        WHERE parent_path LIKE ?
       `)
       const groupResult = groupStmt.get(`%${namePattern}%`) as { count: number }
       
       // 获取示例记录（前5条）
       const sampleMediaStmt = db.prepare(`
-        SELECT file_path, file_name, rating 
-        FROM media_ratings 
-        WHERE file_path LIKE ? 
+        SELECT filename as file_path, basename as file_name, file_type
+        FROM scan_files 
+        WHERE filename LIKE ? OR parent_path LIKE ?
         LIMIT 5
       `)
-      const mediaSamples = sampleMediaStmt.all(`%${namePattern}%`)
+      const mediaSamples = sampleMediaStmt.all(`%${namePattern}%`, `%${namePattern}%`)
       
       const sampleGroupStmt = db.prepare(`
-        SELECT group_path, group_name, rating 
-        FROM group_ratings 
-        WHERE group_path LIKE ? 
+        SELECT DISTINCT parent_path as group_path, parent_path as group_name
+        FROM scan_files 
+        WHERE parent_path LIKE ?
         LIMIT 5
       `)
       const groupSamples = sampleGroupStmt.all(`%${namePattern}%`)
@@ -1812,55 +1849,56 @@ export const creators = {
       
       // 使用事务确保数据一致性
       const batchLinkTransaction = db.transaction(() => {
-        // 更新 media_ratings
-        const updateMediaStmt = db.prepare(`
-          UPDATE media_ratings 
-          SET creator_id = ? 
-          WHERE file_path LIKE ?
-        `)
-        const mediaResult = updateMediaStmt.run(creatorId, `%${namePattern}%`)
-        console.log(`📊 [批量关联] media_ratings 更新: ${mediaResult.changes} 条`)
-        
-        // 更新 group_ratings
-        const updateGroupStmt = db.prepare(`
-          UPDATE group_ratings 
-          SET creator_id = ? 
-          WHERE group_path LIKE ?
-        `)
-        const groupResult = updateGroupStmt.run(creatorId, `%${namePattern}%`)
-        console.log(`📊 [批量关联] group_ratings 更新: ${groupResult.changes} 条`)
+        const matchedFiles = db.prepare(`
+          SELECT filename, parent_path
+          FROM scan_files
+          WHERE filename LIKE ? OR parent_path LIKE ?
+        `).all(`%${namePattern}%`, `%${namePattern}%`) as Array<{ filename: string; parent_path: string }>
+
+        matchedFiles.forEach((file) => {
+          scanFileCreators.save({
+            filePath: file.filename,
+            parentPath: file.parent_path,
+            creatorId,
+          })
+        })
+
+        console.log(`📊 [批量关联] scan_file_creators 更新: ${matchedFiles.length} 条`)
+
+        const distinctGroups = new Set(matchedFiles.map((file) => file.parent_path).filter(Boolean))
+        const filesUpdated = matchedFiles.length
+        const groupsAffected = distinctGroups.size
         
         // 更新博主的使用次数
         const updateUsageStmt = db.prepare(`
           UPDATE creators 
           SET usage_count = (
-            SELECT COUNT(*) FROM media_ratings WHERE creator_id = ?
-          ) + (
-            SELECT COUNT(*) FROM group_ratings WHERE creator_id = ?
+            SELECT COUNT(*) FROM scan_file_creators WHERE creator_id = ?
           ),
           updated_at = datetime('now', 'localtime')
           WHERE id = ?
         `)
-        updateUsageStmt.run(creatorId, creatorId, creatorId)
+        updateUsageStmt.run(creatorId, creatorId)
         
         return {
-          mediaUpdated: mediaResult.changes,
-          groupUpdated: groupResult.changes,
-          totalUpdated: mediaResult.changes + groupResult.changes
+          filesUpdated,
+          groupsAffected,
+          mediaUpdated: filesUpdated,
+          groupUpdated: groupsAffected,
         }
       })
       
       const result = batchLinkTransaction()
-      console.log(`✅ [批量关联] 完成: 总计更新 ${result.totalUpdated} 条记录`)
+      console.log(`✅ [批量关联] 完成: 关联 ${result.filesUpdated} 个文件，涉及 ${result.groupsAffected} 个图组`)
       
       // 验证更新结果
       const verifyStmt = db.prepare(`
         SELECT COUNT(*) as count 
-        FROM media_ratings 
-        WHERE creator_id = ? AND file_path LIKE ?
+        FROM scan_file_creators 
+        WHERE creator_id = ? AND (file_path LIKE ? OR parent_path LIKE ?)
       `)
-      const verifyResult = verifyStmt.get(creatorId, `%${namePattern}%`) as { count: number }
-      console.log(`🔍 [批量关联] 验证: media_ratings 中有 ${verifyResult.count} 条记录关联到博主 ${creatorId}`)
+      const verifyResult = verifyStmt.get(creatorId, `%${namePattern}%`, `%${namePattern}%`) as { count: number }
+      console.log(`🔍 [批量关联] 验证: scan_file_creators 中有 ${verifyResult.count} 条记录关联到博主 ${creatorId}`)
       
       return result
     } catch (error) {
@@ -1895,8 +1933,8 @@ export const creators = {
       if (batchUpdate) {
         const linkResult = creators.batchLinkFilesByName(creatorId, newName)
         const message = aliasExists 
-          ? `别名已存在，批量关联了 ${linkResult.totalUpdated} 条记录`
-          : `别名添加成功，批量关联了 ${linkResult.totalUpdated} 条记录`
+          ? `别名已存在，关联了 ${linkResult.filesUpdated} 个文件，涉及 ${linkResult.groupsAffected} 个图组`
+          : `别名添加成功，关联了 ${linkResult.filesUpdated} 个文件，涉及 ${linkResult.groupsAffected} 个图组`
         
         return {
           success: true,
@@ -1905,13 +1943,14 @@ export const creators = {
         }
       }
       
-      return {
-        success: true,
-        message: aliasExists ? '别名已存在' : '别名添加成功',
-        mediaUpdated: 0,
-        groupUpdated: 0,
-        totalUpdated: 0
-      }
+        return {
+          success: true,
+          message: aliasExists ? '别名已存在' : '别名添加成功',
+          filesUpdated: 0,
+          groupsAffected: 0,
+          mediaUpdated: 0,
+          groupUpdated: 0,
+        }
     } catch (error) {
       console.error('添加别名并批量关联失败:', error)
       throw error
@@ -2494,6 +2533,160 @@ function getFileType(basename: string): 'image' | 'video' {
   return 'video'
 }
 
+// 文件级博主关联表操作
+export const scanFileCreators = {
+  get: (filePath: string) => {
+    try {
+      ensureInitialized()
+      const stmt = db.prepare('SELECT * FROM scan_file_creators WHERE file_path = ?')
+      return stmt.get(filePath)
+    } catch (error) {
+      console.error('获取文件博主关联失败:', error)
+      return null
+    }
+  },
+
+  getAll: () => {
+    try {
+      ensureInitialized()
+      const stmt = db.prepare('SELECT * FROM scan_file_creators ORDER BY updated_at DESC, id DESC')
+      return stmt.all()
+    } catch (error) {
+      console.error('获取全部文件博主关联失败:', error)
+      return []
+    }
+  },
+
+  getTopCreatorByParentPath: (parentPath: string) => {
+    try {
+      ensureInitialized()
+      const stmt = db.prepare(`
+        SELECT creator_id AS creatorId, COUNT(*) AS fileCount
+        FROM scan_file_creators
+        WHERE parent_path = ?
+          AND creator_id IS NOT NULL
+        GROUP BY creator_id
+        ORDER BY fileCount DESC, creator_id ASC
+        LIMIT 1
+      `)
+      return stmt.get(parentPath) || null
+    } catch (error) {
+      console.error('获取目录主博主关联失败:', error)
+      return null
+    }
+  },
+
+  save: (data: {
+    filePath: string
+    parentPath?: string
+    creatorId?: number | null
+  }) => {
+    try {
+      ensureInitialized()
+      const existing = scanFileCreators.get(data.filePath) as any
+      const parentPath = data.parentPath ?? getParentPath(data.filePath)
+
+      if (existing) {
+        const stmt = db.prepare(`
+          UPDATE scan_file_creators
+          SET parent_path = ?,
+              creator_id = ?,
+              updated_at = datetime('now', 'localtime')
+          WHERE file_path = ?
+        `)
+        return stmt.run(
+          parentPath,
+          data.creatorId !== undefined ? data.creatorId : existing.creator_id,
+          data.filePath
+        )
+      }
+
+      const stmt = db.prepare(`
+        INSERT INTO scan_file_creators (file_path, parent_path, creator_id)
+        VALUES (?, ?, ?)
+      `)
+      return stmt.run(
+        data.filePath,
+        parentPath,
+        data.creatorId !== undefined ? data.creatorId : null
+      )
+    } catch (error) {
+      console.error('保存文件博主关联失败:', error)
+      throw error
+    }
+  },
+
+  batchEnsure: (files: Array<{ filePath: string; parentPath: string }>) => {
+    try {
+      ensureInitialized()
+      if (files.length === 0) {
+        return { inserted: 0 }
+      }
+
+      const insertStmt = db.prepare(`
+        INSERT OR IGNORE INTO scan_file_creators (file_path, parent_path, creator_id)
+        VALUES (?, ?, NULL)
+      `)
+
+      const updateParentPathStmt = db.prepare(`
+        UPDATE scan_file_creators
+        SET parent_path = ?,
+            updated_at = datetime('now', 'localtime')
+        WHERE file_path = ?
+          AND parent_path != ?
+      `)
+
+      const insertMany = db.transaction((batch: Array<{ filePath: string; parentPath: string }>) => {
+        let inserted = 0
+        let parentPathUpdated = 0
+
+        for (const file of batch) {
+          const insertResult = insertStmt.run(file.filePath, file.parentPath)
+          inserted += insertResult.changes
+
+          // 只同步目录路径，绝不覆盖已存在的 creator_id 关联。
+          const updateResult = updateParentPathStmt.run(file.parentPath, file.filePath, file.parentPath)
+          parentPathUpdated += updateResult.changes
+        }
+
+        return { inserted, parentPathUpdated }
+      })
+
+      return insertMany(files)
+    } catch (error) {
+      console.error('批量补齐文件博主关联失败:', error)
+      throw error
+    }
+  },
+
+  setByParentPath: (parentPath: string, creatorId: number | null) => {
+    try {
+      ensureInitialized()
+      const files = db.prepare(`
+        SELECT filename, parent_path
+        FROM scan_files
+        WHERE parent_path = ?
+      `).all(parentPath) as Array<{ filename: string; parent_path: string }>
+
+      const saveMany = db.transaction((rows: Array<{ filename: string; parent_path: string }>) => {
+        for (const row of rows) {
+          scanFileCreators.save({
+            filePath: row.filename,
+            parentPath: row.parent_path,
+            creatorId,
+          })
+        }
+      })
+
+      saveMany(files)
+      return { updated: files.length }
+    } catch (error) {
+      console.error('按目录设置文件博主关联失败:', error)
+      throw error
+    }
+  }
+}
+
 // 扫描文件表相关操作（支持亿级数据）
 export const scanFiles = {
   // 批量插入文件（使用事务，每批1000条）
@@ -2533,6 +2726,10 @@ export const scanFiles = {
       for (let i = 0; i < files.length; i += batchSize) {
         const batch = files.slice(i, i + batchSize)
         insertMany(batch)
+        scanFileCreators.batchEnsure(batch.map((file) => ({
+          filePath: file.filename,
+          parentPath: getParentPath(file.filename)
+        })))
         inserted += batch.length
       }
       
