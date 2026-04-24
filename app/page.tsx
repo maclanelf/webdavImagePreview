@@ -66,7 +66,6 @@ import type {
 type SnackbarSeverity = 'success' | 'error' | 'info' | 'warning'
 
 const PAGE_LINKS = [
-  { label: '主页面', path: '/', icon: <AppsIcon fontSize="small" /> },
   { label: '观看数据看板', path: '/dashboard', icon: <BarChartIcon fontSize="small" /> },
   { label: '评价与分类管理', path: '/manage', icon: <ManageAccountsIcon fontSize="small" /> },
   { label: 'WebDAV 设置', path: '/config', icon: <SettingsIcon fontSize="small" /> },
