@@ -59,6 +59,7 @@ function isExpectedStreamLifecycleError(error: unknown): boolean {
   return /Stream closed: (客户端断开|切换到新视频|新请求替代旧请求|PassThrough 关闭)/.test(message)
     || normalized.includes('premature close')
     || normalized.includes('client closed')
+    || normalized.includes('invalid state: controller is already closed')
     || (
       name === 'AbortError'
       && (

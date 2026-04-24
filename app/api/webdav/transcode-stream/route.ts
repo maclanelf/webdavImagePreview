@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getWebDAVClient } from '@/lib/webdav-optimized'
+import { nodeReadableToWebReadable } from '@/lib/nodeReadableToWebReadable'
 import { spawn, ChildProcess } from 'child_process'
-import { Readable, PassThrough } from 'stream'
+import { PassThrough } from 'stream'
 
 // 存储活跃的转码进程
 const activeTranscodes = new Map<string, {
@@ -186,7 +187,7 @@ export async function GET(request: NextRequest) {
     })
 
     // 转换为 Web Stream
-    const webStream = Readable.toWeb(outputStream as any) as ReadableStream
+    const webStream = nodeReadableToWebReadable(outputStream as any)
 
     // 确定 Content-Type
     const contentType = format === 'webm' ? 'video/webm' : 'video/mp4'

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getWebDAVClient } from '@/lib/webdav-optimized'
-import { Readable } from 'stream'
+import { nodeReadableToWebReadable } from '@/lib/nodeReadableToWebReadable'
 import { buildFileUrl, normalizeFilePath, type SourceType } from '@/lib/urlBuilder'
 
 export async function POST(request: NextRequest) {
@@ -57,8 +57,8 @@ export async function POST(request: NextRequest) {
       contentType = mimeTypes[ext]
     }
 
-    // 将Node.js stream转换为Web ReadableStream
-    const webStream = Readable.toWeb(stream as any) as ReadableStream
+    // 将 Node.js stream 转换为 Web ReadableStream
+    const webStream = nodeReadableToWebReadable(stream as any)
 
     // 构建完整的文件 URL（用于日志）
     const fullFileUrl = buildFileUrl(url, filepath, sourceType as SourceType)

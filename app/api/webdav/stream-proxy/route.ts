@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { Readable } from 'stream'
 
 import { getWebDAVClient } from '@/lib/webdav-optimized'
+import { nodeReadableToWebReadable } from '@/lib/nodeReadableToWebReadable'
 import { normalizeFilePath, type SourceType } from '@/lib/urlBuilder'
 
 const MIME_TYPES: Record<string, string> = {
@@ -48,7 +48,7 @@ export async function GET(request: NextRequest) {
     const stream = client.createReadStream(normalizedPath)
     const extension = filepath.toLowerCase().split('.').pop() || ''
     const contentType = MIME_TYPES[extension] || 'application/octet-stream'
-    const webStream = Readable.toWeb(stream as any) as ReadableStream
+    const webStream = nodeReadableToWebReadable(stream as any)
 
     return new NextResponse(webStream, {
       headers: {

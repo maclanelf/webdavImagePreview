@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getWebDAVClient } from '@/lib/webdav-optimized'
 import { normalizeFilePath, type SourceType } from '@/lib/urlBuilder'
-import { Readable, PassThrough } from 'stream'
+import { nodeReadableToWebReadable } from '@/lib/nodeReadableToWebReadable'
+import { PassThrough } from 'stream'
 import {
   cleanupStream,
   registerStream,
@@ -48,6 +49,39 @@ export async function GET(request: NextRequest) {
   // ⭐ 关键：为每个请求创建 AbortController
   // 这是唯一能真正取消 webdav 库底层 fetch 请求的方法
   const abortController = new AbortController()
+
+  const createResponsePassThrough = () => {
+    const passThrough = new PassThrough()
+    let finalized = false
+
+    const closePassThrough = () => {
+      if (finalized) {
+        return
+      }
+
+      finalized = true
+      if (!passThrough.destroyed && !passThrough.writableEnded) {
+        passThrough.end()
+      }
+    }
+
+    const failPassThrough = (error?: Error) => {
+      if (finalized) {
+        return
+      }
+
+      finalized = true
+      if (!passThrough.destroyed) {
+        if (error) {
+          passThrough.destroy(error)
+        } else {
+          passThrough.destroy()
+        }
+      }
+    }
+
+    return { passThrough, closePassThrough, failPassThrough }
+  }
   
   // 监听客户端断开连接
   request.signal.addEventListener('abort', () => {
@@ -240,7 +274,7 @@ export async function GET(request: NextRequest) {
         })
         
         // 使用 PassThrough 包装流，以便更好地控制生命周期
-        const passThrough = new PassThrough()
+        const { passThrough, closePassThrough, failPassThrough } = createResponsePassThrough()
         
         // 注册到全局流管理器，包含 AbortController
         registerStream(requestId, sourceStream, filepath, abortController)
@@ -258,14 +292,12 @@ export async function GET(request: NextRequest) {
           if (isExpectedStreamTerminationError(error)) {
             console.log(`ℹ️ [即点即播] Range流按预期结束 (${requestId}): ${error?.message || '已取消'}`)
             unregisterStream(requestId)
-            if (!passThrough.destroyed) {
-              passThrough.end()
-            }
+            closePassThrough()
             return
           }
           console.error(`❌ [即点即播] Range流错误 (${requestId}):`, error.message)
           unregisterStream(requestId)
-          passThrough.destroy(error)
+          failPassThrough(error)
         })
         sourceStream.on('close', () => {
           console.log(`🔒 [即点即播] Range流已关闭 (${requestId})`)
@@ -273,7 +305,10 @@ export async function GET(request: NextRequest) {
         })
         
         // 管道连接
-        sourceStream.pipe(passThrough)
+        sourceStream.pipe(passThrough, { end: false })
+        sourceStream.on('end', () => {
+          closePassThrough()
+        })
         
         // 监听 passThrough 的关闭事件，确保源流也被关闭
         passThrough.on('close', () => {
@@ -281,7 +316,7 @@ export async function GET(request: NextRequest) {
           cleanupStream(requestId, 'PassThrough 关闭')
         })
         
-        const webStream = Readable.toWeb(passThrough as any) as ReadableStream
+        const webStream = nodeReadableToWebReadable(passThrough as any)
         
         return new NextResponse(webStream, {
           status: 206, // Partial Content
@@ -322,7 +357,7 @@ export async function GET(request: NextRequest) {
       })
       
       // 使用 PassThrough 包装流
-      const passThrough = new PassThrough()
+      const { passThrough, closePassThrough, failPassThrough } = createResponsePassThrough()
       
       // 注册到全局流管理器，包含 AbortController
       registerStream(requestId, sourceStream, filepath, abortController)
@@ -340,14 +375,12 @@ export async function GET(request: NextRequest) {
           if (isExpectedStreamTerminationError(error)) {
             console.log(`ℹ️ [即点即播] 完整流按预期结束 (${requestId}): ${error?.message || '已取消'}`)
             unregisterStream(requestId)
-            if (!passThrough.destroyed) {
-              passThrough.end()
-            }
+            closePassThrough()
             return
           }
           console.error(`❌ [即点即播] 完整流错误 (${requestId}):`, error.message)
           unregisterStream(requestId)
-          passThrough.destroy(error)
+          failPassThrough(error)
         })
       sourceStream.on('close', () => {
         console.log(`🔒 [即点即播] 完整流已关闭 (${requestId})`)
@@ -355,7 +388,10 @@ export async function GET(request: NextRequest) {
       })
       
       // 管道连接
-      sourceStream.pipe(passThrough)
+      sourceStream.pipe(passThrough, { end: false })
+      sourceStream.on('end', () => {
+        closePassThrough()
+      })
       
       // 监听 passThrough 的关闭事件
       passThrough.on('close', () => {
@@ -363,7 +399,7 @@ export async function GET(request: NextRequest) {
         cleanupStream(requestId, 'PassThrough 关闭')
       })
       
-      const webStream = Readable.toWeb(passThrough as any) as ReadableStream
+      const webStream = nodeReadableToWebReadable(passThrough as any)
       
       return new NextResponse(webStream, {
         status: 200, // 完整内容
