@@ -56,9 +56,12 @@ function isExpectedStreamLifecycleError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error || '')
   const normalized = message.trim().toLowerCase()
 
-  return /Stream closed: (客户端断开|切换到新视频|新请求替代旧请求|PassThrough 关闭)/.test(message)
+  return name === 'ResponseAborted'
+    || /Stream closed: (客户端断开|切换到新视频|新请求替代旧请求|PassThrough 关闭)/.test(message)
     || normalized.includes('premature close')
     || normalized.includes('client closed')
+    || normalized.includes('failed to pipe response')
+    || normalized.includes('responseaborted')
     || normalized.includes('invalid state: controller is already closed')
     || (
       name === 'AbortError'

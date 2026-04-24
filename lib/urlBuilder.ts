@@ -6,19 +6,27 @@
 export type SourceType = 'clouddrive2' | 'openlist'
 
 /**
- * 对路径进行编码（仅编码路径部分，不编码斜杠）
- * OpenList 特殊处理：将文件名中的全角斜杠替换为竖线
+ * 对路径进行编码（仅编码路径部分，不编码路径分隔符斜杠）
+ *
+ * 注意：
+ * - CloudDrive2 需要保留文件名中的全角斜杠 `／` 原样，仅做 URL 编码。
+ * - OpenList 不允许文件名中包含全角斜杠，需要先替换为竖线 `|`，再编码。
  */
-function encodePathSegments(filepath: string): string {
+function encodePathSegments(
+  filepath: string,
+  options: {
+    replaceFullWidthSlash?: boolean
+  } = {}
+): string {
+  const { replaceFullWidthSlash = false } = options
+
   // 将路径按斜杠分割，对每个部分进行处理，然后重新组合
   return filepath
     .split('/')
     .map(segment => {
-      // OpenList 特殊处理：将全角斜杠 ／ 替换为竖线 |
-      // 这是因为 OpenList 不允许文件名中包含斜杠
-      const normalizedSegment = segment
-        .replace(/／/g, '|')  // 全角斜杠 → 竖线
-        .replace(/\//g, '|')  // 半角斜杠 → 竖线（以防万一）
+      const normalizedSegment = replaceFullWidthSlash
+        ? segment.replace(/／/g, '|')
+        : segment
       
       // 对处理后的段进行 URL 编码
       return encodeURIComponent(normalizedSegment)
@@ -89,10 +97,11 @@ export function buildFileUrl(
   
   switch (sourceType) {
     case 'clouddrive2':
-      // CloudDrive2: http://host:port/dav + filepath (不编码)
-      // 例如: http://192.168.133.131:19798/dav/115open/115/folder/文件.jpg
-      // CloudDrive2 保留文件名中的全角斜杠 ／
-      return normalizedBaseUrl + normalizedFilepath
+      // CloudDrive2:
+      // 1. 保留完整路径（包含虚拟挂载前缀）
+      // 2. 保留文件名中的全角斜杠 `／` 原义
+      // 3. 对每个路径段分别编码，避免 `#`、空格、`[`、`]` 等特殊字符被服务器误解析
+      return normalizedBaseUrl + encodePathSegments(normalizedFilepath)
       
     case 'openlist':
       // OpenList: 
@@ -108,7 +117,7 @@ export function buildFileUrl(
       const realPath = '/' + realPathSegments.join('/')
       
       // 对路径进行编码（保留路径分隔符斜杠，替换文件名中的斜杠为竖线）
-      const encodedPath = encodePathSegments(realPath)
+      const encodedPath = encodePathSegments(realPath, { replaceFullWidthSlash: true })
       return urlWithoutDav + encodedPath
       
     default:
@@ -203,11 +212,7 @@ export function buildBrowserUrl(
       const urlWithoutDav = normalizedBaseUrl.replace(/\/dav$/, '')
       
       // 对路径进行编码
-      const encodedPath = normalizedFilepath
-        .split('/')
-        .map(segment => segment.replace(/／/g, '|'))
-        .map(segment => encodeURIComponent(segment))
-        .join('/')
+      const encodedPath = encodePathSegments(normalizedFilepath, { replaceFullWidthSlash: true })
       
       return urlWithoutDav + encodedPath
       
