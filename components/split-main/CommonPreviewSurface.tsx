@@ -37,6 +37,10 @@ export default function CommonPreviewSurface({
   footerContent,
   forceRender = false,
 }: CommonPreviewSurfaceProps) {
+  const fullscreenTouchAction = fullscreen
+    ? (mediaType === 'image' ? 'pinch-zoom' : 'none')
+    : 'auto'
+
   const shouldReservePreviewSpace =
     !fullscreen &&
     Boolean(currentFile) &&
@@ -77,7 +81,7 @@ export default function CommonPreviewSurface({
           borderRadius: fullscreen ? 0 : 2,
           overflow: 'hidden',
           backgroundColor: fullscreen ? '#000' : 'transparent',
-          touchAction: fullscreen ? 'none' : 'auto',
+          touchAction: fullscreenTouchAction,
           overscrollBehavior: fullscreen ? 'none' : 'auto',
           ...(fullscreen && {
             position: 'absolute',
@@ -103,7 +107,7 @@ export default function CommonPreviewSurface({
                 : 'transparent',
             borderRadius: fullscreen ? 0 : 2,
             overflow: 'hidden',
-            touchAction: fullscreen ? 'none' : 'auto',
+            touchAction: fullscreenTouchAction,
             overscrollBehavior: fullscreen ? 'none' : 'auto',
             minHeight:
               reservedPreviewMinHeight,

@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, type MutableRefObject } from 'react'
+import { useCallback, useRef, type MutableRefObject } from 'react'
 
 import databasePreloadManager from '@/lib/databasePreloadManager'
 import { QUICK_RATING_CONFIG } from '@/types'
@@ -70,6 +70,15 @@ export function useSharedRatingActions({
   hasAutoRatedRef,
   notify,
 }: UseSharedRatingActionsOptions) {
+  /**
+   * 标记当前文件是否处于“只允许浏览，不允许自动补 2 星”的状态。
+   *
+   * 典型场景是随机模式历史回看：
+   * - 需要继续允许用户播放/查看历史文件
+   * - 但不能再因为播放结束或 80% 阈值命中而重新触发自动评分
+   */
+  const autoRatingSuppressedFileRef = useRef<string | null>(null)
+
   const stopAutoMarkTimer = useCallback(() => {
     if (autoMarkTimer) {
       clearTimeout(autoMarkTimer)
@@ -247,6 +256,10 @@ export function useSharedRatingActions({
       return
     }
 
+    if (autoRatingSuppressedFileRef.current === targetFile.filename) {
+      return
+    }
+
     hasAutoRatedRef.current = true
 
     try {
@@ -296,8 +309,11 @@ export function useSharedRatingActions({
     hasAutoRatedRef.current = false
 
     if (skipAutoRating) {
+      autoRatingSuppressedFileRef.current = targetFile.filename
       return
     }
+
+    autoRatingSuppressedFileRef.current = null
 
     const timeoutDuration = isImageFile(targetFile.filename) ? 100 : 180000
     const timer = setTimeout(() => {
