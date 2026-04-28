@@ -49,6 +49,43 @@ import { QUICK_RATING_CONFIG } from '@/types'
 /** 每页显示的媒体数量 */
 const PAGE_SIZE = 10
 
+type CreatorSummaryCounts = {
+  mediaTotal: number
+  viewedTotal: number
+  unviewedTotal: number
+  groupTotal: number
+}
+
+function mergeUniqueById(list: CreatorMediaCard[]) {
+  const map = new Map<string, CreatorMediaCard>()
+  list.forEach((item) => {
+    map.set(item.id, item)
+  })
+  return Array.from(map.values())
+}
+
+function isSameMediaIdList(a: CreatorMediaCard[], b: CreatorMediaCard[]) {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i]?.id !== b[i]?.id) return false
+  }
+  return true
+}
+
+function buildOrderedGroupItems(list: CreatorMediaCard[], activeItemId?: string | null) {
+  if (!activeItemId) return list
+  const initialIndex = list.findIndex((item) => item.id === activeItemId)
+  if (initialIndex <= 0) return list
+  return [...list.slice(initialIndex), ...list.slice(0, initialIndex)]
+}
+
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+  return fallback
+}
+
 /** 博主详情标签页类型 */
 type CreatorDetailTab = 'viewed' | 'unviewed' | 'groups'
 /** 媒体类型过滤器 */
@@ -69,13 +106,13 @@ interface CreatorDetailDrawerProps {
   /** 博主信息 */
   creator: CreatorSummary | null
   /** 博主的媒体列表 */
-  media: CreatorMediaCard[]
+  media?: CreatorMediaCard[]
   /** 博主的图组列表 */
-  groups: CreatorGroupCard[]
+  groups?: CreatorGroupCard[]
   /** 可用的标签列表（用于筛选） */
-  availableTags: string[]
+  availableTags?: string[]
   /** 是否正在加载 */
-  loading: boolean
+  loading?: boolean
   /** 关闭抽屉的回调 */
   onClose: () => void
   /** 预览媒体的回调 */
@@ -98,6 +135,8 @@ interface CreatorDetailDrawerProps {
   onPreviewNext: () => void
   /** 预览列表变化的回调 */
   onPreviewListChange: (list: CreatorMediaCard[]) => void
+  /** 错误提示回调 */
+  onError?: (message: string) => void
 }
 
 /**
@@ -166,31 +205,58 @@ export default function CreatorDetailDrawer({
   onPreviewPrev,
   onPreviewNext,
   onPreviewListChange,
+  onError,
 }: CreatorDetailDrawerProps) {
+  const normalizedLoading = Boolean(loading)
   /** 本地博主信息状态 */
   const [localCreator, setLocalCreator] = useState<CreatorSummary | null>(creator)
+  const creatorId = creator?.id || localCreator?.id || null
   /** 本地媒体列表状态 */
-  const [localMedia, setLocalMedia] = useState<CreatorMediaCard[]>(media)
+  const [localMedia, setLocalMedia] = useState<CreatorMediaCard[]>(media || [])
+  /** 本地图组列表状态 */
+  const [localGroups, setLocalGroups] = useState<CreatorGroupCard[]>(groups || [])
+  /** 本地可用标签 */
+  const [localAvailableTags, setLocalAvailableTags] = useState<string[]>(availableTags || [])
+  /** 统计信息（用于展示全部计数） */
+  const [summaryCounts, setSummaryCounts] = useState<CreatorSummaryCounts>({ mediaTotal: 0, viewedTotal: 0, unviewedTotal: 0, groupTotal: 0 })
+  /** 各标签页当前页 */
+  const [tabPages, setTabPages] = useState({ viewed: 1, unviewed: 0, groups: 0 })
+  /** 各标签页是否还有下一页 */
+  const [tabHasMore, setTabHasMore] = useState({ viewed: false, unviewed: false, groups: false })
+  /** 各标签页是否已初始化 */
+  const [tabInitialized, setTabInitialized] = useState({ viewed: false, unviewed: false, groups: false })
+  /** 首屏引导加载状态 */
+  const [bootstrapLoading, setBootstrapLoading] = useState(false)
+  /** 首屏加载错误 */
+  const [loadError, setLoadError] = useState<string | null>(null)
+  /** 首屏重试键 */
+  const [bootstrapRetryKey, setBootstrapRetryKey] = useState(0)
+  /** 正在加载更多的标签页 */
+  const [loadingMoreTab, setLoadingMoreTab] = useState<CreatorDetailTab | null>(null)
+  /** 图组媒体缓存 */
+  const [groupMediaMap, setGroupMediaMap] = useState<Record<string, { items: CreatorMediaCard[]; page: number; hasMore: boolean; loading: boolean }>>({})
   /** 当前选中的标签页 */
   const [tab, setTab] = useState<CreatorDetailTab>('viewed')
-  /** 选中的评分筛选条件 */
+  /** 已看 Tab 草稿评分筛选条件 */
   const [selectedRatings, setSelectedRatings] = useState<number[]>([])
-  /** 选中的标签筛选条件 */
+  /** 已看 Tab 草稿标签筛选条件 */
   const [selectedTags, setSelectedTags] = useState<string[]>([])
-  /** 媒体类型筛选条件 */
+  /** 已看 Tab 草稿媒体类型筛选条件 */
+  const [viewedDraftMediaTypeFilter, setViewedDraftMediaTypeFilter] = useState<CreatorDetailMediaTypeFilter>('all')
+  /** 已看 Tab 已应用评分筛选条件 */
+  const [appliedViewedRatings, setAppliedViewedRatings] = useState<number[]>([])
+  /** 已看 Tab 已应用标签筛选条件 */
+  const [appliedViewedTags, setAppliedViewedTags] = useState<string[]>([])
+  /** 已看 Tab 已应用媒体类型筛选条件 */
+  const [appliedViewedMediaTypeFilter, setAppliedViewedMediaTypeFilter] = useState<CreatorDetailMediaTypeFilter>('all')
+  /** 未看 Tab 媒体类型筛选条件 */
   const [mediaTypeFilter, setMediaTypeFilter] = useState<CreatorDetailMediaTypeFilter>('all')
   /** 头像预览对话框是否打开 */
   const [avatarPreviewOpen, setAvatarPreviewOpen] = useState(false)
   /** 加载失败的图片记录 */
   const [failedImages, setFailedImages] = useState<Record<string, boolean>>({})
-  /** 已看过标签页的可见数量 */
-  const [visibleViewedCount, setVisibleViewedCount] = useState(PAGE_SIZE)
-  /** 未看过标签页的可见数量 */
-  const [visibleUnviewedCount, setVisibleUnviewedCount] = useState(PAGE_SIZE)
-  /** 图组标签页的可见数量 */
-  const [visibleGroupCount, setVisibleGroupCount] = useState(PAGE_SIZE)
   /** 是否正在加载更多 */
-  const [loadingMore, setLoadingMore] = useState(false)
+  const [loadingTab, setLoadingTab] = useState<Record<CreatorDetailTab, boolean>>({ viewed: false, unviewed: false, groups: false })
   /** 预览播放模式 */
   const [previewPlayMode, setPreviewPlayMode] = useState<CreatorPreviewPlayMode>('webdav')
   /** 当前预览模式对应的文件路径，用于避免首帧使用旧播放模式 */
@@ -225,11 +291,187 @@ export default function CreatorDetailDrawer({
   const previewInstantVideoRef = useRef<InstantVideoPlayerRef | null>(null)
   /** 预览是否已自动评分的标记 */
   const previewAutoRatedRef = useRef(false)
+  const previousLocalMediaRef = useRef<CreatorMediaCard[]>([])
+  const activeRequestIdRef = useRef(0)
+  const tabRequestIdRef = useRef<Record<CreatorDetailTab, number>>({ viewed: 0, unviewed: 0, groups: 0 })
+  const groupMediaRequestIdRef = useRef<Record<string, number>>({})
+  const groupMediaLoadingRef = useRef<Record<string, boolean>>({})
+  const viewedFilterKeyRef = useRef('')
+  const unviewedFilterKeyRef = useRef('')
+
+  const fetchBootstrapData = useCallback(async (creatorId: number, requestId: number) => {
+    const response = await fetch(`/api/creators/${creatorId}/media?mode=bootstrap&pageSize=${PAGE_SIZE}`)
+    const data = await response.json()
+    if (!response.ok || !data.success) {
+      throw new Error(data.error || '加载博主详情失败')
+    }
+
+    if (activeRequestIdRef.current !== requestId) {
+      return false
+    }
+
+    const payload = data.data || {}
+    const creatorData = payload.creator || null
+    const summary = payload.summary || {}
+    const initialViewed = payload.initialViewed || {}
+    const pagination = initialViewed.pagination || {}
+
+    setLocalCreator(creatorData)
+    setSummaryCounts({
+      mediaTotal: summary.mediaTotal || 0,
+      viewedTotal: summary.viewedTotal || 0,
+      unviewedTotal: summary.unviewedTotal || 0,
+      groupTotal: summary.groupTotal || 0,
+    })
+    setLocalAvailableTags(payload.filters?.availableTags || [])
+
+    const viewedItems = initialViewed.items || []
+    setLocalMedia(viewedItems)
+    setLocalGroups([])
+    setGroupMediaMap({})
+
+    setTabPages({ viewed: pagination.page || 1, unviewed: 0, groups: 0 })
+    setTabHasMore({
+      viewed: Boolean(pagination.hasMore),
+      unviewed: (summary.unviewedTotal || 0) > 0,
+      groups: (summary.groupTotal || 0) > 0,
+    })
+    setTabInitialized({ viewed: true, unviewed: false, groups: false })
+
+    return true
+  }, [])
+
+  const fetchTabPage = useCallback(async (
+    creatorId: number,
+    targetTab: CreatorDetailTab,
+    page: number,
+    options: {
+      reset?: boolean
+      mediaType?: CreatorDetailMediaTypeFilter
+      ratings?: number[]
+      tags?: string[]
+      requestId: number
+      sessionId: number
+    },
+  ) => {
+    if (targetTab === 'groups') {
+      const search = new URLSearchParams({ mode: 'tab', tab: 'groups', page: String(page), pageSize: String(PAGE_SIZE) })
+      const response = await fetch(`/api/creators/${creatorId}/media?${search.toString()}`)
+      const data = await response.json()
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || '加载图组失败')
+      }
+
+      if (activeRequestIdRef.current !== options.sessionId || tabRequestIdRef.current[targetTab] !== options.requestId) {
+        return false
+      }
+
+      const items = data.data?.items || []
+      const pagination = data.data?.pagination || {}
+      setLocalGroups((prev) => {
+        if (options?.reset) {
+          const map = new Map<string, CreatorGroupCard>()
+          items.forEach((item: CreatorGroupCard) => map.set(item.id, item))
+          return Array.from(map.values())
+        }
+        const map = new Map<string, CreatorGroupCard>()
+        prev.forEach((item) => map.set(item.id, item))
+        items.forEach((item: CreatorGroupCard) => map.set(item.id, item))
+        return Array.from(map.values())
+      })
+      setTabPages((prev) => ({ ...prev, groups: pagination.page || page }))
+      setTabHasMore((prev) => ({ ...prev, groups: Boolean(pagination.hasMore) }))
+      setTabInitialized((prev) => ({ ...prev, groups: true }))
+      return true
+    }
+
+    const search = new URLSearchParams({ mode: 'tab', tab: targetTab, page: String(page), pageSize: String(PAGE_SIZE) })
+    const mediaType = options?.mediaType || 'all'
+    if (mediaType !== 'all') {
+      search.set('mediaType', mediaType)
+    }
+    if (targetTab === 'viewed') {
+      if (options?.ratings?.length) {
+        search.set('ratings', options.ratings.join(','))
+      }
+      if (options?.tags?.length) {
+        search.set('tags', options.tags.join(','))
+      }
+    }
+
+    const response = await fetch(`/api/creators/${creatorId}/media?${search.toString()}`)
+    const data = await response.json()
+    if (!response.ok || !data.success) {
+      throw new Error(data.error || '加载媒体失败')
+    }
+
+    if (activeRequestIdRef.current !== options.sessionId || tabRequestIdRef.current[targetTab] !== options.requestId) {
+      return false
+    }
+
+    const items = (data.data?.items || []) as CreatorMediaCard[]
+    const pagination = data.data?.pagination || {}
+    setLocalMedia((prev) => {
+      const kept = options?.reset
+        ? prev.filter((item) => item.isViewed !== (targetTab === 'viewed'))
+        : prev
+      return mergeUniqueById([...kept, ...items])
+    })
+
+    setTabPages((prev) => ({ ...prev, [targetTab]: pagination.page || page }))
+    setTabHasMore((prev) => ({ ...prev, [targetTab]: Boolean(pagination.hasMore) }))
+    setTabInitialized((prev) => ({ ...prev, [targetTab]: true }))
+
+    return true
+  }, [])
+
+  const fetchGroupMediaPage = useCallback(async (
+    creatorId: number,
+    groupPath: string,
+    page: number,
+    reset: boolean,
+    requestId: number,
+    sessionId: number,
+  ) => {
+    const search = new URLSearchParams({ mode: 'group-media', groupPath, page: String(page), pageSize: String(PAGE_SIZE) })
+    const response = await fetch(`/api/creators/${creatorId}/media?${search.toString()}`)
+    const data = await response.json()
+    if (!response.ok || !data.success) {
+      groupMediaLoadingRef.current[groupPath] = false
+      throw new Error(data.error || '加载图组媒体失败')
+    }
+
+    if (activeRequestIdRef.current !== sessionId || groupMediaRequestIdRef.current[groupPath] !== requestId) {
+      return null
+    }
+
+    const items = (data.data?.items || []) as CreatorMediaCard[]
+    const pagination = data.data?.pagination || {}
+    groupMediaLoadingRef.current[groupPath] = false
+    setGroupMediaMap((prev) => {
+      const current = prev[groupPath] || { items: [], page: 0, hasMore: true, loading: false }
+      return {
+        ...prev,
+        [groupPath]: {
+          items: reset ? items : mergeUniqueById([...current.items, ...items]),
+          page: pagination.page || page,
+          hasMore: Boolean(pagination.hasMore),
+          loading: false,
+        },
+      }
+    })
+    setLocalMedia((prev) => mergeUniqueById([...prev, ...items]))
+    return {
+      items,
+      page: pagination.page || page,
+      hasMore: Boolean(pagination.hasMore),
+    }
+  }, [])
 
   /** 博主编辑时使用的文件路径（用于关联博主） */
   const creatorEditFilePath = previewMedia?.filePath
     || localMedia[0]?.filePath
-    || (groups[0]?.groupPath ? `${groups[0].groupPath}/` : '')
+    || (localGroups[0]?.groupPath ? `${localGroups[0].groupPath}/` : '')
 
   /**
    * 预览源列表
@@ -248,8 +490,34 @@ export default function CreatorDetailDrawer({
    */
   useEffect(() => {
     setLocalCreator(creator)
-    setLocalMedia(media)
-  }, [creator, media])
+  }, [creator])
+
+  useEffect(() => {
+    const previousMedia = previousLocalMediaRef.current
+    if (previousMedia.length === 0) {
+      previousLocalMediaRef.current = localMedia
+      return
+    }
+
+    const previousViewedMap = new Map(previousMedia.map((item) => [item.filePath, item.isViewed]))
+    let viewedDelta = 0
+
+    localMedia.forEach((item) => {
+      const previousViewed = previousViewedMap.get(item.filePath)
+      if (typeof previousViewed !== 'boolean' || previousViewed === item.isViewed) return
+      viewedDelta += item.isViewed ? 1 : -1
+    })
+
+    if (viewedDelta !== 0) {
+      setSummaryCounts((counts) => ({
+        ...counts,
+        viewedTotal: Math.max(0, counts.viewedTotal + viewedDelta),
+        unviewedTotal: Math.max(0, counts.unviewedTotal - viewedDelta),
+      }))
+    }
+
+    previousLocalMediaRef.current = localMedia
+  }, [localMedia])
 
   useEffect(() => {
     const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent.toLowerCase() : ''
@@ -262,15 +530,104 @@ export default function CreatorDetailDrawer({
   useEffect(() => {
     if (!open) return
     setTab('viewed')
+    setLoadError(null)
     setSelectedRatings([])
     setSelectedTags([])
+    setViewedDraftMediaTypeFilter('all')
+    setAppliedViewedRatings([])
+    setAppliedViewedTags([])
+    setAppliedViewedMediaTypeFilter('all')
     setMediaTypeFilter('all')
     setViewedFiltersExpanded(false)
-    setVisibleViewedCount(PAGE_SIZE)
-    setVisibleUnviewedCount(PAGE_SIZE)
-    setVisibleGroupCount(PAGE_SIZE)
-    setLoadingMore(false)
+    viewedFilterKeyRef.current = JSON.stringify({ mediaType: 'all', ratings: [], tags: [] })
+    unviewedFilterKeyRef.current = JSON.stringify({ mediaType: 'all' })
   }, [open, creator?.id])
+
+  /**
+   * 打开详情时仅拉基础信息 + 已看首屏
+   */
+  useEffect(() => {
+    if (!open || !creator?.id) return
+
+    const requestId = ++activeRequestIdRef.current
+    tabRequestIdRef.current = { viewed: 0, unviewed: 0, groups: 0 }
+    groupMediaRequestIdRef.current = {}
+    setBootstrapLoading(true)
+    setLoadError(null)
+    setLoadingTab({ viewed: false, unviewed: false, groups: false })
+    setLoadingMoreTab(null)
+
+    setSummaryCounts({ mediaTotal: 0, viewedTotal: 0, unviewedTotal: 0, groupTotal: 0 })
+    setLocalCreator(creator)
+    setLocalMedia([])
+    setLocalGroups([])
+    setLocalAvailableTags([])
+    setGroupMediaMap({})
+    setTabPages({ viewed: 0, unviewed: 0, groups: 0 })
+    setTabHasMore({ viewed: false, unviewed: false, groups: false })
+    setTabInitialized({ viewed: false, unviewed: false, groups: false })
+
+    ;(async () => {
+      try {
+        await fetchBootstrapData(creator.id, requestId)
+      } catch (error) {
+        const message = getErrorMessage(error, '加载博主详情失败')
+        console.error('[CreatorDetailDrawer] 首屏加载失败:', error)
+        if (activeRequestIdRef.current === requestId) {
+          setLoadError(message)
+        }
+        onError?.(message)
+      } finally {
+        if (activeRequestIdRef.current === requestId) {
+          setBootstrapLoading(false)
+        }
+      }
+    })()
+  }, [bootstrapRetryKey, creator, fetchBootstrapData, onError, open])
+
+  /**
+   * 标签页懒加载：未初始化时按页拉取
+   */
+  useEffect(() => {
+    if (!open || !creatorId) return
+    if (bootstrapLoading) return
+    if (loadError) return
+    if (tabInitialized[tab]) return
+    if (loadingTab[tab]) return
+
+    const targetTab = tab
+    const sessionId = activeRequestIdRef.current
+    const requestId = tabRequestIdRef.current[targetTab] + 1
+    tabRequestIdRef.current[targetTab] = requestId
+
+    setLoadingTab((prev) => ({ ...prev, [targetTab]: true }))
+    setLoadingMoreTab(targetTab)
+    ;(async () => {
+      try {
+        if (targetTab === 'groups') {
+          await fetchTabPage(creatorId, 'groups', 1, { reset: true, requestId, sessionId })
+          return
+        }
+
+        await fetchTabPage(creatorId, targetTab, 1, {
+          reset: true,
+          mediaType: targetTab === 'viewed' ? appliedViewedMediaTypeFilter : mediaTypeFilter,
+          ratings: targetTab === 'viewed' ? appliedViewedRatings : [],
+          tags: targetTab === 'viewed' ? appliedViewedTags : [],
+          requestId,
+          sessionId,
+        })
+      } catch (error) {
+        console.error(`[CreatorDetailDrawer] 加载 ${targetTab} 标签页失败:`, error)
+        onError?.(getErrorMessage(error, `加载${targetTab === 'groups' ? '图组' : '媒体'}失败`))
+      } finally {
+        if (activeRequestIdRef.current === sessionId && tabRequestIdRef.current[targetTab] === requestId) {
+          setLoadingTab((prev) => ({ ...prev, [targetTab]: false }))
+          setLoadingMoreTab((prev) => (prev === targetTab ? null : prev))
+        }
+      }
+    })()
+  }, [appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, bootstrapLoading, creatorId, fetchTabPage, loadError, loadingTab, mediaTypeFilter, onError, open, tab, tabInitialized])
 
   /**
    * 筛选条件或标签页变化时，滚动到顶部
@@ -279,7 +636,7 @@ export default function CreatorDetailDrawer({
     if (listContainerRef.current) {
       listContainerRef.current.scrollTo({ top: 0, behavior: 'auto' })
     }
-  }, [tab, selectedRatings, selectedTags, mediaTypeFilter, creator?.id])
+  }, [appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, mediaTypeFilter, tab, creator?.id])
 
   /**
    * 预览媒体变化时重置预览相关状态
@@ -630,17 +987,17 @@ export default function CreatorDetailDrawer({
    * 根据媒体类型、评分、标签进行筛选
    */
   const filteredViewedMedia = useMemo(() => viewedMedia.filter((item) => {
-    if (mediaTypeFilter === 'image' && item.fileType !== 'image') return false
-    if (mediaTypeFilter === 'video' && item.fileType !== 'video') return false
-    if (mediaTypeFilter === 'small-video' && item.mediaType !== 'small-video') return false
-    if (mediaTypeFilter === 'large-video' && item.mediaType !== 'stream-video') return false
-    if (selectedRatings.length > 0 && (!item.rating || !selectedRatings.includes(item.rating))) return false
-    if (selectedTags.length > 0) {
+    if (appliedViewedMediaTypeFilter === 'image' && item.fileType !== 'image') return false
+    if (appliedViewedMediaTypeFilter === 'video' && item.fileType !== 'video') return false
+    if (appliedViewedMediaTypeFilter === 'small-video' && item.mediaType !== 'small-video') return false
+    if (appliedViewedMediaTypeFilter === 'large-video' && item.mediaType !== 'stream-video') return false
+    if (appliedViewedRatings.length > 0 && (!item.rating || !appliedViewedRatings.includes(item.rating))) return false
+    if (appliedViewedTags.length > 0) {
       const tags = [...(item.customEvaluation || []), ...(item.category || [])]
-      if (!selectedTags.every((tag) => tags.includes(tag))) return false
+      if (!appliedViewedTags.every((tag) => tags.includes(tag))) return false
     }
     return true
-  }), [mediaTypeFilter, selectedRatings, selectedTags, viewedMedia])
+  }), [appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, viewedMedia])
 
   /**
    * 未看过媒体的筛选结果
@@ -654,13 +1011,151 @@ export default function CreatorDetailDrawer({
     return true
   }), [mediaTypeFilter, unviewedMedia])
 
-  const cardList = tab === 'viewed' ? filteredViewedMedia : filteredUnviewedMedia
-  const visibleGroups = useMemo(() => groups.slice(0, visibleGroupCount), [groups, visibleGroupCount])
-  const visibleCardList = useMemo(() => {
-    if (tab === 'viewed') return filteredViewedMedia.slice(0, visibleViewedCount)
-    if (tab === 'unviewed') return filteredUnviewedMedia.slice(0, visibleUnviewedCount)
+  const currentMediaList = useMemo(() => {
+    if (tab === 'viewed') return filteredViewedMedia
+    if (tab === 'unviewed') return filteredUnviewedMedia
     return []
-  }, [filteredUnviewedMedia, filteredViewedMedia, tab, visibleUnviewedCount, visibleViewedCount])
+  }, [filteredUnviewedMedia, filteredViewedMedia, tab])
+
+  const visibleGroups = useMemo(() => localGroups, [localGroups])
+  const visibleCardList = useMemo(() => currentMediaList, [currentMediaList])
+
+  const viewedFilterKey = useMemo(
+    () => JSON.stringify({ mediaType: appliedViewedMediaTypeFilter, ratings: appliedViewedRatings, tags: appliedViewedTags }),
+    [appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags],
+  )
+
+  const unviewedFilterKey = useMemo(
+    () => JSON.stringify({ mediaType: mediaTypeFilter }),
+    [mediaTypeFilter],
+  )
+
+  const activePreviewList = useMemo(() => {
+    if (tab === 'groups') return []
+    return currentMediaList
+  }, [currentMediaList, tab])
+
+  const hasPendingViewedFilterChanges = useMemo(() => {
+    return viewedDraftMediaTypeFilter !== appliedViewedMediaTypeFilter
+      || JSON.stringify(selectedRatings) !== JSON.stringify(appliedViewedRatings)
+      || JSON.stringify(selectedTags) !== JSON.stringify(appliedViewedTags)
+  }, [appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, selectedRatings, selectedTags, viewedDraftMediaTypeFilter])
+
+  const displayedMediaTypeFilter = tab === 'viewed' ? viewedDraftMediaTypeFilter : mediaTypeFilter
+
+  const syncPreviewList = useCallback((list: CreatorMediaCard[]) => {
+    if (!previewOpen || tab === 'groups' || list.length === 0) return
+    if (previewList.length === 0) {
+      onPreviewListChange(list)
+      return
+    }
+
+    const previewIdSet = new Set(previewList.map((item) => item.id))
+    const appendedItems = list.filter((item) => !previewIdSet.has(item.id))
+    if (appendedItems.length === 0) return
+
+    onPreviewListChange([...previewList, ...appendedItems])
+  }, [onPreviewListChange, previewList, previewOpen, tab])
+
+  useEffect(() => {
+    syncPreviewList(activePreviewList)
+  }, [activePreviewList, syncPreviewList])
+
+  useEffect(() => {
+    if (!previewOpen || tab !== 'groups') return
+    if (previewList.length > 1) return
+
+    const currentGroupPath = previewMedia?.groupPath
+    if (!currentGroupPath) return
+
+    const groupState = groupMediaMap[currentGroupPath]
+    if (!groupState?.items?.length) return
+
+    const hydratedList = buildOrderedGroupItems(groupState.items, previewMedia?.id)
+    if (hydratedList.length === 0 || isSameMediaIdList(previewList, hydratedList)) return
+
+    onPreviewListChange(hydratedList)
+  }, [groupMediaMap, onPreviewListChange, previewList, previewMedia?.groupPath, previewMedia?.id, previewOpen, tab])
+
+  useEffect(() => {
+    if (!open || !creatorId || bootstrapLoading) return
+    if (loadError) return
+    if (tab !== 'viewed') return
+    if (!tabInitialized.viewed) return
+    if (viewedFilterKeyRef.current === viewedFilterKey) return
+
+    const sessionId = activeRequestIdRef.current
+    const requestId = tabRequestIdRef.current.viewed + 1
+    tabRequestIdRef.current.viewed = requestId
+
+    viewedFilterKeyRef.current = viewedFilterKey
+    setLoadingTab((prev) => ({ ...prev, viewed: true }))
+    setLoadingMoreTab('viewed')
+    setTabInitialized((prev) => ({ ...prev, viewed: false }))
+    setTabPages((prev) => ({ ...prev, viewed: 0 }))
+    setTabHasMore((prev) => ({ ...prev, viewed: summaryCounts.viewedTotal > 0 }))
+
+    ;(async () => {
+      try {
+        await fetchTabPage(creatorId, 'viewed', 1, {
+          reset: true,
+          mediaType: appliedViewedMediaTypeFilter,
+          ratings: appliedViewedRatings,
+          tags: appliedViewedTags,
+          requestId,
+          sessionId,
+        })
+      } catch (error) {
+        console.error('[CreatorDetailDrawer] 重置已看分页失败:', error)
+        onError?.(getErrorMessage(error, '重置已看分页失败'))
+      } finally {
+        if (activeRequestIdRef.current === sessionId && tabRequestIdRef.current.viewed === requestId) {
+          setLoadingTab((prev) => ({ ...prev, viewed: false }))
+          setLoadingMoreTab((prev) => (prev === 'viewed' ? null : prev))
+        }
+      }
+    })()
+  }, [appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, bootstrapLoading, creatorId, fetchTabPage, loadError, onError, open, summaryCounts.viewedTotal, tab, tabInitialized.viewed, viewedFilterKey])
+
+  useEffect(() => {
+    if (!open || !creatorId || bootstrapLoading) return
+    if (loadError) return
+    if (tab !== 'unviewed') return
+    if (!tabInitialized.unviewed) return
+    if (unviewedFilterKeyRef.current === unviewedFilterKey) return
+
+    const sessionId = activeRequestIdRef.current
+    const requestId = tabRequestIdRef.current.unviewed + 1
+    tabRequestIdRef.current.unviewed = requestId
+
+    unviewedFilterKeyRef.current = unviewedFilterKey
+    setLoadingTab((prev) => ({ ...prev, unviewed: true }))
+    setLoadingMoreTab('unviewed')
+    setTabInitialized((prev) => ({ ...prev, unviewed: false }))
+    setTabPages((prev) => ({ ...prev, unviewed: 0 }))
+    setTabHasMore((prev) => ({ ...prev, unviewed: summaryCounts.unviewedTotal > 0 }))
+
+    ;(async () => {
+      try {
+        await fetchTabPage(creatorId, 'unviewed', 1, {
+          reset: true,
+          mediaType: mediaTypeFilter,
+          ratings: [],
+          tags: [],
+          requestId,
+          sessionId,
+        })
+      } catch (error) {
+        console.error('[CreatorDetailDrawer] 重置未看分页失败:', error)
+        onError?.(getErrorMessage(error, '重置未看分页失败'))
+      } finally {
+        if (activeRequestIdRef.current === sessionId && tabRequestIdRef.current.unviewed === requestId) {
+          setLoadingTab((prev) => ({ ...prev, unviewed: false }))
+          setLoadingMoreTab((prev) => (prev === 'unviewed' ? null : prev))
+        }
+      }
+    })()
+  }, [bootstrapLoading, creatorId, fetchTabPage, loadError, mediaTypeFilter, onError, open, summaryCounts.unviewedTotal, tab, tabInitialized.unviewed, unviewedFilterKey])
 
   const requestPreviewWarmUp = useCallback((item?: { fileType?: string; mediaType?: string | null }) => {
     if (!item) return
@@ -709,58 +1204,206 @@ export default function CreatorDetailDrawer({
   }, [onPreviewMedia, requestPreviewWarmUp])
 
   const handleOpenGroupPreview = useCallback((group: CreatorGroupCard) => {
-    const groupItems = localMedia.filter((item) => item.groupPath === group.groupPath)
-    if (groupItems.length === 0) return
+    if (!creatorId) return
 
-    const initialItem = group.coverFilePath
-      ? groupItems.find((item) => item.filePath === group.coverFilePath) || groupItems[0]
-      : groupItems[0]
+    const groupState = groupMediaMap[group.groupPath]
+    const initialItemId = group.previewSeed?.id || group.coverFilePath || null
+    const cachedItems = groupState?.items || []
 
-    const initialIndex = groupItems.findIndex((item) => item.id === initialItem.id)
-    const orderedGroupItems = initialIndex > 0
-      ? [...groupItems.slice(initialIndex), ...groupItems.slice(0, initialIndex)]
-      : groupItems
-
-    openPreviewWithWarmUp(orderedGroupItems[0], orderedGroupItems)
-  }, [localMedia, openPreviewWithWarmUp])
-
-  const handlePrimeGroupPreview = useCallback((group: CreatorGroupCard) => {
-    const groupItems = localMedia.filter((item) => item.groupPath === group.groupPath)
-    if (groupItems.length === 0) return
-
-    const initialItem = group.coverFilePath
-      ? groupItems.find((item) => item.filePath === group.coverFilePath) || groupItems[0]
-      : groupItems[0]
-
-    requestPreviewWarmUp(initialItem)
-  }, [localMedia, requestPreviewWarmUp])
-
-  const loadMorePreviewItems = useCallback(() => {
-    if (tab === 'groups') return
-
-    if (tab === 'viewed') {
-      const nextCount = Math.min(visibleViewedCount + PAGE_SIZE, filteredViewedMedia.length)
-      if (nextCount === visibleViewedCount) return
-      setVisibleViewedCount(nextCount)
-      onPreviewListChange(filteredViewedMedia.slice(0, nextCount))
+    if (cachedItems.length > 0) {
+      const orderedGroupItems = buildOrderedGroupItems(cachedItems, initialItemId)
+      if (orderedGroupItems.length === 0) return
+      openPreviewWithWarmUp(orderedGroupItems[0], orderedGroupItems)
       return
     }
 
-    const nextCount = Math.min(visibleUnviewedCount + PAGE_SIZE, filteredUnviewedMedia.length)
-    if (nextCount === visibleUnviewedCount) return
-    setVisibleUnviewedCount(nextCount)
-    onPreviewListChange(filteredUnviewedMedia.slice(0, nextCount))
-  }, [filteredUnviewedMedia, filteredViewedMedia, onPreviewListChange, tab, visibleUnviewedCount, visibleViewedCount])
+    if (group.previewSeed) {
+      openPreviewWithWarmUp(group.previewSeed, [group.previewSeed])
+    }
+
+    if (groupState?.loading || groupMediaLoadingRef.current[group.groupPath]) return
+
+    const sessionId = activeRequestIdRef.current
+    const requestId = (groupMediaRequestIdRef.current[group.groupPath] || 0) + 1
+    groupMediaRequestIdRef.current[group.groupPath] = requestId
+    groupMediaLoadingRef.current[group.groupPath] = true
+
+    setGroupMediaMap((prev) => ({
+      ...prev,
+      [group.groupPath]: {
+        ...(prev[group.groupPath] || { items: [], page: 0, hasMore: true, loading: false }),
+        loading: true,
+      },
+    }))
+
+    ;(async () => {
+      try {
+        const result = await fetchGroupMediaPage(creatorId, group.groupPath, 1, true, requestId, sessionId)
+        if (!result) return
+
+        if (!group.previewSeed) {
+          const orderedGroupItems = buildOrderedGroupItems(result.items, initialItemId)
+          if (orderedGroupItems.length === 0) return
+          openPreviewWithWarmUp(orderedGroupItems[0], orderedGroupItems)
+        }
+      } catch (error) {
+        groupMediaLoadingRef.current[group.groupPath] = false
+        console.error('[CreatorDetailDrawer] 打开图组预览失败:', error)
+        onError?.(getErrorMessage(error, '打开图组预览失败'))
+        if (activeRequestIdRef.current === sessionId && groupMediaRequestIdRef.current[group.groupPath] === requestId) {
+          setGroupMediaMap((prev) => ({
+            ...prev,
+            [group.groupPath]: {
+              ...(prev[group.groupPath] || { items: [], page: 0, hasMore: true, loading: false }),
+              loading: false,
+            },
+          }))
+        }
+      }
+    })()
+  }, [creatorId, fetchGroupMediaPage, groupMediaMap, onError, openPreviewWithWarmUp])
+
+  const handlePrimeGroupPreview = useCallback((group: CreatorGroupCard) => {
+    const groupItems = groupMediaMap[group.groupPath]?.items || []
+    const initialItem = group.previewSeed
+      || (group.coverFilePath
+        ? groupItems.find((item) => item.filePath === group.coverFilePath) || groupItems[0]
+        : groupItems[0])
+
+    requestPreviewWarmUp(initialItem)
+
+    if (!creatorId) return
+    const groupState = groupMediaMap[group.groupPath]
+    if (groupState?.loading || groupState?.items?.length || groupMediaLoadingRef.current[group.groupPath]) return
+
+    const sessionId = activeRequestIdRef.current
+    const requestId = (groupMediaRequestIdRef.current[group.groupPath] || 0) + 1
+    groupMediaRequestIdRef.current[group.groupPath] = requestId
+    groupMediaLoadingRef.current[group.groupPath] = true
+
+    setGroupMediaMap((prev) => ({
+      ...prev,
+      [group.groupPath]: {
+        ...(prev[group.groupPath] || { items: [], page: 0, hasMore: true, loading: false }),
+        loading: true,
+      },
+    }))
+
+    ;(async () => {
+      try {
+        await fetchGroupMediaPage(creatorId, group.groupPath, 1, true, requestId, sessionId)
+      } catch (error) {
+        groupMediaLoadingRef.current[group.groupPath] = false
+        console.error('[CreatorDetailDrawer] 预取图组媒体失败:', error)
+        if (activeRequestIdRef.current === sessionId && groupMediaRequestIdRef.current[group.groupPath] === requestId) {
+          setGroupMediaMap((prev) => ({
+            ...prev,
+            [group.groupPath]: {
+              ...(prev[group.groupPath] || { items: [], page: 0, hasMore: true, loading: false }),
+              loading: false,
+            },
+          }))
+        }
+      }
+    })()
+  }, [creatorId, fetchGroupMediaPage, groupMediaMap, requestPreviewWarmUp])
+
+  const loadMorePreviewItems = useCallback(async () => {
+    if (!creatorId) return
+
+    if (tab === 'groups') {
+      const currentGroup = previewMedia?.groupPath
+      if (!currentGroup) return
+      const groupState = groupMediaMap[currentGroup]
+      if (!groupState?.hasMore || groupState.loading) return
+
+      const sessionId = activeRequestIdRef.current
+      const requestId = (groupMediaRequestIdRef.current[currentGroup] || 0) + 1
+      groupMediaRequestIdRef.current[currentGroup] = requestId
+      groupMediaLoadingRef.current[currentGroup] = true
+
+      setGroupMediaMap((prev) => ({
+        ...prev,
+        [currentGroup]: {
+          ...(prev[currentGroup] || { items: [], page: 0, hasMore: true, loading: false }),
+          loading: true,
+        },
+      }))
+
+      try {
+        const result = await fetchGroupMediaPage(creatorId, currentGroup, (groupState.page || 0) + 1, false, requestId, sessionId)
+        if (!result) return
+        // 关键：补页后不要重排/旋转列表，否则外部仅用 index 驱动的预览会发生“跳片”。
+        // 这里以当前的 previewList 顺序为准做稳定追加，保证 previewIndex 仍然指向同一条媒体。
+        const baseList = previewList.length > 0 ? previewList : (groupState.items || [])
+        const nextList = mergeUniqueById([...baseList, ...result.items])
+        onPreviewListChange(nextList)
+      } catch (error) {
+        groupMediaLoadingRef.current[currentGroup] = false
+        console.error('[CreatorDetailDrawer] 图组预览补页失败:', error)
+        onError?.(getErrorMessage(error, '图组预览补页失败'))
+        if (activeRequestIdRef.current === sessionId && groupMediaRequestIdRef.current[currentGroup] === requestId) {
+          setGroupMediaMap((prev) => ({
+            ...prev,
+            [currentGroup]: {
+              ...(prev[currentGroup] || { items: [], page: 0, hasMore: true, loading: false }),
+              loading: false,
+            },
+          }))
+        }
+      }
+      return
+    }
+
+    if (loadingTab[tab] || loadingMoreTab === tab || !tabHasMore[tab]) return
+
+    const targetTab = tab
+    const sessionId = activeRequestIdRef.current
+    const requestId = tabRequestIdRef.current[targetTab] + 1
+    tabRequestIdRef.current[targetTab] = requestId
+
+    setLoadingTab((prev) => ({ ...prev, [targetTab]: true }))
+    setLoadingMoreTab(targetTab)
+
+    try {
+      await fetchTabPage(creatorId, targetTab, (tabPages[targetTab] || 0) + 1, {
+        mediaType: targetTab === 'viewed' ? appliedViewedMediaTypeFilter : mediaTypeFilter,
+        ratings: targetTab === 'viewed' ? appliedViewedRatings : [],
+        tags: targetTab === 'viewed' ? appliedViewedTags : [],
+        requestId,
+        sessionId,
+      })
+    } catch (error) {
+      console.error('[CreatorDetailDrawer] 预览补页失败:', error)
+      onError?.(getErrorMessage(error, '预览补页失败'))
+    } finally {
+      if (activeRequestIdRef.current === sessionId && tabRequestIdRef.current[targetTab] === requestId) {
+        setLoadingTab((prev) => ({ ...prev, [targetTab]: false }))
+        setLoadingMoreTab((prev) => (prev === targetTab ? null : prev))
+      }
+    }
+  }, [appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, creatorId, fetchGroupMediaPage, fetchTabPage, groupMediaMap, loadingMoreTab, loadingTab, mediaTypeFilter, onPreviewListChange, previewMedia, tab, tabHasMore, tabPages])
+
+  const currentTabLoading = loadingTab[tab] || loadingMoreTab === tab
 
   useEffect(() => {
-    if (!previewOpen || tab === 'groups') return
+    if (!previewOpen) return
     if (previewSourceList.length === 0) return
     const preloadTriggerIndex = Math.max(0, previewSourceList.length - Math.ceil(PAGE_SIZE / 2))
     if (previewIndex < preloadTriggerIndex) return
-    if (previewSourceList.length >= cardList.length) return
 
-    loadMorePreviewItems()
-  }, [cardList.length, loadMorePreviewItems, previewIndex, previewOpen, previewSourceList.length, tab])
+    if (tab === 'groups') {
+      const currentGroup = previewMedia?.groupPath
+      if (!currentGroup) return
+      const groupState = groupMediaMap[currentGroup]
+      if (!groupState?.hasMore || groupState.loading) return
+      void loadMorePreviewItems()
+      return
+    }
+
+    if (!tabHasMore[tab]) return
+    void loadMorePreviewItems()
+  }, [groupMediaMap, loadMorePreviewItems, previewIndex, previewMedia?.groupPath, previewOpen, previewSourceList.length, tab, tabHasMore])
 
   const previewItems = useMemo<MediaExperienceItem[]>(() => {
     return previewSourceList.map((item) => {
@@ -905,30 +1548,40 @@ export default function CreatorDetailDrawer({
    * 加载更多内容
    * 使用延迟模拟加载效果，防止快速滚动时频繁触发
    */
-  const handleLoadMore = useCallback(() => {
-    if (loadingMore) return
-    const sourceList = tab === 'viewed' ? filteredViewedMedia : tab === 'unviewed' ? filteredUnviewedMedia : groups
-    const currentVisible = tab === 'viewed' ? visibleViewedCount : tab === 'unviewed' ? visibleUnviewedCount : visibleGroupCount
-    if (currentVisible >= sourceList.length) return
+  const handleLoadMore = useCallback(async () => {
+    if (!creatorId || currentTabLoading) return
+    if (!tabHasMore[tab]) return
 
-    setLoadingMore(true)
-    // 保存当前标签页，防止延迟期间切换标签导致状态不一致
-    const currentTab = tab
-    const timer = setTimeout(() => {
-      // 使用函数式更新，避免闭包问题
-      if (currentTab === 'viewed') {
-        setVisibleViewedCount((value) => Math.min(value + PAGE_SIZE, filteredViewedMedia.length))
-      } else if (currentTab === 'unviewed') {
-        setVisibleUnviewedCount((value) => Math.min(value + PAGE_SIZE, filteredUnviewedMedia.length))
+    const targetTab = tab
+    const sessionId = activeRequestIdRef.current
+    const requestId = tabRequestIdRef.current[targetTab] + 1
+    tabRequestIdRef.current[targetTab] = requestId
+
+    setLoadingTab((prev) => ({ ...prev, [targetTab]: true }))
+    setLoadingMoreTab(targetTab)
+
+    try {
+      if (targetTab === 'groups') {
+        await fetchTabPage(creatorId, 'groups', (tabPages.groups || 0) + 1, { requestId, sessionId })
       } else {
-        setVisibleGroupCount((value) => Math.min(value + PAGE_SIZE, groups.length))
+        await fetchTabPage(creatorId, targetTab, (tabPages[targetTab] || 0) + 1, {
+          mediaType: targetTab === 'viewed' ? appliedViewedMediaTypeFilter : mediaTypeFilter,
+          ratings: targetTab === 'viewed' ? appliedViewedRatings : [],
+          tags: targetTab === 'viewed' ? appliedViewedTags : [],
+          requestId,
+          sessionId,
+        })
       }
-      setLoadingMore(false)
-    }, 350)
-
-    // 返回清理函数（虽然这里不会被调用，但保持一致性）
-    return () => clearTimeout(timer)
-  }, [filteredUnviewedMedia.length, filteredViewedMedia.length, groups.length, loadingMore, tab, visibleGroupCount, visibleUnviewedCount, visibleViewedCount])
+    } catch (error) {
+      console.error('[CreatorDetailDrawer] 列表触底补页失败:', error)
+      onError?.(getErrorMessage(error, '加载更多失败'))
+    } finally {
+      if (activeRequestIdRef.current === sessionId && tabRequestIdRef.current[targetTab] === requestId) {
+        setLoadingTab((prev) => ({ ...prev, [targetTab]: false }))
+        setLoadingMoreTab((prev) => (prev === targetTab ? null : prev))
+      }
+    }
+  }, [appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, creatorId, currentTabLoading, fetchTabPage, mediaTypeFilter, tab, tabHasMore, tabPages])
 
   /**
    * 处理列表滚动事件
@@ -936,13 +1589,13 @@ export default function CreatorDetailDrawer({
    */
   const handleListScroll = useCallback(() => {
     const container = listContainerRef.current
-    if (!container || loadingMore) return
+    if (!container || currentTabLoading) return
     const remaining = container.scrollHeight - container.scrollTop - container.clientHeight
     // 距离底部 120px 时触发加载更多
     if (remaining <= 120) {
-      handleLoadMore()
+      void handleLoadMore()
     }
-  }, [handleLoadMore, loadingMore])
+  }, [currentTabLoading, handleLoadMore])
 
   return (
     <Drawer
@@ -1042,15 +1695,15 @@ export default function CreatorDetailDrawer({
                     }}
                   >
                     <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                      作品 {localMedia.length}
+                      作品 {summaryCounts.mediaTotal}
                     </Typography>
                     <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.22)' }}>|</Typography>
                     <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                      已看 {viewedMedia.length}
+                      已看 {summaryCounts.viewedTotal}
                     </Typography>
                     <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.22)' }}>|</Typography>
                     <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                      图组 {groups.length}
+                      图组 {summaryCounts.groupTotal}
                     </Typography>
                   </Stack>
                 </Box>
@@ -1175,9 +1828,9 @@ export default function CreatorDetailDrawer({
             '& .MuiTabs-indicator': { backgroundColor: '#ec4899', height: 3, borderRadius: 3 },
           }}
         >
-          <Tab value="viewed" label={`已看过 ${viewedMedia.length}`} />
-          <Tab value="unviewed" label={`未看过 ${unviewedMedia.length}`} />
-          <Tab value="groups" label={`图组 ${groups.length}`} />
+          <Tab value="viewed" label={`已看过 ${summaryCounts.viewedTotal}`} />
+          <Tab value="unviewed" label={`未看过 ${summaryCounts.unviewedTotal}`} />
+          <Tab value="groups" label={`图组 ${summaryCounts.groupTotal}`} />
         </Tabs>
 
         {(tab === 'viewed' || tab === 'unviewed') && (
@@ -1216,8 +1869,15 @@ export default function CreatorDetailDrawer({
                   <Stack spacing={1.5}>
                     <ToggleButtonGroup
                       exclusive
-                      value={mediaTypeFilter}
-                      onChange={(_, value) => value && setMediaTypeFilter(value)}
+                      value={displayedMediaTypeFilter}
+                      onChange={(_, value) => {
+                        if (!value) return
+                        if (tab === 'viewed') {
+                          setViewedDraftMediaTypeFilter(value)
+                          return
+                        }
+                        setMediaTypeFilter(value)
+                      }}
                       size="small"
                       sx={{
                         flexWrap: 'wrap',
@@ -1265,9 +1925,9 @@ export default function CreatorDetailDrawer({
                           })}
                         </Stack>
 
-                        {availableTags.length > 0 && (
+                        {localAvailableTags.length > 0 && (
                           <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap' }}>
-                            {availableTags.map((tag) => {
+                            {localAvailableTags.map((tag) => {
                               const active = selectedTags.includes(tag)
                               return (
                                 <Chip
@@ -1287,6 +1947,35 @@ export default function CreatorDetailDrawer({
                             })}
                           </Stack>
                         )}
+
+                        <Stack direction="row" spacing={1}>
+                          <Button
+                            variant="contained"
+                            disabled={!hasPendingViewedFilterChanges}
+                            onClick={() => {
+                              setAppliedViewedRatings(selectedRatings)
+                              setAppliedViewedTags(selectedTags)
+                              setAppliedViewedMediaTypeFilter(viewedDraftMediaTypeFilter)
+                            }}
+                            sx={{ flex: 1, borderRadius: 999, fontWeight: 700, backgroundColor: '#ec4899' }}
+                          >
+                            应用筛选
+                          </Button>
+                          <Button
+                            variant="outlined"
+                            onClick={() => {
+                              setSelectedRatings([])
+                              setSelectedTags([])
+                              setViewedDraftMediaTypeFilter('all')
+                              setAppliedViewedRatings([])
+                              setAppliedViewedTags([])
+                              setAppliedViewedMediaTypeFilter('all')
+                            }}
+                            sx={{ borderRadius: 999, fontWeight: 700, color: '#fff', borderColor: 'rgba(255,255,255,0.24)' }}
+                          >
+                            重置
+                          </Button>
+                        </Stack>
                       </>
                     )}
                   </Stack>
@@ -1299,10 +1988,29 @@ export default function CreatorDetailDrawer({
         <Divider sx={{ borderColor: 'rgba(255,255,255,0.08)' }} />
 
         <Box ref={listContainerRef} onScroll={handleListScroll} sx={{ flex: 1, overflowY: 'auto', px: 2, py: 2 }}>
-          {loading ? (
+          {normalizedLoading || bootstrapLoading ? (
             <Stack alignItems="center" justifyContent="center" sx={{ minHeight: 240 }} spacing={2}>
               <CircularProgress sx={{ color: '#ec4899' }} />
               <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.68)' }}>正在加载博主内容...</Typography>
+            </Stack>
+          ) : loadError ? (
+            <Stack alignItems="center" justifyContent="center" sx={{ minHeight: 240, textAlign: 'center', px: 2 }} spacing={2}>
+              <Typography variant="body1" sx={{ color: '#fda4af', fontWeight: 700 }}>
+                加载博主内容失败
+              </Typography>
+              <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.68)' }}>
+                {loadError}
+              </Typography>
+              <Button
+                variant="contained"
+                onClick={() => {
+                  setLoadError(null)
+                  setBootstrapRetryKey((value) => value + 1)
+                }}
+                sx={{ borderRadius: 999, fontWeight: 700, backgroundColor: '#ec4899' }}
+              >
+                重试
+              </Button>
             </Stack>
           ) : tab === 'groups' ? (
             <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 1.25 }}>
@@ -1456,7 +2164,7 @@ export default function CreatorDetailDrawer({
             </Box>
           )}
 
-          {loadingMore && (
+          {currentTabLoading && !(normalizedLoading || bootstrapLoading) && (
             <Box sx={{ display: 'flex', justifyContent: 'center', py: 1.5 }}>
               <CircularProgress size={18} sx={{ color: '#ec4899' }} />
             </Box>

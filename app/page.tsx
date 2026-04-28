@@ -51,7 +51,6 @@ import { setErudaEnabled } from '@/lib/erudaInit'
 import { QUICK_RATING_CONFIG } from '@/types'
 import type {
   AdvancedFilters,
-  CreatorGroupCard,
   CreatorMediaCard,
   GroupRating,
   MediaFile,
@@ -132,14 +131,6 @@ export default function HomePage() {
   // ========== 博主详情相关状态 ==========
   /** 博主详情抽屉是否打开 */
   const [creatorDetailOpen, setCreatorDetailOpen] = useState(false)
-  /** 博主详情是否正在加载 */
-  const [creatorDetailLoading, setCreatorDetailLoading] = useState(false)
-  /** 博主详情的媒体列表 */
-  const [creatorDetailMedia, setCreatorDetailMedia] = useState<CreatorMediaCard[]>([])
-  /** 博主详情的图组列表 */
-  const [creatorDetailGroups, setCreatorDetailGroups] = useState<CreatorGroupCard[]>([])
-  /** 博主详情的可用标签列表 */
-  const [creatorDetailAvailableTags, setCreatorDetailAvailableTags] = useState<string[]>([])
   /** 博主详情打开时，是否暂停主页大视频预览 */
   const [creatorDetailSuspended, setCreatorDetailSuspended] = useState(false)
   
@@ -528,28 +519,9 @@ export default function HomePage() {
 
     setFullscreen(false)
     setCreatorDetailSuspended(shouldSuspendLargeVideo)
+    setCurrentCreator(targetCreator)
     setCreatorDetailOpen(true)
-    setCreatorDetailLoading(true)
-
-    try {
-      const response = await fetch(`/api/creators/${targetCreator.id}/media`)
-      const data = await response.json()
-      if (!response.ok || !data.success) {
-        throw new Error(data.error || '获取博主详情失败')
-      }
-
-      setCurrentCreator(data.data.creator || targetCreator)
-      setCreatorDetailMedia(data.data.media || [])
-      setCreatorDetailGroups(data.data.groups || [])
-      setCreatorDetailAvailableTags(data.data.filters?.availableTags || [])
-    } catch (detailError: any) {
-      notify(detailError.message || '获取博主详情失败', 'error')
-      setCreatorDetailOpen(false)
-      setCreatorDetailSuspended(false)
-    } finally {
-      setCreatorDetailLoading(false)
-    }
-  }, [currentCreator, mediaType, notify, viewMode])
+  }, [currentCreator, mediaType, viewMode])
 
   /**
    * 打开博主预览
@@ -1085,10 +1057,7 @@ export default function HomePage() {
       <CreatorDetailDrawer
         open={creatorDetailOpen}
         creator={currentCreator}
-        media={creatorDetailMedia}
-        groups={creatorDetailGroups}
-        availableTags={creatorDetailAvailableTags}
-        loading={creatorDetailLoading}
+        onError={(message) => notify(message, 'error')}
         onClose={() => {
           setCreatorDetailOpen(false)
           setCreatorDetailSuspended(false)

@@ -173,6 +173,8 @@ export interface CreatorGroupCard {
   coverFilePath?: string | null
   /** 封面预览 URL */
   coverPreviewUrl?: string | null
+  /** 用于首开预览的种子媒体 */
+  previewSeed?: CreatorMediaCard | null
   /** 评分（1-5） */
   rating?: number | null
   /** 推荐理由 */

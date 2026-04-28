@@ -7,7 +7,7 @@ import type { CreatorMediaCard, CreatorPreviewCacheEntry } from '@/types'
 /**
  * 预加载半径 - 当前索引前后各预加载多少个媒体文件
  */
-const PRELOAD_RADIUS = 10
+const PRELOAD_RADIUS = 5
 
 /**
  * 判断媒体项是否可以使用窗口预加载
@@ -27,8 +27,8 @@ function canUseWindowPreload(item: CreatorMediaCard) {
  * @returns Blob 对象
  * @throws 请求失败时抛出错误
  */
-async function fetchBlob(url: string) {
-  const response = await fetch(url)
+async function fetchBlob(url: string, signal?: AbortSignal) {
+  const response = await fetch(url, signal ? { signal } : undefined)
   if (!response.ok) {
     throw new Error(`预加载失败: ${response.status}`)
   }
@@ -56,6 +56,8 @@ export function useCreatorPreviewPreload(list: CreatorMediaCard[], currentIndex:
   const loadingRef = useRef<Set<string>>(new Set())
   /** 运行 ID，用于取消过期的预加载任务 */
   const runIdRef = useRef(0)
+  /** AbortController：用于取消过期的网络请求 */
+  const abortControllerRef = useRef<AbortController | null>(null)
   /** 缓存版本号，变化时触发组件重新渲染 */
   const [cacheVersion, setCacheVersion] = useState(0)
 
@@ -87,12 +89,15 @@ export function useCreatorPreviewPreload(list: CreatorMediaCard[], currentIndex:
    * 释放不在预加载范围内的 Blob URL，节省内存
    */
   const evictOutOfWindow = useCallback(() => {
+    let evictedCount = 0
     cacheRef.current.forEach((entry, filePath) => {
       if (!desiredFilePaths.has(filePath)) {
         URL.revokeObjectURL(entry.objectUrl)
         cacheRef.current.delete(filePath)
+        evictedCount += 1
       }
     })
+    return evictedCount
   }, [desiredFilePaths])
 
   /**
@@ -106,11 +111,25 @@ export function useCreatorPreviewPreload(list: CreatorMediaCard[], currentIndex:
    * 5. 更新缓存版本触发重新渲染
    */
   const preloadAround = useCallback(async () => {
-    if (!enabled) return
+    if (!enabled) {
+      abortControllerRef.current?.abort()
+      abortControllerRef.current = null
+      return
+    }
 
     // 生成新的运行 ID，用于取消过期任务
     const runId = ++runIdRef.current
-    evictOutOfWindow()
+
+    // 取消上一轮未完成的请求
+    abortControllerRef.current?.abort()
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+
+    let hasCacheMutated = false
+    const evictedCount = evictOutOfWindow()
+    if (evictedCount > 0) {
+      hasCacheMutated = true
+    }
 
     for (const index of desiredIndexes) {
       // 检查任务是否已过期
@@ -124,7 +143,7 @@ export function useCreatorPreviewPreload(list: CreatorMediaCard[], currentIndex:
 
       loadingRef.current.add(item.filePath)
       try {
-        const blob = await fetchBlob(item.previewUrl)
+        const blob = await fetchBlob(item.previewUrl, controller.signal)
         // 再次检查任务是否过期或文件是否仍在窗口内
         if (runId !== runIdRef.current || !desiredFilePaths.has(item.filePath)) {
           continue
@@ -138,13 +157,21 @@ export function useCreatorPreviewPreload(list: CreatorMediaCard[], currentIndex:
           mediaType: item.mediaType as 'image' | 'small-video',
           timestamp: Date.now(),
         })
-        // 更新缓存版本，触发使用该 Hook 的组件重新渲染
-        setCacheVersion((value) => value + 1)
+        hasCacheMutated = true
       } catch (error) {
+        // AbortController 取消属于预期行为，不打印错误避免污染控制台
+        if ((error as any)?.name === 'AbortError') {
+          return
+        }
         console.error('[CreatorPreviewPreload] 预加载失败:', item.filePath, error)
       } finally {
         loadingRef.current.delete(item.filePath)
       }
+    }
+
+    // 批量提交：避免每个文件都触发一次重渲染
+    if (runId === runIdRef.current && hasCacheMutated) {
+      setCacheVersion((value) => value + 1)
     }
   }, [desiredFilePaths, desiredIndexes, enabled, evictOutOfWindow, list])
 
@@ -161,6 +188,8 @@ export function useCreatorPreviewPreload(list: CreatorMediaCard[], currentIndex:
    */
   useEffect(() => {
     return () => {
+      abortControllerRef.current?.abort()
+      abortControllerRef.current = null
       cacheRef.current.forEach((entry) => {
         URL.revokeObjectURL(entry.objectUrl)
       })
