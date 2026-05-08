@@ -119,7 +119,7 @@ export default function HomePage() {
   const [actualFoundCount, setActualFoundCount] = useState(0)
   const [galleryPreloadReady, setGalleryPreloadReady] = useState(false)
   const [preloadRandomness, setPreloadRandomness] = useState(1)
-  const [highlightContinuousPlayEnabled, setHighlightContinuousPlayEnabled] = useState(false)
+  const [highlightContinuousPlayEnabled, setHighlightContinuousPlayEnabled] = useState(true)
 
   const [ratingDialogOpen, setRatingDialogOpen] = useState(false)
   const [currentRating, setCurrentRating] = useState<MediaRating | GroupRating | null>(null)
@@ -400,10 +400,10 @@ export default function HomePage() {
     localStorage.setItem('optimistic_update_enabled', enabled.toString())
   }, [])
 
-  const handleErudaEnabledChange = useCallback((enabled: boolean) => {
-    setErudaEnabledState(enabled)
-    setErudaEnabled(enabled)
-    notify(enabled ? 'Eruda 已启用，请刷新页面生效' : 'Eruda 已禁用，请刷新页面生效', 'info')
+  const handleErudaEnabledChange = useCallback((_enabled: boolean) => {
+    setErudaEnabledState(false)
+    setErudaEnabled(false)
+    notify('Eruda 已强制禁用', 'info')
   }, [notify])
 
   const handlePreloadRandomnessChange = useCallback((value: number) => {

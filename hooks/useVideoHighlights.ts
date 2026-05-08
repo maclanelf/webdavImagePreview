@@ -72,7 +72,7 @@ export function useVideoHighlights({
   const [highlightEditorTags, setHighlightEditorTags] = useState('')
   const [highlightEditorSaving, setHighlightEditorSaving] = useState(false)
   // 用户是否开启“连续播放精彩时刻”的偏好开关。
-  const [highlightContinuousPlayEnabled, setHighlightContinuousPlayEnabled] = useState(false)
+  const [highlightContinuousPlayEnabled, setHighlightContinuousPlayEnabled] = useState(true)
   // 当前是否正在执行连续播放流程。
   const [highlightContinuousPlaying, setHighlightContinuousPlaying] = useState(false)
   // 连播时当前播放到的片段索引；使用索引便于直接推进到下一段。
