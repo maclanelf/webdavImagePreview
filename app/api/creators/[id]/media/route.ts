@@ -1,17 +1,47 @@
 import { NextRequest, NextResponse } from 'next/server'
 
 import db, { creators, ensureInitialized, webdavConfigs } from '@/lib/database'
+import { QUICK_RATING_CONFIG } from '@/types'
 
+/** 默认分页大小 */
 const DEFAULT_PAGE_SIZE = 10
+/** 单次请求允许的最大分页大小 */
 const MAX_PAGE_SIZE = 50
+/** 大视频阈值：超过该大小的视频归类为大视频 */
 const STREAM_VIDEO_THRESHOLD = 100 * 1024 * 1024
 
+/** 详情接口模式 */
 type CreatorDetailMode = 'bootstrap' | 'tab' | 'group-media'
+/** 标签页类型 */
 type CreatorTab = 'viewed' | 'unviewed' | 'groups'
+/** 媒体类型过滤器 */
 type MediaTypeFilter = 'all' | 'image' | 'video' | 'small-video' | 'large-video'
 
+type PaginationPayload = {
+  page: number
+  pageSize: number
+  total: number
+  hasMore: boolean
+}
+
+type QueryPageResult<T> = {
+  items: T[]
+  total: number
+  page: number
+  pageSize: number
+  hasMore: boolean
+}
+
+/**
+ * 将数据库中的 JSON / 文本字段稳健地转换为字符串数组。
+ *
+ * 兼容两类历史数据：
+ * - `['a', 'b']` 这类 JSON 数组
+ * - `a` 这种单字符串老数据
+ */
 function parseJsonArray(value: string | null | undefined) {
   if (!value) return []
+
   try {
     const parsed = JSON.parse(value)
     if (Array.isArray(parsed)) {
@@ -25,13 +55,20 @@ function parseJsonArray(value: string | null | undefined) {
       return [value]
     }
   }
+
   return []
 }
 
+/** 将文件路径转换为直链路径。 */
 function buildDirectPath(filePath: string) {
   return `/d${filePath.split('/').map((segment) => segment.replace(/／/g, '|')).join('/')}`
 }
 
+/**
+ * 为媒体条目生成预览 / 流播放 / 转码 / 直链地址。
+ *
+ * 这里不发起网络请求，只是把前端后续会用到的 URL 预先拼好。
+ */
 function getPreviewUrls(filePath: string, defaultConfig: any) {
   if (!defaultConfig) {
     return { previewUrl: null, streamUrl: null, transcodeUrl: null, directUrl: null }
@@ -54,18 +91,21 @@ function getPreviewUrls(filePath: string, defaultConfig: any) {
   return { previewUrl, streamUrl, transcodeUrl, directUrl }
 }
 
+/** 从目录路径中提取图组名。 */
 function getGroupNameFromPath(groupPath: string | null | undefined) {
   if (!groupPath) return '根目录'
   const parts = groupPath.split('/').filter(Boolean)
   return parts.length > 0 ? parts[parts.length - 1] : '根目录'
 }
 
+/** 解析正整数参数。 */
 function parsePositiveInt(value: string | null, fallback: number) {
   if (!value) return fallback
   const parsed = parseInt(value, 10)
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
 }
 
+/** 解析评分过滤参数，例如 `1,3,5`。 */
 function parseRatings(value: string | null) {
   if (!value) return []
   return value
@@ -74,6 +114,7 @@ function parseRatings(value: string | null) {
     .filter((item) => item >= 1 && item <= 5)
 }
 
+/** 解析标签过滤参数，例如 `性感,黑丝`。 */
 function parseTags(value: string | null) {
   if (!value) return []
   return value
@@ -82,6 +123,7 @@ function parseTags(value: string | null) {
     .filter(Boolean)
 }
 
+/** 解析媒体类型过滤参数。 */
 function parseMediaType(value: string | null): MediaTypeFilter {
   if (value === 'image' || value === 'video' || value === 'small-video' || value === 'large-video') {
     return value
@@ -89,82 +131,78 @@ function parseMediaType(value: string | null): MediaTypeFilter {
   return 'all'
 }
 
-function buildMediaMatchWhere(creatorId: number, aliases: string[]) {
-  if (aliases.length === 0) {
-    return {
-      where: '(sfc.creator_id = ?)',
-      params: [creatorId] as any[],
-    }
-  }
-
-  const aliasConditions = aliases.map(() => '(sf.parent_path LIKE ? OR sf.filename LIKE ?)').join(' OR ')
-  const where = `(sfc.creator_id = ? OR ((sfc.file_path IS NULL OR sfc.creator_id IS NULL) AND (${aliasConditions})))`
-  const params: any[] = [creatorId]
-  aliases.forEach((alias) => {
-    params.push(`%${alias}%`, `%${alias}%`)
-  })
-  return { where, params }
+/**
+ * 构造“当前博主关联图组目录”的子查询。
+ *
+ * 统一复用这一段，可以避免在多个 SQL 里重复写相同逻辑。
+ * 同时也让这条接口完全基于 [`scan_file_creators.creator_id`](lib/database.ts:642)
+ * 做精确匹配，不再回退到旧的路径模糊匹配方案。
+ */
+function buildCreatorGroupPathsSubquery() {
+  return `
+    SELECT parent_path
+    FROM scan_file_creators
+    WHERE creator_id = ?
+      AND parent_path IS NOT NULL
+    GROUP BY parent_path
+  `
 }
 
-function buildGroupMatchWhere(creatorId: number, aliases: string[]) {
-  if (aliases.length === 0) {
-    return {
-      where: `(
-        EXISTS (
-          SELECT 1
-          FROM scan_file_creators sfc_group
-          WHERE sfc_group.parent_path = sf.parent_path
-            AND sfc_group.creator_id = ?
-        )
-      )`,
-      params: [creatorId] as any[],
-    }
+/** 统一构造分页响应。 */
+function buildPaginationPayload(result: { page: number; pageSize: number; total: number; hasMore: boolean }): PaginationPayload {
+  return {
+    page: result.page,
+    pageSize: result.pageSize,
+    total: result.total,
+    hasMore: result.hasMore,
   }
-
-  const groupAliasConditions = aliases.map(() => '(sf.parent_path LIKE ?)').join(' OR ')
-  const where = `(
-    EXISTS (
-      SELECT 1
-      FROM scan_file_creators sfc_group
-      WHERE sfc_group.parent_path = sf.parent_path
-        AND sfc_group.creator_id = ?
-    )
-    OR (
-      NOT EXISTS (
-        SELECT 1
-        FROM scan_file_creators sfc_group_linked
-        WHERE sfc_group_linked.parent_path = sf.parent_path
-          AND sfc_group_linked.creator_id IS NOT NULL
-      )
-      AND (${groupAliasConditions})
-    )
-  )`
-
-  const params: any[] = [creatorId]
-  aliases.forEach((alias) => {
-    params.push(`%${alias}%`)
-  })
-  return { where, params }
 }
 
+/** 快速评分内置中文标签，这些标签不应出现在“可用标签”筛选中。 */
+const QUICK_RATING_EVALUATIONS = new Set<string>(
+  QUICK_RATING_CONFIG.map((item) => item.evaluation)
+)
+
+/**
+ * 仅保留真正用于内容筛选的标签，排除快速评分自带的中文语义标签。
+ */
+function collectFilterTags(tagSet: Set<string>, values: string[]) {
+  values.forEach((tag) => {
+    if (!QUICK_RATING_EVALUATIONS.has(tag)) {
+      tagSet.add(tag)
+    }
+  })
+}
+
+/**
+ * 为媒体分页查询追加媒体类型过滤条件。
+ *
+ * 说明：
+ * - `video` 表示所有视频；
+ * - `small-video` / `large-video` 通过文件大小做二次区分。
+ */
 function appendMediaTypeCondition(whereParts: string[], params: any[], mediaType: MediaTypeFilter) {
   if (mediaType === 'all') return
+
   if (mediaType === 'image') {
     whereParts.push('sf.file_type = ?')
     params.push('image')
     return
   }
+
   if (mediaType === 'video') {
     whereParts.push('sf.file_type = ?')
     params.push('video')
     return
   }
+
   if (mediaType === 'small-video') {
     whereParts.push('sf.file_type = ?')
     whereParts.push('COALESCE(sf.file_size, 0) <= ?')
     params.push('video', STREAM_VIDEO_THRESHOLD)
     return
   }
+
   if (mediaType === 'large-video') {
     whereParts.push('sf.file_type = ?')
     whereParts.push('COALESCE(sf.file_size, 0) > ?')
@@ -172,9 +210,13 @@ function appendMediaTypeCondition(whereParts: string[], params: any[], mediaType
   }
 }
 
+/**
+ * 将 SQL 行映射为前端使用的媒体卡片结构。
+ */
 function mapMediaRow(row: any, creatorId: number, defaultConfig: any) {
   const filePath = row.filePath as string
   const { previewUrl, streamUrl, transcodeUrl, directUrl } = getPreviewUrls(filePath, defaultConfig)
+
   return {
     id: filePath,
     filePath,
@@ -201,6 +243,12 @@ function mapMediaRow(row: any, creatorId: number, defaultConfig: any) {
   }
 }
 
+/**
+ * 根据文件路径查询单个媒体。
+ *
+ * 目前仅用于图组分页里构造 `previewSeed`：
+ * 当封面图存在时，把它补全成前端可直接预览的媒体对象。
+ */
 function queryMediaByFilePath(filePath: string, creatorId: number, defaultConfig: any) {
   const row = db.prepare(`
     SELECT
@@ -226,9 +274,16 @@ function queryMediaByFilePath(filePath: string, creatorId: number, defaultConfig
   return row ? mapMediaRow(row, creatorId, defaultConfig) : null
 }
 
+/**
+ * 查询博主媒体分页。
+ *
+ * 查询策略：
+ * - 从 [`scan_file_creators`](lib/database.ts:637) 出发，用 `creator_id` 精确锁定博主；
+ * - 再关联 [`scan_files`](lib/database.ts:610) 和 [`media_ratings`](lib/database.ts:358)；
+ * - 避免从 `scan_files` 全表出发造成无效扫描。
+ */
 function queryMediaPage(options: {
   creatorId: number
-  aliases: string[]
   defaultConfig: any
   page: number
   pageSize: number
@@ -237,10 +292,9 @@ function queryMediaPage(options: {
   ratings?: number[]
   tags?: string[]
   groupPath?: string
-}) {
+}): QueryPageResult<any> {
   const {
     creatorId,
-    aliases,
     defaultConfig,
     page,
     pageSize,
@@ -251,9 +305,8 @@ function queryMediaPage(options: {
     groupPath,
   } = options
 
-  const { where: baseWhere, params: baseParams } = buildMediaMatchWhere(creatorId, aliases)
-  const whereParts = [baseWhere]
-  const params = [...baseParams]
+  const whereParts = ['sfc.creator_id = ?']
+  const params = [creatorId] as any[]
 
   if (typeof viewed === 'boolean') {
     whereParts.push('COALESCE(mr.is_viewed, sf.is_viewed, 0) = ?')
@@ -283,9 +336,9 @@ function queryMediaPage(options: {
 
   const countRow = db.prepare(`
     SELECT COUNT(*) AS total
-    FROM scan_files sf
-    LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
-    LEFT JOIN media_ratings mr ON mr.file_path = sf.filename
+    FROM scan_file_creators sfc
+    INNER JOIN scan_files sf ON sf.filename = sfc.file_path
+    LEFT JOIN media_ratings mr ON mr.file_path = sfc.file_path
     WHERE ${whereSql}
   `).get(...params) as { total: number }
 
@@ -305,14 +358,14 @@ function queryMediaPage(options: {
       mr.custom_evaluation AS customEvaluation,
       mr.category,
       COALESCE(mr.is_viewed, sf.is_viewed, 0) AS isViewed,
-      COALESCE(sfc.creator_id, ?) AS creatorId
-    FROM scan_files sf
-    LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
-    LEFT JOIN media_ratings mr ON mr.file_path = sf.filename
+      sfc.creator_id AS creatorId
+    FROM scan_file_creators sfc
+    INNER JOIN scan_files sf ON sf.filename = sfc.file_path
+    LEFT JOIN media_ratings mr ON mr.file_path = sfc.file_path
     WHERE ${whereSql}
     ORDER BY COALESCE(mr.rating, 0) DESC, sf.parent_path ASC, sf.basename COLLATE NOCASE ASC
     LIMIT ? OFFSET ?
-  `).all(creatorId, ...params, pageSize, offset) as Array<any>
+  `).all(...params, pageSize, offset) as Array<any>
 
   return {
     items: rows.map((row) => mapMediaRow(row, creatorId, defaultConfig)),
@@ -323,24 +376,27 @@ function queryMediaPage(options: {
   }
 }
 
+/**
+ * 查询某个图组内的媒体分页。
+ */
 function queryGroupMediaPage(options: {
   creatorId: number
-  aliases: string[]
   defaultConfig: any
   groupPath: string
   page: number
   pageSize: number
-}) {
-  const { creatorId, aliases, defaultConfig, groupPath, page, pageSize } = options
-  const { where: groupWhere, params: groupParams } = buildGroupMatchWhere(creatorId, aliases)
-  const scopedWhere = `${groupWhere} AND sf.parent_path = ?`
-  const scopedParams = [...groupParams, groupPath]
+}): QueryPageResult<any> {
+  const { creatorId, defaultConfig, groupPath, page, pageSize } = options
+  const creatorGroupPathsSubquery = buildCreatorGroupPathsSubquery()
 
   const countRow = db.prepare(`
     SELECT COUNT(*) AS total
     FROM scan_files sf
-    WHERE ${scopedWhere}
-  `).get(...scopedParams) as { total: number }
+    INNER JOIN (
+      ${creatorGroupPathsSubquery}
+    ) creator_groups ON creator_groups.parent_path = sf.parent_path
+    WHERE sf.parent_path = ?
+  `).get(creatorId, groupPath) as { total: number }
 
   const total = countRow?.total || 0
   const offset = (page - 1) * pageSize
@@ -360,12 +416,15 @@ function queryGroupMediaPage(options: {
       COALESCE(mr.is_viewed, sf.is_viewed, 0) AS isViewed,
       COALESCE(sfc.creator_id, ?) AS creatorId
     FROM scan_files sf
+    INNER JOIN (
+      ${creatorGroupPathsSubquery}
+    ) creator_groups ON creator_groups.parent_path = sf.parent_path
     LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
     LEFT JOIN media_ratings mr ON mr.file_path = sf.filename
-    WHERE ${scopedWhere}
+    WHERE sf.parent_path = ?
     ORDER BY COALESCE(mr.rating, 0) DESC, sf.basename COLLATE NOCASE ASC
     LIMIT ? OFFSET ?
-  `).all(creatorId, ...scopedParams, pageSize, offset) as Array<any>
+  `).all(creatorId, creatorId, groupPath, pageSize, offset) as Array<any>
 
   return {
     items: rows.map((row) => mapMediaRow(row, creatorId, defaultConfig)),
@@ -376,71 +435,80 @@ function queryGroupMediaPage(options: {
   }
 }
 
+/**
+ * 查询图组分页。
+ *
+ * 返回内容除了图组基础信息，还会补出：
+ * - `coverPreviewUrl`: 图组封面预览
+ * - `previewSeed`: 图组预览时的初始媒体
+ */
 function queryGroupsPage(options: {
   creatorId: number
-  aliases: string[]
   defaultConfig: any
   page: number
   pageSize: number
-}) {
-  const { creatorId, aliases, defaultConfig, page, pageSize } = options
-  const { where: groupWhere, params: groupParams } = buildGroupMatchWhere(creatorId, aliases)
+}): QueryPageResult<any> {
+  const { creatorId, defaultConfig, page, pageSize } = options
+  const creatorGroupPathsSubquery = buildCreatorGroupPathsSubquery()
 
   const totalRow = db.prepare(`
     SELECT COUNT(*) AS total
     FROM (
-      SELECT sf.parent_path
-      FROM scan_files sf
-      WHERE ${groupWhere}
-      GROUP BY sf.parent_path
-      HAVING COUNT(*) > 0
+      ${creatorGroupPathsSubquery}
     ) grouped
-  `).get(...groupParams) as { total: number }
+  `).get(creatorId) as { total: number }
 
   const total = totalRow?.total || 0
   const offset = (page - 1) * pageSize
 
   const rows = db.prepare(`
     SELECT
-      sf.parent_path AS groupPath,
+      cg.parent_path AS groupPath,
       gr.group_name AS groupName,
       (
         SELECT COUNT(*)
         FROM scan_files sfi
-        WHERE sfi.parent_path = sf.parent_path
+        WHERE sfi.parent_path = cg.parent_path
       ) AS fileCount,
       (
         SELECT sfi.filename
         FROM scan_files sfi
-        WHERE sfi.parent_path = sf.parent_path
+        WHERE sfi.parent_path = cg.parent_path
           AND sfi.file_type = 'image'
         ORDER BY RANDOM()
         LIMIT 1
       ) AS coverFilePath,
-      COALESCE(gr.is_viewed, MIN(sf.is_viewed)) AS isViewed,
+      COALESCE(gr.is_viewed, (
+        SELECT MIN(sfi.is_viewed)
+        FROM scan_files sfi
+        WHERE sfi.parent_path = cg.parent_path
+      )) AS isViewed,
       gr.rating,
       gr.recommendation_reason AS recommendationReason,
       gr.custom_evaluation AS customEvaluation,
       gr.category,
       ? AS creatorId
-    FROM scan_files sf
-    LEFT JOIN group_ratings gr ON gr.group_path = sf.parent_path
-    WHERE ${groupWhere}
-    GROUP BY sf.parent_path, gr.group_name, gr.is_viewed, gr.rating, gr.recommendation_reason, gr.custom_evaluation, gr.category
-    HAVING COUNT(*) > 0
-    ORDER BY COALESCE(gr.is_viewed, MIN(sf.is_viewed)) DESC, COALESCE(gr.rating, 0) DESC, sf.parent_path ASC
+    FROM (
+      ${creatorGroupPathsSubquery}
+    ) cg
+    LEFT JOIN group_ratings gr ON gr.group_path = cg.parent_path
+    ORDER BY COALESCE(gr.is_viewed, (
+      SELECT MIN(sfi.is_viewed)
+      FROM scan_files sfi
+      WHERE sfi.parent_path = cg.parent_path
+    )) DESC, COALESCE(gr.rating, 0) DESC, cg.parent_path ASC
     LIMIT ? OFFSET ?
-  `).all(creatorId, ...groupParams, pageSize, offset) as Array<any>
+  `).all(creatorId, creatorId, pageSize, offset) as Array<any>
 
   const items = rows.map((row) => {
     const coverUrls = row.coverFilePath
       ? getPreviewUrls(row.coverFilePath, defaultConfig)
       : { previewUrl: null, streamUrl: null, transcodeUrl: null, directUrl: null }
+
     const previewSeed = row.coverFilePath
       ? queryMediaByFilePath(row.coverFilePath, creatorId, defaultConfig)
       : (queryMediaPage({
         creatorId,
-        aliases,
         defaultConfig,
         groupPath: row.groupPath,
         page: 1,
@@ -473,66 +541,61 @@ function queryGroupsPage(options: {
   }
 }
 
+/**
+ * 查询首屏轻量信息：
+ * - 媒体总数 / 已看 / 未看
+ * - 图组总数
+ * - 已使用标签集合
+ */
 function querySummaryAndTags(options: {
   creatorId: number
-  aliases: string[]
 }) {
-  const { creatorId, aliases } = options
-  const { where: mediaWhere, params: mediaParams } = buildMediaMatchWhere(creatorId, aliases)
-  const { where: groupWhere, params: groupParams } = buildGroupMatchWhere(creatorId, aliases)
+  const { creatorId } = options
+  const creatorGroupPathsSubquery = buildCreatorGroupPathsSubquery()
 
   const mediaSummary = db.prepare(`
     SELECT
       COUNT(*) AS total,
       SUM(CASE WHEN COALESCE(mr.is_viewed, sf.is_viewed, 0) = 1 THEN 1 ELSE 0 END) AS viewed,
       SUM(CASE WHEN COALESCE(mr.is_viewed, sf.is_viewed, 0) = 0 THEN 1 ELSE 0 END) AS unviewed
-    FROM scan_files sf
-    LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
-    LEFT JOIN media_ratings mr ON mr.file_path = sf.filename
-    WHERE ${mediaWhere}
-  `).get(...mediaParams) as { total?: number; viewed?: number; unviewed?: number }
+    FROM scan_file_creators sfc
+    INNER JOIN scan_files sf ON sf.filename = sfc.file_path
+    LEFT JOIN media_ratings mr ON mr.file_path = sfc.file_path
+    WHERE sfc.creator_id = ?
+  `).get(creatorId) as { total?: number; viewed?: number; unviewed?: number }
 
   const groupSummary = db.prepare(`
     SELECT COUNT(*) AS total
     FROM (
-      SELECT sf.parent_path
-      FROM scan_files sf
-      WHERE ${groupWhere}
-      GROUP BY sf.parent_path
-      HAVING COUNT(*) > 0
+      ${creatorGroupPathsSubquery}
     ) grouped
-  `).get(...groupParams) as { total?: number }
+  `).get(creatorId) as { total?: number }
 
   const mediaTagRows = db.prepare(`
     SELECT mr.custom_evaluation AS customEvaluation, mr.category AS category
-    FROM scan_files sf
-    LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
-    INNER JOIN media_ratings mr ON mr.file_path = sf.filename
-    WHERE ${mediaWhere}
+    FROM scan_file_creators sfc
+    INNER JOIN media_ratings mr ON mr.file_path = sfc.file_path
+    WHERE sfc.creator_id = ?
       AND (mr.custom_evaluation IS NOT NULL OR mr.category IS NOT NULL)
-  `).all(...mediaParams) as Array<{ customEvaluation?: string | null; category?: string | null }>
+  `).all(creatorId) as Array<{ customEvaluation?: string | null; category?: string | null }>
 
   const groupTagRows = db.prepare(`
     SELECT gr.custom_evaluation AS customEvaluation, gr.category AS category
     FROM (
-      SELECT sf.parent_path
-      FROM scan_files sf
-      WHERE ${groupWhere}
-      GROUP BY sf.parent_path
-      HAVING COUNT(*) > 0
-    ) matched_groups
-    INNER JOIN group_ratings gr ON gr.group_path = matched_groups.parent_path
+      ${creatorGroupPathsSubquery}
+    ) creator_groups
+    INNER JOIN group_ratings gr ON gr.group_path = creator_groups.parent_path
     WHERE gr.custom_evaluation IS NOT NULL OR gr.category IS NOT NULL
-  `).all(...groupParams) as Array<{ customEvaluation?: string | null; category?: string | null }>
+  `).all(creatorId) as Array<{ customEvaluation?: string | null; category?: string | null }>
 
   const tagSet = new Set<string>()
   mediaTagRows.forEach((row) => {
-    parseJsonArray(row.customEvaluation).forEach((tag) => tagSet.add(tag))
-    parseJsonArray(row.category).forEach((tag) => tagSet.add(tag))
+    collectFilterTags(tagSet, parseJsonArray(row.customEvaluation))
+    collectFilterTags(tagSet, parseJsonArray(row.category))
   })
   groupTagRows.forEach((row) => {
-    parseJsonArray(row.customEvaluation).forEach((tag) => tagSet.add(tag))
-    parseJsonArray(row.category).forEach((tag) => tagSet.add(tag))
+    collectFilterTags(tagSet, parseJsonArray(row.customEvaluation))
+    collectFilterTags(tagSet, parseJsonArray(row.category))
   })
 
   return {
@@ -546,6 +609,14 @@ function querySummaryAndTags(options: {
   }
 }
 
+/**
+ * 博主详情媒体接口。
+ *
+ * 支持三种模式：
+ * - `bootstrap`: 首屏轻量信息（博主、统计、标签）
+ * - `tab`: 标签页分页（viewed / unviewed / groups）
+ * - `group-media`: 图组内媒体分页
+ */
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -563,10 +634,6 @@ export async function GET(
     if (!creator) {
       return NextResponse.json({ success: false, error: '博主不存在' }, { status: 404 })
     }
-
-    const aliases = [creator.primaryName, ...(creator.otherNames || [])]
-      .map((alias) => String(alias).trim())
-      .filter(Boolean)
 
     const searchParams = request.nextUrl.searchParams
     const mode = (searchParams.get('mode') || 'bootstrap') as CreatorDetailMode
@@ -587,7 +654,6 @@ export async function GET(
 
       const pageResult = queryGroupMediaPage({
         creatorId,
-        aliases,
         defaultConfig,
         groupPath,
         page,
@@ -604,12 +670,7 @@ export async function GET(
           creator,
           groupPath,
           items: pageResult.items,
-          pagination: {
-            page: pageResult.page,
-            pageSize: pageResult.pageSize,
-            total: pageResult.total,
-            hasMore: pageResult.hasMore,
-          },
+          pagination: buildPaginationPayload(pageResult),
         },
       })
     }
@@ -618,7 +679,6 @@ export async function GET(
       if (tab === 'groups') {
         const pageResult = queryGroupsPage({
           creatorId,
-          aliases,
           defaultConfig,
           page,
           pageSize,
@@ -630,19 +690,13 @@ export async function GET(
             creator,
             tab,
             items: pageResult.items,
-            pagination: {
-              page: pageResult.page,
-              pageSize: pageResult.pageSize,
-              total: pageResult.total,
-              hasMore: pageResult.hasMore,
-            },
+            pagination: buildPaginationPayload(pageResult),
           },
         })
       }
 
       const pageResult = queryMediaPage({
         creatorId,
-        aliases,
         defaultConfig,
         page,
         pageSize,
@@ -658,28 +712,12 @@ export async function GET(
           creator,
           tab,
           items: pageResult.items,
-          pagination: {
-            page: pageResult.page,
-            pageSize: pageResult.pageSize,
-            total: pageResult.total,
-            hasMore: pageResult.hasMore,
-          },
+          pagination: buildPaginationPayload(pageResult),
         },
       })
     }
 
-    const { summary, availableTags } = querySummaryAndTags({ creatorId, aliases })
-    const viewedFirstPage = queryMediaPage({
-      creatorId,
-      aliases,
-      defaultConfig,
-      page: 1,
-      pageSize,
-      viewed: true,
-      mediaType: 'all',
-      ratings: [],
-      tags: [],
-    })
+    const { summary, availableTags } = querySummaryAndTags({ creatorId })
 
     return NextResponse.json({
       success: true,
@@ -688,15 +726,6 @@ export async function GET(
         summary,
         filters: {
           availableTags,
-        },
-        initialViewed: {
-          items: viewedFirstPage.items,
-          pagination: {
-            page: viewedFirstPage.page,
-            pageSize: viewedFirstPage.pageSize,
-            total: viewedFirstPage.total,
-            hasMore: viewedFirstPage.hasMore,
-          },
         },
       },
     })

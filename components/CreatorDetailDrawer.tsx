@@ -86,6 +86,15 @@ function getErrorMessage(error: unknown, fallback: string) {
   return fallback
 }
 
+async function parseApiJsonResponse(response: Response) {
+  const rawText = await response.text()
+  try {
+    return rawText ? JSON.parse(rawText) : {}
+  } catch {
+    throw new Error(`接口返回了非 JSON 响应（HTTP ${response.status}）`)
+  }
+}
+
 /** 博主详情标签页类型 */
 type CreatorDetailTab = 'viewed' | 'unviewed' | 'groups'
 /** 媒体类型过滤器 */
@@ -220,13 +229,15 @@ export default function CreatorDetailDrawer({
   /** 统计信息（用于展示全部计数） */
   const [summaryCounts, setSummaryCounts] = useState<CreatorSummaryCounts>({ mediaTotal: 0, viewedTotal: 0, unviewedTotal: 0, groupTotal: 0 })
   /** 各标签页当前页 */
-  const [tabPages, setTabPages] = useState({ viewed: 1, unviewed: 0, groups: 0 })
+  const [tabPages, setTabPages] = useState({ viewed: 0, unviewed: 0, groups: 0 })
   /** 各标签页是否还有下一页 */
   const [tabHasMore, setTabHasMore] = useState({ viewed: false, unviewed: false, groups: false })
   /** 各标签页是否已初始化 */
   const [tabInitialized, setTabInitialized] = useState({ viewed: false, unviewed: false, groups: false })
   /** 首屏引导加载状态 */
   const [bootstrapLoading, setBootstrapLoading] = useState(false)
+  /** 首屏信息是否已成功完成，成功后才允许标签页懒加载 */
+  const [bootstrapReadyForTabs, setBootstrapReadyForTabs] = useState(false)
   /** 首屏加载错误 */
   const [loadError, setLoadError] = useState<string | null>(null)
   /** 首屏重试键 */
@@ -300,8 +311,8 @@ export default function CreatorDetailDrawer({
   const unviewedFilterKeyRef = useRef('')
 
   const fetchBootstrapData = useCallback(async (creatorId: number, requestId: number) => {
-    const response = await fetch(`/api/creators/${creatorId}/media?mode=bootstrap&pageSize=${PAGE_SIZE}`)
-    const data = await response.json()
+    const response = await fetch(`/api/creators/${creatorId}/media?mode=bootstrap`)
+    const data = await parseApiJsonResponse(response)
     if (!response.ok || !data.success) {
       throw new Error(data.error || '加载博主详情失败')
     }
@@ -313,8 +324,6 @@ export default function CreatorDetailDrawer({
     const payload = data.data || {}
     const creatorData = payload.creator || null
     const summary = payload.summary || {}
-    const initialViewed = payload.initialViewed || {}
-    const pagination = initialViewed.pagination || {}
 
     setLocalCreator(creatorData)
     setSummaryCounts({
@@ -325,18 +334,18 @@ export default function CreatorDetailDrawer({
     })
     setLocalAvailableTags(payload.filters?.availableTags || [])
 
-    const viewedItems = initialViewed.items || []
-    setLocalMedia(viewedItems)
+    setLocalMedia([])
     setLocalGroups([])
     setGroupMediaMap({})
 
-    setTabPages({ viewed: pagination.page || 1, unviewed: 0, groups: 0 })
+    setTabPages({ viewed: 0, unviewed: 0, groups: 0 })
     setTabHasMore({
-      viewed: Boolean(pagination.hasMore),
+      viewed: (summary.viewedTotal || 0) > 0,
       unviewed: (summary.unviewedTotal || 0) > 0,
       groups: (summary.groupTotal || 0) > 0,
     })
-    setTabInitialized({ viewed: true, unviewed: false, groups: false })
+    setTabInitialized({ viewed: false, unviewed: false, groups: false })
+    setBootstrapReadyForTabs(true)
 
     return true
   }, [])
@@ -357,7 +366,7 @@ export default function CreatorDetailDrawer({
     if (targetTab === 'groups') {
       const search = new URLSearchParams({ mode: 'tab', tab: 'groups', page: String(page), pageSize: String(PAGE_SIZE) })
       const response = await fetch(`/api/creators/${creatorId}/media?${search.toString()}`)
-      const data = await response.json()
+      const data = await parseApiJsonResponse(response)
       if (!response.ok || !data.success) {
         throw new Error(data.error || '加载图组失败')
       }
@@ -400,7 +409,7 @@ export default function CreatorDetailDrawer({
     }
 
     const response = await fetch(`/api/creators/${creatorId}/media?${search.toString()}`)
-    const data = await response.json()
+    const data = await parseApiJsonResponse(response)
     if (!response.ok || !data.success) {
       throw new Error(data.error || '加载媒体失败')
     }
@@ -435,7 +444,7 @@ export default function CreatorDetailDrawer({
   ) => {
     const search = new URLSearchParams({ mode: 'group-media', groupPath, page: String(page), pageSize: String(PAGE_SIZE) })
     const response = await fetch(`/api/creators/${creatorId}/media?${search.toString()}`)
-    const data = await response.json()
+    const data = await parseApiJsonResponse(response)
     if (!response.ok || !data.success) {
       groupMediaLoadingRef.current[groupPath] = false
       throw new Error(data.error || '加载图组媒体失败')
@@ -544,7 +553,7 @@ export default function CreatorDetailDrawer({
   }, [open, creator?.id])
 
   /**
-   * 打开详情时仅拉基础信息 + 已看首屏
+   * 打开详情时仅拉基础信息、汇总统计和可用标签
    */
   useEffect(() => {
     if (!open || !creator?.id) return
@@ -553,6 +562,7 @@ export default function CreatorDetailDrawer({
     tabRequestIdRef.current = { viewed: 0, unviewed: 0, groups: 0 }
     groupMediaRequestIdRef.current = {}
     setBootstrapLoading(true)
+    setBootstrapReadyForTabs(false)
     setLoadError(null)
     setLoadingTab({ viewed: false, unviewed: false, groups: false })
     setLoadingMoreTab(null)
@@ -590,6 +600,7 @@ export default function CreatorDetailDrawer({
    */
   useEffect(() => {
     if (!open || !creatorId) return
+    if (!bootstrapReadyForTabs) return
     if (bootstrapLoading) return
     if (loadError) return
     if (tabInitialized[tab]) return
@@ -627,7 +638,7 @@ export default function CreatorDetailDrawer({
         }
       }
     })()
-  }, [appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, bootstrapLoading, creatorId, fetchTabPage, loadError, loadingTab, mediaTypeFilter, onError, open, tab, tabInitialized])
+  }, [appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, bootstrapLoading, bootstrapReadyForTabs, creatorId, fetchTabPage, loadError, loadingTab, mediaTypeFilter, onError, open, tab, tabInitialized])
 
   /**
    * 筛选条件或标签页变化时，滚动到顶部

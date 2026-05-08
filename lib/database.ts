@@ -1226,7 +1226,7 @@ export const creators = {
         appearanceRating: row.appearance_rating,
         bodyRating: row.body_rating,
         bio: row.bio,
-        avatarPath: row.avatar_path,
+        avatarPath: normalizeAvatarPath(row.avatar_path),
         usageCount: row.usage_count,
         createdAt: row.created_at,
         updatedAt: row.updated_at
@@ -1253,7 +1253,7 @@ export const creators = {
         appearanceRating: row.appearance_rating,
         bodyRating: row.body_rating,
         bio: row.bio,
-        avatarPath: row.avatar_path,
+        avatarPath: normalizeAvatarPath(row.avatar_path),
         usageCount: row.usage_count,
         createdAt: row.created_at,
         updatedAt: row.updated_at
@@ -1295,7 +1295,7 @@ export const creators = {
         appearanceRating: row.appearance_rating,
         bodyRating: row.body_rating,
         bio: row.bio,
-        avatarPath: row.avatar_path,
+        avatarPath: normalizeAvatarPath(row.avatar_path),
         usageCount: row.usage_count,
         createdAt: row.created_at,
         updatedAt: row.updated_at
@@ -2535,6 +2535,25 @@ function getFileType(basename: string): 'image' | 'video' {
     return 'image'
   }
   return 'video'
+}
+
+/**
+ * 规范化博主头像路径。
+ *
+ * 历史数据里存在把未设置头像写成字符串 `0` 的情况，
+ * 前端若直接把它作为图片地址，会自动请求 [`/0`](0)，属于无意义请求。
+ */
+function normalizeAvatarPath(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const trimmed = value.trim()
+  if (!trimmed || trimmed === '0' || trimmed.toLowerCase() === 'null' || trimmed.toLowerCase() === 'undefined') {
+    return null
+  }
+
+  return trimmed
 }
 
 // 文件级博主关联表操作
