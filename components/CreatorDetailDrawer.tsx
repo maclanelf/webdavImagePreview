@@ -124,6 +124,8 @@ interface CreatorDetailDrawerProps {
   loading?: boolean
   /** 关闭抽屉的回调 */
   onClose: () => void
+  /** 博主信息更新后的回调 */
+  onCreatorUpdated?: (creator: CreatorSummary | null) => void
   /** 预览媒体的回调 */
   onPreviewMedia: (media: CreatorMediaCard, list: CreatorMediaCard[]) => void
   /** 预览是否打开 */
@@ -204,6 +206,7 @@ export default function CreatorDetailDrawer({
   availableTags,
   loading,
   onClose,
+  onCreatorUpdated,
   onPreviewMedia,
   previewOpen,
   previewList,
@@ -715,11 +718,13 @@ export default function CreatorDetailDrawer({
       if (!response.ok || !data.success) {
         throw new Error(data.error || '刷新博主信息失败')
       }
-      setLocalCreator(data.data || null)
+      const nextCreator = data.data || null
+      setLocalCreator(nextCreator)
+      onCreatorUpdated?.(nextCreator)
     } catch (error) {
       console.error('[CreatorDetailDrawer] 刷新博主信息失败:', error)
     }
-  }, [creator?.id, localCreator?.id])
+  }, [creator?.id, localCreator?.id, onCreatorUpdated])
 
   /**
    * 预览打开时加载当前媒体的评分
@@ -1045,6 +1050,14 @@ export default function CreatorDetailDrawer({
     if (tab === 'groups') return []
     return currentMediaList
   }, [currentMediaList, tab])
+
+  const previewDisplayTotalCount = useMemo(() => {
+    if (tab !== 'groups' || !previewMedia?.groupPath) {
+      return undefined
+    }
+
+    return localGroups.find((group) => group.groupPath === previewMedia.groupPath)?.fileCount
+  }, [localGroups, previewMedia?.groupPath, tab])
 
   const hasPendingViewedFilterChanges = useMemo(() => {
     return viewedDraftMediaTypeFilter !== appliedViewedMediaTypeFilter
@@ -2195,6 +2208,7 @@ export default function CreatorDetailDrawer({
         active={previewOpen}
         items={previewItems}
         currentIndex={previewIndex}
+        displayTotalCount={previewDisplayTotalCount}
         cacheVersion={cacheVersion}
         playIntent
         warmUpToken={previewWarmUpToken}

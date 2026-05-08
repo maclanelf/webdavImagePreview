@@ -34,6 +34,8 @@ interface CreatorDetailPreviewContainerProps {
   warmUpToken?: number
   /** 当前媒体的评分 */
   currentRating?: number
+  /** 当前预览上下文中的总文件数，图组预览时用于展示完整总数 */
+  displayTotalCount?: number
   /** 切换索引的回调 */
   onChangeIndex: (nextIndex: number) => void
   /** 关闭预览的回调 */
@@ -98,6 +100,7 @@ const CreatorDetailPreviewContainer = forwardRef<CreatorDetailPreviewContainerRe
   playIntent = true,
   warmUpToken = 0,
   currentRating,
+  displayTotalCount,
   onChangeIndex,
   onClose,
   onQuickRate,
@@ -530,7 +533,7 @@ const CreatorDetailPreviewContainer = forwardRef<CreatorDetailPreviewContainerRe
                           {currentItem?.title || '预览'}
                         </Typography>
                         <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.66)' }}>
-                          {currentIndex + 1} / {items.length}
+                          {currentIndex + 1} / {displayTotalCount || items.length}
                         </Typography>
                       </Box>
                     </Stack>

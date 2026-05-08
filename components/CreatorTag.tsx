@@ -99,7 +99,7 @@ export default function CreatorTag({
         alignItems: 'center',
         gap: 0.4,
         cursor: 'pointer',
-        zIndex: 1000,
+        zIndex: 20,
         userSelect: 'none',
         WebkitTapHighlightColor: 'transparent',
         opacity: 0.6, // 降低整体透明度

@@ -737,7 +737,7 @@ export default function HomePage() {
         sx={{
           position: 'sticky',
           top: 0,
-          zIndex: 100,
+          zIndex: 1200,
           backgroundColor: 'white',
           borderBottom: '1px solid #e0e0e0',
           px: 2,
@@ -1057,6 +1057,10 @@ export default function HomePage() {
       <CreatorDetailDrawer
         open={creatorDetailOpen}
         creator={currentCreator}
+        onCreatorUpdated={(creator) => {
+          setCurrentCreator(creator)
+          setCreatorRefreshKey((prev) => prev + 1)
+        }}
         onError={(message) => notify(message, 'error')}
         onClose={() => {
           setCreatorDetailOpen(false)

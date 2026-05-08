@@ -1599,7 +1599,7 @@ const InstantVideoPlayer = forwardRef<InstantVideoPlayerRef, InstantVideoPlayerP
             right: 0,
             bottom: 0,
             pointerEvents: 'none',
-            zIndex: 2050,
+            zIndex: isParentFullscreen || isFullscreen ? 2050 : 3,
             '& > *': {
               pointerEvents: 'auto',
             },

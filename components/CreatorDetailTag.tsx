@@ -76,7 +76,7 @@ export default function CreatorDetailTag({
         alignItems: 'center',
         gap: 0.5,
         cursor: 'pointer',
-        zIndex: 1001,
+        zIndex: 21,
         opacity: 0.72,
         userSelect: 'none',
         WebkitTapHighlightColor: 'transparent',
