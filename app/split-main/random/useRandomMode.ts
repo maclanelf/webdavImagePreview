@@ -127,6 +127,7 @@ export function useRandomMode({
   const randomHistoryCache = useRef<Map<string, RandomHistoryCacheEntry>>(new Map())
   const smartPreloadTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const smartPreloadInProgressRef = useRef(false)
+  const resumableLatestFileRef = useRef<string | null>(null)
 
   /**
    * 随机模式专属播放回调：小视频播放进度更新。
@@ -241,7 +242,7 @@ export function useRandomMode({
    * 它依赖之前已经写入 [`randomHistoryCache`](app/split-main/random/useRandomMode.ts:113)
    * 的 Blob、媒体类型与播放地址信息，实现真正的“秒切回看”。
    */
-  const loadFileDirectly = useCallback(async (fileToLoad: MediaFile) => {
+  const loadFileDirectly = useCallback(async (fileToLoad: MediaFile, suppressAutoRating: boolean = true) => {
     hasAutoRatedRef.current = false
     videoStateRef.current = null
 
@@ -291,7 +292,7 @@ export function useRandomMode({
 
       setRatingType('media')
       await loadCurrentRatingRef.current(fileToLoad, 'media')
-      startAutoMarkTimerRef.current(fileToLoad, true)
+      startAutoMarkTimerRef.current(fileToLoad, suppressAutoRating)
     } catch (e: any) {
       setError(e.message)
     } finally {
@@ -438,6 +439,10 @@ export function useRandomMode({
       setError('随机选择文件失败')
       return
     }
+
+    // 每次真正切到一个新的随机文件，都要清空“临时回看后可恢复自动评分”的标记，
+    // 因为一旦进入新的随机文件，旧的最新文件就不再属于“只是临时回看后返回”的场景。
+    resumableLatestFileRef.current = null
 
     // 每次真正切到一个新的随机文件，都要清理自动评分与视频续播状态，
     // 避免把上一个文件的播放上下文误带到当前文件。
@@ -632,6 +637,13 @@ export function useRandomMode({
       return
     }
 
+    if (randomHistoryIndex === -1 && currentFile) {
+      // 仅记录“离开最新文件去回看历史”的场景。
+      // 这样 4(未自动评分) → 回看 3 → 再回到 4 时，可以恢复 4 的自动评分；
+      // 但 3 → 2 → 再回到 3 这种普通历史文件前进，不会被当成可恢复对象。
+      resumableLatestFileRef.current = hasAutoRatedRef.current ? null : currentFile.filename
+    }
+
     const newIndex = randomHistoryIndex - 1
     const targetIndex = randomHistory.length + newIndex
 
@@ -645,8 +657,9 @@ export function useRandomMode({
 
     playIntentRef.current = true
     setRandomHistoryIndex(newIndex)
-    void loadFileDirectly(fileToLoad)
-  }, [loadFileDirectly, playIntentRef, randomHistory, randomHistoryIndex])
+    // 回看旧历史时仍然禁止自动补 2 星，避免纯浏览历史时误触发自动评分。
+    void loadFileDirectly(fileToLoad, true)
+  }, [currentFile, hasAutoRatedRef, loadFileDirectly, playIntentRef, randomHistory, randomHistoryIndex])
 
   /**
    * 从历史位置前进。
@@ -670,10 +683,14 @@ export function useRandomMode({
     if (newIndex === -1) {
       const fileToLoad = randomHistory[randomHistory.length - 1]
       console.log(`[前进] 回到最新位置，加载文件: ${fileToLoad.basename}`)
+      const shouldResumeAutoRating = resumableLatestFileRef.current === fileToLoad.filename
 
       playIntentRef.current = true
       setRandomHistoryIndex(-1)
-      void loadFileDirectly(fileToLoad)
+      resumableLatestFileRef.current = null
+      // 只有“从最新文件临时回看出去，且该最新文件离开前尚未自动评分”时，
+      // 才在回到最新位置后恢复自动评分。
+      void loadFileDirectly(fileToLoad, !shouldResumeAutoRating)
       return
     }
 
@@ -683,7 +700,8 @@ export function useRandomMode({
 
     playIntentRef.current = true
     setRandomHistoryIndex(newIndex)
-    void loadFileDirectly(fileToLoad)
+    // 仍处于旧历史区间时，继续保持自动评分抑制。
+    void loadFileDirectly(fileToLoad, true)
   }, [loadFileDirectly, loadRandomFile, playIntentRef, randomHistory, randomHistoryIndex, saveAndSwitchRef])
 
   /**
