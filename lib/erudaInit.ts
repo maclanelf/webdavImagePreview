@@ -5,26 +5,48 @@
 
 // Eruda 实例引用
 let erudaInstance: any = null
+let erudaInitPromise: Promise<void> | null = null
 
-// Eruda 在任何环境下都强制关闭。
+const ERUDA_STORAGE_KEY = 'eruda_enabled'
+const ERUDA_STYLE_ID = 'custom-eruda-style'
+
 export function getErudaEnabled(): boolean {
-  return false
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  return localStorage.getItem(ERUDA_STORAGE_KEY) === 'true'
 }
 
 // 设置 Eruda 开关状态
 export function setErudaEnabled(enabled: boolean) {
   if (typeof window === 'undefined') return
 
-  localStorage.setItem('eruda_enabled', 'false')
+  localStorage.setItem(ERUDA_STORAGE_KEY, enabled.toString())
+
+  if (enabled) {
+    initEruda()
+    return
+  }
+
   destroyEruda()
 }
 
 // 销毁 Eruda
 function destroyEruda() {
+  const globalEruda = typeof window !== 'undefined' ? (window as any).eruda : null
+
   if (erudaInstance && typeof erudaInstance.destroy === 'function') {
     erudaInstance.destroy()
-    erudaInstance = null
+  } else if (globalEruda && typeof globalEruda.destroy === 'function') {
+    globalEruda.destroy()
   }
+
+  erudaInstance = null
+  erudaInitPromise = null
+
+  const customStyle = document.getElementById(ERUDA_STYLE_ID)
+  customStyle?.remove()
 }
 
 export function initEruda() {
@@ -33,14 +55,23 @@ export function initEruda() {
     return
   }
   
-  // 如果已经初始化，不重复初始化
-  if (erudaInstance) {
+  // 如果已经初始化或正在初始化，不重复初始化
+  if (erudaInstance || erudaInitPromise) {
     return
   }
   
   // 动态导入 eruda，避免 SSG 时报错
-  import('eruda').then((eruda) => {
-    erudaInstance = eruda.default.init({
+  erudaInitPromise = import('eruda').then((eruda) => {
+    if (!getErudaEnabled()) {
+      return
+    }
+
+    const globalEruda = (window as any).eruda
+    const erudaApi = globalEruda && typeof globalEruda.init === 'function'
+      ? globalEruda
+      : eruda.default
+
+    erudaApi.init({
       useShadowDom: false,
       autoScale: true,
       defaults: {
@@ -49,6 +80,8 @@ export function initEruda() {
         theme: 'auto'
       }
     })
+
+    erudaInstance = erudaApi
     
     setTimeout(() => {
       addCustomStyles()
@@ -56,12 +89,19 @@ export function initEruda() {
     }, 1000)
   }).catch((error) => {
     console.error('Eruda 初始化失败:', error)
+  }).finally(() => {
+    erudaInitPromise = null
   })
 }
 
 // 添加自定义样式
 function addCustomStyles() {
+  if (document.getElementById(ERUDA_STYLE_ID)) {
+    return
+  }
+
   const style = document.createElement('style')
+  style.id = ERUDA_STYLE_ID
   style.textContent = `
     /* 优化工具栏按钮 */
     .eruda-console .eruda-header .eruda-btn {

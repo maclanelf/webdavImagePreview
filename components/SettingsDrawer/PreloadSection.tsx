@@ -75,7 +75,7 @@ export default function PreloadSection({
           <Box>
             <Typography variant="body2">移动端调试</Typography>
             <Typography variant="caption" color="text.secondary" display="block">
-              Eruda 调试工具（需刷新生效）
+              Eruda 调试工具（点击后立即生效）
             </Typography>
           </Box>
           <Button

@@ -400,10 +400,10 @@ export default function HomePage() {
     localStorage.setItem('optimistic_update_enabled', enabled.toString())
   }, [])
 
-  const handleErudaEnabledChange = useCallback((_enabled: boolean) => {
-    setErudaEnabledState(false)
-    setErudaEnabled(false)
-    notify('Eruda 已强制禁用', 'info')
+  const handleErudaEnabledChange = useCallback((enabled: boolean) => {
+    setErudaEnabledState(enabled)
+    setErudaEnabled(enabled)
+    notify(enabled ? 'Eruda 已启用' : 'Eruda 已禁用', 'info')
   }, [notify])
 
   const handlePreloadRandomnessChange = useCallback((value: number) => {
