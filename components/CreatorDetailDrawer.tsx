@@ -36,7 +36,6 @@ import CreatorDetailPreviewContainer, { type CreatorDetailPreviewContainerRef } 
 import { type InstantVideoPlayerRef } from '@/components/InstantVideoPlayer'
 import RatingDialog from '@/components/RatingDialog'
 import { openExternalPlayerUrl } from '@/components/split-main/shared/videoPlayback'
-import { useCreatorPreviewPreload } from '../hooks/useCreatorPreviewPreload'
 import type {
   CreatorGroupCard,
   CreatorMediaCard,
@@ -48,6 +47,8 @@ import { QUICK_RATING_CONFIG } from '@/types'
 
 /** 每页显示的媒体数量 */
 const PAGE_SIZE = 10
+const HEADER_EXPANDED_HEIGHT = 308
+const HEADER_CONDENSED_HEIGHT = 126
 
 type CreatorSummaryCounts = {
   mediaTotal: number
@@ -72,11 +73,17 @@ function isSameMediaIdList(a: CreatorMediaCard[], b: CreatorMediaCard[]) {
   return true
 }
 
-function buildOrderedGroupItems(list: CreatorMediaCard[], activeItemId?: string | null) {
-  if (!activeItemId) return list
-  const initialIndex = list.findIndex((item) => item.id === activeItemId)
-  if (initialIndex <= 0) return list
-  return [...list.slice(initialIndex), ...list.slice(0, initialIndex)]
+function buildGroupPreviewItems(items: CreatorMediaCard[], previewSeed?: CreatorMediaCard | null) {
+  if (!previewSeed) return items
+  return mergeUniqueById([previewSeed, ...items])
+}
+
+function resolveGroupPreviewEntryItem(group: CreatorGroupCard, items: CreatorMediaCard[]) {
+  if (group.previewSeed) return group.previewSeed
+  if (group.coverFilePath) {
+    return items.find((item) => item.filePath === group.coverFilePath) || items[0] || null
+  }
+  return items[0] || null
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -249,6 +256,10 @@ export default function CreatorDetailDrawer({
   const [loadingMoreTab, setLoadingMoreTab] = useState<CreatorDetailTab | null>(null)
   /** 图组媒体缓存 */
   const [groupMediaMap, setGroupMediaMap] = useState<Record<string, { items: CreatorMediaCard[]; page: number; hasMore: boolean; loading: boolean }>>({})
+  /** 当前图组预览对应的图组路径，用于稳定显示总数与补页上下文 */
+  const [activePreviewGroupPath, setActivePreviewGroupPath] = useState<string | null>(null)
+  /** 当前图组预览对应的总文件数，避免首帧与补页阶段左上角数字抖动 */
+  const [activePreviewGroupTotalCount, setActivePreviewGroupTotalCount] = useState<number | null>(null)
   /** 当前选中的标签页 */
   const [tab, setTab] = useState<CreatorDetailTab>('viewed')
   /** 已看 Tab 草稿评分筛选条件 */
@@ -295,6 +306,8 @@ export default function CreatorDetailDrawer({
   const [previewCreatorRefreshKey, setPreviewCreatorRefreshKey] = useState(0)
   /** 博主信息编辑对话框是否打开 */
   const [creatorInfoDialogOpen, setCreatorInfoDialogOpen] = useState(false)
+  /** sticky 头部是否已压缩 */
+  const [headerCondensed, setHeaderCondensed] = useState(false)
   /** 是否为移动端 */
   const [isMobile, setIsMobile] = useState(false)
   /** 列表容器引用 */
@@ -305,13 +318,20 @@ export default function CreatorDetailDrawer({
   const previewInstantVideoRef = useRef<InstantVideoPlayerRef | null>(null)
   /** 预览是否已自动评分的标记 */
   const previewAutoRatedRef = useRef(false)
+  const headerCondensedRef = useRef(false)
   const previousLocalMediaRef = useRef<CreatorMediaCard[]>([])
+  const onErrorRef = useRef(onError)
   const activeRequestIdRef = useRef(0)
   const tabRequestIdRef = useRef<Record<CreatorDetailTab, number>>({ viewed: 0, unviewed: 0, groups: 0 })
   const groupMediaRequestIdRef = useRef<Record<string, number>>({})
   const groupMediaLoadingRef = useRef<Record<string, boolean>>({})
+  const lastListScrollTopRef = useRef(0)
+  const scrollAnimationFrameRef = useRef<number | null>(null)
+  const pendingListScrollTopRef = useRef(0)
+  const headerToggleTimeoutRef = useRef<number | null>(null)
   const viewedFilterKeyRef = useRef('')
   const unviewedFilterKeyRef = useRef('')
+  const groupPreviewHalfLoadTriggeredPageRef = useRef<Record<string, number>>({})
 
   const fetchBootstrapData = useCallback(async (creatorId: number, requestId: number) => {
     const response = await fetch(`/api/creators/${creatorId}/media?mode=bootstrap`)
@@ -494,9 +514,6 @@ export default function CreatorDetailDrawer({
     return previewList.map((item) => localMedia.find((mediaItem) => mediaItem.id === item.id) || item)
   }, [localMedia, previewList])
 
-  /** 使用预加载 Hook 提升预览体验 */
-  const { cacheVersion, getCachedObjectUrl } = useCreatorPreviewPreload(previewSourceList, previewIndex, previewOpen)
-
   /**
    * 同步外部传入的博主和媒体数据到本地状态
    */
@@ -536,12 +553,33 @@ export default function CreatorDetailDrawer({
     setIsMobile(userAgent.includes('android') || /iphone|ipad|ipod/.test(userAgent))
   }, [])
 
+  useEffect(() => {
+    onErrorRef.current = onError
+  }, [onError])
+
+  useEffect(() => {
+    headerCondensedRef.current = headerCondensed
+  }, [headerCondensed])
+
+  useEffect(() => () => {
+    if (scrollAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(scrollAnimationFrameRef.current)
+      scrollAnimationFrameRef.current = null
+    }
+    if (headerToggleTimeoutRef.current !== null) {
+      window.clearTimeout(headerToggleTimeoutRef.current)
+      headerToggleTimeoutRef.current = null
+    }
+  }, [])
+
   /**
    * 抽屉打开时重置所有筛选条件和分页状态
    */
   useEffect(() => {
     if (!open) return
     setTab('viewed')
+    setHeaderCondensed(false)
+    headerCondensedRef.current = false
     setLoadError(null)
     setSelectedRatings([])
     setSelectedTags([])
@@ -551,6 +589,16 @@ export default function CreatorDetailDrawer({
     setAppliedViewedMediaTypeFilter('all')
     setMediaTypeFilter('all')
     setViewedFiltersExpanded(false)
+    if (scrollAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(scrollAnimationFrameRef.current)
+      scrollAnimationFrameRef.current = null
+    }
+    if (headerToggleTimeoutRef.current !== null) {
+      window.clearTimeout(headerToggleTimeoutRef.current)
+      headerToggleTimeoutRef.current = null
+    }
+    lastListScrollTopRef.current = 0
+    pendingListScrollTopRef.current = 0
     viewedFilterKeyRef.current = JSON.stringify({ mediaType: 'all', ratings: [], tags: [] })
     unviewedFilterKeyRef.current = JSON.stringify({ mediaType: 'all' })
   }, [open, creator?.id])
@@ -564,6 +612,7 @@ export default function CreatorDetailDrawer({
     const requestId = ++activeRequestIdRef.current
     tabRequestIdRef.current = { viewed: 0, unviewed: 0, groups: 0 }
     groupMediaRequestIdRef.current = {}
+    groupPreviewHalfLoadTriggeredPageRef.current = {}
     setBootstrapLoading(true)
     setBootstrapReadyForTabs(false)
     setLoadError(null)
@@ -589,14 +638,14 @@ export default function CreatorDetailDrawer({
         if (activeRequestIdRef.current === requestId) {
           setLoadError(message)
         }
-        onError?.(message)
+        onErrorRef.current?.(message)
       } finally {
         if (activeRequestIdRef.current === requestId) {
           setBootstrapLoading(false)
         }
       }
     })()
-  }, [bootstrapRetryKey, creator, fetchBootstrapData, onError, open])
+  }, [bootstrapRetryKey, creator?.id, fetchBootstrapData, open])
 
   /**
    * 标签页懒加载：未初始化时按页拉取
@@ -650,6 +699,18 @@ export default function CreatorDetailDrawer({
     if (listContainerRef.current) {
       listContainerRef.current.scrollTo({ top: 0, behavior: 'auto' })
     }
+    if (scrollAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(scrollAnimationFrameRef.current)
+      scrollAnimationFrameRef.current = null
+    }
+    if (headerToggleTimeoutRef.current !== null) {
+      window.clearTimeout(headerToggleTimeoutRef.current)
+      headerToggleTimeoutRef.current = null
+    }
+    lastListScrollTopRef.current = 0
+    pendingListScrollTopRef.current = 0
+    setHeaderCondensed(false)
+    headerCondensedRef.current = false
   }, [appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, mediaTypeFilter, tab, creator?.id])
 
   /**
@@ -1052,12 +1113,13 @@ export default function CreatorDetailDrawer({
   }, [currentMediaList, tab])
 
   const previewDisplayTotalCount = useMemo(() => {
-    if (tab !== 'groups' || !previewMedia?.groupPath) {
+    if (tab !== 'groups' || !activePreviewGroupPath) {
       return undefined
     }
 
-    return localGroups.find((group) => group.groupPath === previewMedia.groupPath)?.fileCount
-  }, [localGroups, previewMedia?.groupPath, tab])
+    return activePreviewGroupTotalCount
+      ?? localGroups.find((group) => group.groupPath === activePreviewGroupPath)?.fileCount
+  }, [activePreviewGroupPath, activePreviewGroupTotalCount, localGroups, tab])
 
   const hasPendingViewedFilterChanges = useMemo(() => {
     return viewedDraftMediaTypeFilter !== appliedViewedMediaTypeFilter
@@ -1086,20 +1148,12 @@ export default function CreatorDetailDrawer({
   }, [activePreviewList, syncPreviewList])
 
   useEffect(() => {
-    if (!previewOpen || tab !== 'groups') return
-    if (previewList.length > 1) return
-
-    const currentGroupPath = previewMedia?.groupPath
-    if (!currentGroupPath) return
-
-    const groupState = groupMediaMap[currentGroupPath]
-    if (!groupState?.items?.length) return
-
-    const hydratedList = buildOrderedGroupItems(groupState.items, previewMedia?.id)
-    if (hydratedList.length === 0 || isSameMediaIdList(previewList, hydratedList)) return
-
-    onPreviewListChange(hydratedList)
-  }, [groupMediaMap, onPreviewListChange, previewList, previewMedia?.groupPath, previewMedia?.id, previewOpen, tab])
+    if (!previewOpen || tab !== 'groups') {
+      setActivePreviewGroupPath(null)
+      setActivePreviewGroupTotalCount(null)
+      groupPreviewHalfLoadTriggeredPageRef.current = {}
+    }
+  }, [previewOpen, tab])
 
   useEffect(() => {
     if (!open || !creatorId || bootstrapLoading) return
@@ -1230,19 +1284,20 @@ export default function CreatorDetailDrawer({
   const handleOpenGroupPreview = useCallback((group: CreatorGroupCard) => {
     if (!creatorId) return
 
+    flushSync(() => {
+      setActivePreviewGroupPath(group.groupPath)
+      setActivePreviewGroupTotalCount(group.fileCount)
+    })
+
     const groupState = groupMediaMap[group.groupPath]
-    const initialItemId = group.previewSeed?.id || group.coverFilePath || null
     const cachedItems = groupState?.items || []
+    const initialItem = resolveGroupPreviewEntryItem(group, cachedItems)
 
-    if (cachedItems.length > 0) {
-      const orderedGroupItems = buildOrderedGroupItems(cachedItems, initialItemId)
-      if (orderedGroupItems.length === 0) return
-      openPreviewWithWarmUp(orderedGroupItems[0], orderedGroupItems)
-      return
-    }
-
-    if (group.previewSeed) {
-      openPreviewWithWarmUp(group.previewSeed, [group.previewSeed])
+    if (initialItem) {
+      const initialPreviewList = cachedItems.length > 0
+        ? buildGroupPreviewItems(cachedItems, initialItem)
+        : [initialItem]
+      openPreviewWithWarmUp(initialItem, initialPreviewList)
     }
 
     if (groupState?.loading || groupMediaLoadingRef.current[group.groupPath]) return
@@ -1265,11 +1320,20 @@ export default function CreatorDetailDrawer({
         const result = await fetchGroupMediaPage(creatorId, group.groupPath, 1, true, requestId, sessionId)
         if (!result) return
 
-        if (!group.previewSeed) {
-          const orderedGroupItems = buildOrderedGroupItems(result.items, initialItemId)
-          if (orderedGroupItems.length === 0) return
-          openPreviewWithWarmUp(orderedGroupItems[0], orderedGroupItems)
+        const nextInitialItem = resolveGroupPreviewEntryItem(group, result.items)
+        const firstPagePreviewItems = buildGroupPreviewItems(result.items, nextInitialItem)
+        if (firstPagePreviewItems.length === 0) return
+
+        if (initialItem) {
+          // 图组点开后先保持与卡片预览一致的首图，再在后台补齐首批 10 条数据。
+          // 首批返回后只替换列表，不重新切换当前媒体，避免全屏首图发生跳变。
+          if (!isSameMediaIdList(previewList, firstPagePreviewItems)) {
+            onPreviewListChange(firstPagePreviewItems)
+          }
+          return
         }
+
+        openPreviewWithWarmUp(nextInitialItem || firstPagePreviewItems[0], firstPagePreviewItems)
       } catch (error) {
         groupMediaLoadingRef.current[group.groupPath] = false
         console.error('[CreatorDetailDrawer] 打开图组预览失败:', error)
@@ -1285,7 +1349,7 @@ export default function CreatorDetailDrawer({
         }
       }
     })()
-  }, [creatorId, fetchGroupMediaPage, groupMediaMap, onError, openPreviewWithWarmUp])
+  }, [creatorId, fetchGroupMediaPage, groupMediaMap, onError, onPreviewListChange, openPreviewWithWarmUp])
 
   const handlePrimeGroupPreview = useCallback((group: CreatorGroupCard) => {
     const groupItems = groupMediaMap[group.groupPath]?.items || []
@@ -1295,48 +1359,13 @@ export default function CreatorDetailDrawer({
         : groupItems[0])
 
     requestPreviewWarmUp(initialItem)
-
-    if (!creatorId) return
-    const groupState = groupMediaMap[group.groupPath]
-    if (groupState?.loading || groupState?.items?.length || groupMediaLoadingRef.current[group.groupPath]) return
-
-    const sessionId = activeRequestIdRef.current
-    const requestId = (groupMediaRequestIdRef.current[group.groupPath] || 0) + 1
-    groupMediaRequestIdRef.current[group.groupPath] = requestId
-    groupMediaLoadingRef.current[group.groupPath] = true
-
-    setGroupMediaMap((prev) => ({
-      ...prev,
-      [group.groupPath]: {
-        ...(prev[group.groupPath] || { items: [], page: 0, hasMore: true, loading: false }),
-        loading: true,
-      },
-    }))
-
-    ;(async () => {
-      try {
-        await fetchGroupMediaPage(creatorId, group.groupPath, 1, true, requestId, sessionId)
-      } catch (error) {
-        groupMediaLoadingRef.current[group.groupPath] = false
-        console.error('[CreatorDetailDrawer] 预取图组媒体失败:', error)
-        if (activeRequestIdRef.current === sessionId && groupMediaRequestIdRef.current[group.groupPath] === requestId) {
-          setGroupMediaMap((prev) => ({
-            ...prev,
-            [group.groupPath]: {
-              ...(prev[group.groupPath] || { items: [], page: 0, hasMore: true, loading: false }),
-              loading: false,
-            },
-          }))
-        }
-      }
-    })()
-  }, [creatorId, fetchGroupMediaPage, groupMediaMap, requestPreviewWarmUp])
+  }, [groupMediaMap, requestPreviewWarmUp])
 
   const loadMorePreviewItems = useCallback(async () => {
     if (!creatorId) return
 
     if (tab === 'groups') {
-      const currentGroup = previewMedia?.groupPath
+      const currentGroup = activePreviewGroupPath || previewMedia?.groupPath
       if (!currentGroup) return
       const groupState = groupMediaMap[currentGroup]
       if (!groupState?.hasMore || groupState.loading) return
@@ -1406,28 +1435,41 @@ export default function CreatorDetailDrawer({
         setLoadingMoreTab((prev) => (prev === targetTab ? null : prev))
       }
     }
-  }, [appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, creatorId, fetchGroupMediaPage, fetchTabPage, groupMediaMap, loadingMoreTab, loadingTab, mediaTypeFilter, onPreviewListChange, previewMedia, tab, tabHasMore, tabPages])
+  }, [activePreviewGroupPath, appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, creatorId, fetchGroupMediaPage, fetchTabPage, groupMediaMap, loadingMoreTab, loadingTab, mediaTypeFilter, onPreviewListChange, previewList, previewMedia, tab, tabHasMore, tabPages])
 
   const currentTabLoading = loadingTab[tab] || loadingMoreTab === tab
+  const activePreviewGroupState = activePreviewGroupPath ? groupMediaMap[activePreviewGroupPath] : undefined
 
   useEffect(() => {
     if (!previewOpen) return
     if (previewSourceList.length === 0) return
-    const preloadTriggerIndex = Math.max(0, previewSourceList.length - Math.ceil(PAGE_SIZE / 2))
-    if (previewIndex < preloadTriggerIndex) return
 
     if (tab === 'groups') {
-      const currentGroup = previewMedia?.groupPath
+      const currentGroup = activePreviewGroupPath || previewMedia?.groupPath
       if (!currentGroup) return
       const groupState = groupMediaMap[currentGroup]
       if (!groupState?.hasMore || groupState.loading) return
+
+      const loadedPage = Math.max(1, groupState.page || 1)
+      const preloadTriggerIndex = Math.max(0, loadedPage * PAGE_SIZE - Math.ceil(PAGE_SIZE / 2) - 1)
+      if (previewIndex < preloadTriggerIndex) return
+
+      if ((groupPreviewHalfLoadTriggeredPageRef.current[currentGroup] || 0) >= loadedPage) {
+        return
+      }
+
+      groupPreviewHalfLoadTriggeredPageRef.current[currentGroup] = loadedPage
+
       void loadMorePreviewItems()
       return
     }
 
+    const preloadTriggerIndex = Math.max(0, previewSourceList.length - Math.ceil(PAGE_SIZE / 2))
+    if (previewIndex < preloadTriggerIndex) return
+
     if (!tabHasMore[tab]) return
     void loadMorePreviewItems()
-  }, [groupMediaMap, loadMorePreviewItems, previewIndex, previewMedia?.groupPath, previewOpen, previewSourceList.length, tab, tabHasMore])
+  }, [activePreviewGroupPath, groupMediaMap, loadMorePreviewItems, previewIndex, previewMedia?.groupPath, previewOpen, previewSourceList.length, tab, tabHasMore])
 
   const previewItems = useMemo<MediaExperienceItem[]>(() => {
     return previewSourceList.map((item) => {
@@ -1441,7 +1483,7 @@ export default function CreatorDetailDrawer({
           ? (directUrl || item.streamUrl || item.previewUrl || '')
           : effectivePreviewPlayMode === 'transcode' && transcodeUrl
             ? transcodeUrl
-            : (getCachedObjectUrl(item.filePath) || item.streamUrl || item.previewUrl || directUrl || '')
+            : (item.streamUrl || item.previewUrl || directUrl || '')
       }
 
       if (item.mediaType === 'stream-video') {
@@ -1453,7 +1495,7 @@ export default function CreatorDetailDrawer({
       }
 
       if (item.mediaType === 'image') {
-        resolvedSrc = getCachedObjectUrl(item.filePath) || item.previewUrl || ''
+        resolvedSrc = item.previewUrl || ''
       }
 
       return {
@@ -1470,7 +1512,7 @@ export default function CreatorDetailDrawer({
         tags: [...(item.customEvaluation || []), ...(item.category || [])],
       }
     })
-  }, [effectivePreviewPlayMode, getCachedObjectUrl, previewSourceList])
+  }, [effectivePreviewPlayMode, previewSourceList])
 
   const resolvePreviewExternalUrl = useCallback((mode: CreatorPreviewPlayMode) => {
     if (!previewMedia) {
@@ -1614,6 +1656,51 @@ export default function CreatorDetailDrawer({
   const handleListScroll = useCallback(() => {
     const container = listContainerRef.current
     if (!container || currentTabLoading) return
+
+    const currentTop = container.scrollTop
+    pendingListScrollTopRef.current = currentTop
+
+    if (scrollAnimationFrameRef.current === null) {
+      scrollAnimationFrameRef.current = window.requestAnimationFrame(() => {
+        scrollAnimationFrameRef.current = null
+        const nextTop = pendingListScrollTopRef.current
+        const previousTop = lastListScrollTopRef.current
+        const delta = nextTop - previousTop
+
+        lastListScrollTopRef.current = nextTop
+
+        if (headerToggleTimeoutRef.current !== null) {
+          window.clearTimeout(headerToggleTimeoutRef.current)
+          headerToggleTimeoutRef.current = null
+        }
+
+        headerToggleTimeoutRef.current = window.setTimeout(() => {
+          headerToggleTimeoutRef.current = null
+          const isCondensed = headerCondensedRef.current
+          const settledTop = pendingListScrollTopRef.current
+
+          if (settledTop <= 12) {
+            if (isCondensed) {
+              headerCondensedRef.current = false
+              setHeaderCondensed(false)
+            }
+            return
+          }
+
+          if (!isCondensed && settledTop >= 88 && delta > 0) {
+            headerCondensedRef.current = true
+            setHeaderCondensed(true)
+            return
+          }
+
+          if (isCondensed && settledTop <= 40 && delta < 0) {
+            headerCondensedRef.current = false
+            setHeaderCondensed(false)
+          }
+        }, 90)
+      })
+    }
+
     const remaining = container.scrollHeight - container.scrollTop - container.clientHeight
     // 距离底部 120px 时触发加载更多
     if (remaining <= 120) {
@@ -1636,209 +1723,324 @@ export default function CreatorDetailDrawer({
       }}
     >
       <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-        <Box sx={{ position: 'sticky', top: 0, zIndex: 2, px: 2, pt: 2, pb: 1.75, backdropFilter: 'blur(16px)', backgroundColor: 'rgba(15,23,42,0.92)' }}>
+        <Box
+          sx={{
+            position: 'sticky',
+            top: 0,
+            zIndex: 2,
+            px: 2,
+            pt: 1.25,
+            pb: 1,
+            backgroundColor: 'rgba(15,23,42,0.98)',
+          }}
+        >
           <Box
             sx={{
               position: 'relative',
-              overflow: 'hidden',
-              borderRadius: 3.5,
-              border: '1px solid rgba(255,255,255,0.08)',
-              background: 'linear-gradient(180deg, rgba(33,36,53,0.98) 0%, rgba(19,23,35,0.98) 100%)',
-              boxShadow: '0 14px 32px rgba(0,0,0,0.24)',
+              height: headerCondensed ? HEADER_CONDENSED_HEIGHT : HEADER_EXPANDED_HEIGHT,
             }}
           >
             <Box
               sx={{
-                height: 88,
-                background: 'linear-gradient(135deg, rgba(255,61,108,0.32) 0%, rgba(131,56,236,0.2) 38%, rgba(34,211,238,0.16) 100%)',
+                position: 'absolute',
+                inset: 0,
+                display: headerCondensed ? 'none' : 'block',
+                overflow: 'hidden',
+                borderRadius: 3,
+                border: '1px solid rgba(255,255,255,0.08)',
+                background: 'linear-gradient(180deg, rgba(33,36,53,0.98) 0%, rgba(19,23,35,0.98) 100%)',
+                boxShadow: '0 14px 32px rgba(0,0,0,0.24)',
               }}
-            />
+            >
+              <Box sx={{ height: 76, background: 'linear-gradient(135deg, rgba(255,61,108,0.32) 0%, rgba(131,56,236,0.2) 38%, rgba(34,211,238,0.16) 100%)' }} />
+              <Box
+                sx={{
+                  position: 'absolute',
+                  inset: 0,
+                  background: 'radial-gradient(circle at top right, rgba(255,255,255,0.14), transparent 32%)',
+                  pointerEvents: 'none',
+                }}
+              />
+
+              <IconButton
+                onClick={onClose}
+                sx={{
+                  color: '#fff',
+                  position: 'absolute',
+                  top: 10,
+                  left: 10,
+                  zIndex: 1,
+                  bgcolor: 'rgba(0,0,0,0.28)',
+                }}
+              >
+                <ArrowBackIcon />
+              </IconButton>
+
+              <Box sx={{ px: 2, pb: 1.6, mt: -2.05 }}>
+                <Stack direction="row" spacing={1.5} alignItems="flex-end">
+                  <Avatar
+                    src={localCreator?.avatarPath || undefined}
+                    onClick={() => localCreator?.avatarPath && setAvatarPreviewOpen(true)}
+                    sx={{
+                      width: 78,
+                      height: 78,
+                      flexShrink: 0,
+                      bgcolor: 'rgba(255,255,255,0.08)',
+                      border: '3px solid rgba(15,23,42,0.95)',
+                      boxShadow: '0 10px 24px rgba(0,0,0,0.24)',
+                      cursor: localCreator?.avatarPath ? 'pointer' : 'default',
+                    }}
+                  >
+                    {localCreator?.primaryName?.slice(0, 1) || '博'}
+                  </Avatar>
+
+                  <Box sx={{ minWidth: 0, flex: 1, pb: 0.2 }}>
+                    <Typography
+                      variant="h5"
+                      sx={{
+                        fontWeight: 800,
+                        lineHeight: 1.12,
+                        letterSpacing: '-0.01em',
+                        wordBreak: 'break-word',
+                        fontSize: '1.5rem',
+                      }}
+                    >
+                      {localCreator?.primaryName || '博主详情'}
+                    </Typography>
+
+                    <Stack direction="row" spacing={1.2} useFlexGap sx={{ mt: 1, flexWrap: 'wrap', color: 'rgba(255,255,255,0.78)' }}>
+                      <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                        作品 {summaryCounts.mediaTotal}
+                      </Typography>
+                      <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.22)' }}>|</Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                        已看 {summaryCounts.viewedTotal}
+                      </Typography>
+                      <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.22)' }}>|</Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                        图组 {summaryCounts.groupTotal}
+                      </Typography>
+                    </Stack>
+                  </Box>
+                </Stack>
+
+                <Box sx={{ mt: 1.6 }}>
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      color: 'rgba(255,255,255,0.76)',
+                      lineHeight: 1.5,
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden',
+                      minHeight: '3em',
+                    }}
+                  >
+                    {localCreator?.bio?.trim() || '暂无简介'}
+                  </Typography>
+
+                  {localCreator?.otherNames?.length ? (
+                    <Box
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 0.9,
+                        minWidth: 0,
+                        mt: 1.15,
+                      }}
+                    >
+                      <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.44)', flexShrink: 0 }}>
+                        别名
+                      </Typography>
+                      <Box
+                        sx={{
+                          minWidth: 0,
+                          flex: 1,
+                          overflowX: 'auto',
+                          overflowY: 'hidden',
+                          WebkitOverflowScrolling: 'touch',
+                          '&::-webkit-scrollbar': { display: 'none' },
+                          scrollbarWidth: 'none',
+                        }}
+                      >
+                        <Stack direction="row" spacing={0.7} sx={{ width: 'max-content', pr: 0.5 }}>
+                          {localCreator.otherNames.map((alias) => (
+                            <Chip
+                              key={alias}
+                              label={alias}
+                              size="small"
+                              sx={{
+                                height: 24,
+                                bgcolor: 'rgba(255,255,255,0.08)',
+                                color: '#fff',
+                                border: '1px solid rgba(255,255,255,0.08)',
+                                '& .MuiChip-label': { px: 1.1 },
+                              }}
+                            />
+                          ))}
+                        </Stack>
+                      </Box>
+                    </Box>
+                  ) : null}
+                </Box>
+
+                <Stack direction="row" spacing={1.25} sx={{ mt: 1.5 }}>
+                  <Box
+                    onClick={() => setCreatorInfoDialogOpen(true)}
+                    sx={{
+                      flex: 1,
+                      px: 1.4,
+                      py: 1.15,
+                      borderRadius: 3,
+                      bgcolor: 'rgba(255,255,255,0.06)',
+                      border: '1px solid rgba(255,255,255,0.08)',
+                      cursor: 'pointer',
+                      WebkitTapHighlightColor: 'transparent',
+                      userSelect: 'none',
+                      boxShadow: '0 8px 22px rgba(0,0,0,0.16)',
+                      '&:active': {
+                        backgroundColor: 'rgba(255,255,255,0.06)',
+                      },
+                    }}
+                  >
+                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.56)', display: 'block', mb: 0.35, letterSpacing: '0.04em' }}>颜值评分</Typography>
+                    {renderStars(localCreator?.appearanceRating)}
+                  </Box>
+                  <Box
+                    onClick={() => setCreatorInfoDialogOpen(true)}
+                    sx={{
+                      flex: 1,
+                      px: 1.4,
+                      py: 1.15,
+                      borderRadius: 3,
+                      bgcolor: 'rgba(255,255,255,0.06)',
+                      border: '1px solid rgba(255,255,255,0.08)',
+                      cursor: 'pointer',
+                      WebkitTapHighlightColor: 'transparent',
+                      userSelect: 'none',
+                      boxShadow: '0 8px 22px rgba(0,0,0,0.16)',
+                      '&:active': {
+                        backgroundColor: 'rgba(255,255,255,0.06)',
+                      },
+                    }}
+                  >
+                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.56)', display: 'block', mb: 0.35, letterSpacing: '0.04em' }}>身材评分</Typography>
+                    {renderStars(localCreator?.bodyRating)}
+                  </Box>
+                </Stack>
+              </Box>
+            </Box>
+
             <Box
               sx={{
                 position: 'absolute',
                 inset: 0,
-                background: 'radial-gradient(circle at top right, rgba(255,255,255,0.14), transparent 32%)',
-                pointerEvents: 'none',
-              }}
-            />
-
-            <IconButton
-              onClick={onClose}
-              sx={{
-                color: '#fff',
-                position: 'absolute',
-                top: 10,
-                left: 10,
-                zIndex: 1,
-                bgcolor: 'rgba(0,0,0,0.22)',
-                backdropFilter: 'blur(8px)',
+                display: headerCondensed ? 'block' : 'none',
+                overflow: 'hidden',
+                borderRadius: 3,
+                border: '1px solid rgba(255,255,255,0.08)',
+                background: 'linear-gradient(180deg, rgba(33,36,53,0.98) 0%, rgba(19,23,35,0.98) 100%)',
+                boxShadow: '0 14px 32px rgba(0,0,0,0.24)',
               }}
             >
-              <ArrowBackIcon />
-            </IconButton>
+              <IconButton
+                onClick={onClose}
+                sx={{
+                  color: '#fff',
+                  position: 'absolute',
+                  top: 10,
+                  left: 10,
+                  zIndex: 1,
+                  bgcolor: 'rgba(0,0,0,0.28)',
+                }}
+              >
+                <ArrowBackIcon />
+              </IconButton>
 
-            <Box sx={{ px: 2, pb: 2.1, mt: -2.25 }}>
-              <Stack direction="row" spacing={1.5} alignItems="flex-end">
-                <Avatar
-                  src={localCreator?.avatarPath || undefined}
-                  onClick={() => localCreator?.avatarPath && setAvatarPreviewOpen(true)}
-                  sx={{
-                    width: 82,
-                    height: 82,
-                    flexShrink: 0,
-                    bgcolor: 'rgba(255,255,255,0.08)',
-                    border: '3px solid rgba(15,23,42,0.95)',
-                    boxShadow: '0 10px 24px rgba(0,0,0,0.24)',
-                    cursor: localCreator?.avatarPath ? 'pointer' : 'default',
-                  }}
-                >
-                  {localCreator?.primaryName?.slice(0, 1) || '博'}
-                </Avatar>
-
-                <Box sx={{ minWidth: 0, flex: 1, pb: 0.35 }}>
-                  <Typography
-                    variant="h5"
+              <Box
+                sx={{
+                  height: '100%',
+                  px: 2,
+                  py: 1.5,
+                  display: 'flex',
+                  alignItems: 'center',
+                }}
+              >
+                <Stack direction="row" spacing={1.25} alignItems="center" sx={{ minWidth: 0, width: '100%' }}>
+                  <Avatar
+                    src={localCreator?.avatarPath || undefined}
+                    onClick={() => localCreator?.avatarPath && setAvatarPreviewOpen(true)}
                     sx={{
-                      fontWeight: 800,
-                      lineHeight: 1.12,
-                      letterSpacing: '-0.01em',
-                      wordBreak: 'break-word',
+                      width: 56,
+                      height: 56,
+                      flexShrink: 0,
+                      bgcolor: 'rgba(255,255,255,0.08)',
+                      border: '2px solid rgba(15,23,42,0.95)',
+                      cursor: localCreator?.avatarPath ? 'pointer' : 'default',
                     }}
                   >
-                    {localCreator?.primaryName || '博主详情'}
-                  </Typography>
+                    {localCreator?.primaryName?.slice(0, 1) || '博'}
+                  </Avatar>
 
-                  <Stack
-                    direction="row"
-                    spacing={1.2}
-                    useFlexGap
-                    sx={{
-                      mt: 1,
-                      flexWrap: 'wrap',
-                      color: 'rgba(255,255,255,0.78)',
-                    }}
-                  >
-                    <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                      作品 {summaryCounts.mediaTotal}
-                    </Typography>
-                    <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.22)' }}>|</Typography>
-                    <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                      已看 {summaryCounts.viewedTotal}
-                    </Typography>
-                    <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.22)' }}>|</Typography>
-                    <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                      图组 {summaryCounts.groupTotal}
-                    </Typography>
-                  </Stack>
-                </Box>
-              </Stack>
-
-              <Stack spacing={1.15} sx={{ mt: 1.6 }}>
-                <Typography
-                  variant="body2"
-                  sx={{
-                    color: 'rgba(255,255,255,0.76)',
-                    lineHeight: 1.5,
-                    display: '-webkit-box',
-                    WebkitLineClamp: 2,
-                    WebkitBoxOrient: 'vertical',
-                    overflow: 'hidden',
-                    minHeight: '3em',
-                  }}
-                >
-                  {localCreator?.bio?.trim() || '暂无简介'}
-                </Typography>
-
-                {localCreator?.otherNames?.length ? (
-                  <Box
-                    sx={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 0.9,
-                      minWidth: 0,
-                    }}
-                  >
-                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.44)', flexShrink: 0 }}>
-                      别名
-                    </Typography>
-                    <Box
+                  <Box sx={{ minWidth: 0, flex: 1 }}>
+                    <Typography
+                      variant="subtitle1"
                       sx={{
-                        minWidth: 0,
-                        flex: 1,
-                        overflowX: 'auto',
-                        overflowY: 'hidden',
-                        WebkitOverflowScrolling: 'touch',
-                        '&::-webkit-scrollbar': { display: 'none' },
-                        scrollbarWidth: 'none',
+                        fontWeight: 800,
+                        lineHeight: 1.15,
+                        letterSpacing: '-0.01em',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
                       }}
                     >
-                      <Stack direction="row" spacing={0.7} sx={{ width: 'max-content', pr: 0.5 }}>
-                        {localCreator.otherNames.map((alias) => (
-                          <Chip
-                            key={alias}
-                            label={alias}
-                            size="small"
-                            sx={{
-                              height: 24,
-                              bgcolor: 'rgba(255,255,255,0.08)',
-                              color: '#fff',
-                              border: '1px solid rgba(255,255,255,0.08)',
-                              '& .MuiChip-label': { px: 1.1 },
-                            }}
-                          />
-                        ))}
-                      </Stack>
-                    </Box>
+                      {localCreator?.primaryName || '博主详情'}
+                    </Typography>
+
+                    <Stack direction="row" spacing={0.9} useFlexGap sx={{ mt: 0.6, flexWrap: 'wrap', color: 'rgba(255,255,255,0.76)' }}>
+                      <Typography variant="caption" sx={{ fontWeight: 700 }}>
+                        作品 {summaryCounts.mediaTotal}
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.22)' }}>|</Typography>
+                      <Typography variant="caption" sx={{ fontWeight: 700 }}>
+                        已看 {summaryCounts.viewedTotal}
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.22)' }}>|</Typography>
+                      <Typography variant="caption" sx={{ fontWeight: 700 }}>
+                        图组 {summaryCounts.groupTotal}
+                      </Typography>
+                    </Stack>
+
+                    <Stack direction="row" spacing={0.75} useFlexGap sx={{ mt: 0.85, flexWrap: 'wrap' }}>
+                      <Chip
+                        label={`颜值 ${localCreator?.appearanceRating ?? '-'}`}
+                        size="small"
+                        sx={{
+                          height: 22,
+                          bgcolor: 'rgba(255,255,255,0.08)',
+                          color: '#fff',
+                          border: '1px solid rgba(255,255,255,0.08)',
+                          '& .MuiChip-label': { px: 0.9 },
+                        }}
+                      />
+                      <Chip
+                        label={`身材 ${localCreator?.bodyRating ?? '-'}`}
+                        size="small"
+                        sx={{
+                          height: 22,
+                          bgcolor: 'rgba(255,255,255,0.08)',
+                          color: '#fff',
+                          border: '1px solid rgba(255,255,255,0.08)',
+                          '& .MuiChip-label': { px: 0.9 },
+                        }}
+                      />
+                    </Stack>
                   </Box>
-                ) : null}
-              </Stack>
+                </Stack>
+              </Box>
             </Box>
           </Box>
-
-          <Stack direction="row" spacing={1.25} sx={{ mt: 1.75 }}>
-            <Box
-              onClick={() => setCreatorInfoDialogOpen(true)}
-              sx={{
-                flex: 1,
-                px: 1.4,
-                py: 1.15,
-                borderRadius: 3,
-                bgcolor: 'rgba(255,255,255,0.06)',
-                border: '1px solid rgba(255,255,255,0.08)',
-                cursor: 'pointer',
-                WebkitTapHighlightColor: 'transparent',
-                userSelect: 'none',
-                boxShadow: '0 8px 22px rgba(0,0,0,0.16)',
-                '&:active': {
-                  backgroundColor: 'rgba(255,255,255,0.06)',
-                },
-              }}
-            >
-              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.56)', display: 'block', mb: 0.35, letterSpacing: '0.04em' }}>颜值评分</Typography>
-              {renderStars(localCreator?.appearanceRating)}
-            </Box>
-            <Box
-              onClick={() => setCreatorInfoDialogOpen(true)}
-              sx={{
-                flex: 1,
-                px: 1.4,
-                py: 1.15,
-                borderRadius: 3,
-                bgcolor: 'rgba(255,255,255,0.06)',
-                border: '1px solid rgba(255,255,255,0.08)',
-                cursor: 'pointer',
-                WebkitTapHighlightColor: 'transparent',
-                userSelect: 'none',
-                boxShadow: '0 8px 22px rgba(0,0,0,0.16)',
-                '&:active': {
-                  backgroundColor: 'rgba(255,255,255,0.06)',
-                },
-              }}
-            >
-              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.56)', display: 'block', mb: 0.35, letterSpacing: '0.04em' }}>身材评分</Typography>
-              {renderStars(localCreator?.bodyRating)}
-            </Box>
-          </Stack>
         </Box>
 
         <Tabs
@@ -2209,7 +2411,6 @@ export default function CreatorDetailDrawer({
         items={previewItems}
         currentIndex={previewIndex}
         displayTotalCount={previewDisplayTotalCount}
-        cacheVersion={cacheVersion}
         playIntent
         warmUpToken={previewWarmUpToken}
         onChangeIndex={(nextIndex) => {
