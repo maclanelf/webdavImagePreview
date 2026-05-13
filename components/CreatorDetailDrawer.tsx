@@ -49,6 +49,29 @@ import { QUICK_RATING_CONFIG } from '@/types'
 const PAGE_SIZE = 10
 const HEADER_EXPANDED_HEIGHT = 308
 const HEADER_CONDENSED_HEIGHT = 126
+const HEADER_COLLAPSE_DISTANCE = 132
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
+}
+
+function lerp(start: number, end: number, progress: number) {
+  return start + (end - start) * progress
+}
+
+const HEADER_MOTION_INITIAL_STYLE: React.CSSProperties & Record<`--${string}`, string> = {
+  '--creator-header-height': `${HEADER_EXPANDED_HEIGHT}px`,
+  '--creator-expanded-display': 'block',
+  '--creator-condensed-display': 'none',
+  '--creator-expanded-opacity': '1',
+  '--creator-condensed-opacity': '0',
+  '--creator-expanded-translate-y': '0px',
+  '--creator-condensed-translate-y': '14px',
+  '--creator-expanded-visibility': 'visible',
+  '--creator-condensed-visibility': 'hidden',
+  '--creator-expanded-pointer-events': 'auto',
+  '--creator-condensed-pointer-events': 'none',
+}
 
 type CreatorSummaryCounts = {
   mediaTotal: number
@@ -332,19 +355,19 @@ export default function CreatorDetailDrawer({
   const [previewCreatorRefreshKey, setPreviewCreatorRefreshKey] = useState(0)
   /** 博主信息编辑对话框是否打开 */
   const [creatorInfoDialogOpen, setCreatorInfoDialogOpen] = useState(false)
-  /** sticky 头部是否已压缩 */
-  const [headerCondensed, setHeaderCondensed] = useState(false)
   /** 是否为移动端 */
   const [isMobile, setIsMobile] = useState(false)
   /** 列表容器引用 */
   const listContainerRef = useRef<HTMLDivElement | null>(null)
+  const headerMotionRootRef = useRef<HTMLDivElement | null>(null)
   /** 预览容器引用 */
   const previewContainerRef = useRef<CreatorDetailPreviewContainerRef | null>(null)
   /** 博主详情预览中的大视频播放器引用 */
   const previewInstantVideoRef = useRef<InstantVideoPlayerRef | null>(null)
   /** 预览是否已自动评分的标记 */
   const previewAutoRatedRef = useRef(false)
-  const headerCondensedRef = useRef(false)
+  const headerCollapseProgressRef = useRef(0)
+  const headerMotionSnapshotRef = useRef('')
   const previousLocalMediaRef = useRef<CreatorMediaCard[]>([])
   const onErrorRef = useRef(onError)
   const activeRequestIdRef = useRef(0)
@@ -354,11 +377,59 @@ export default function CreatorDetailDrawer({
   const lastListScrollTopRef = useRef(0)
   const scrollAnimationFrameRef = useRef<number | null>(null)
   const pendingListScrollTopRef = useRef(0)
-  const headerToggleTimeoutRef = useRef<number | null>(null)
   const viewedFilterKeyRef = useRef('')
   const unviewedFilterKeyRef = useRef('')
   const groupFilterKeyRef = useRef('')
   const groupPreviewHalfLoadTriggeredPageRef = useRef<Record<string, number>>({})
+
+  const updateHeaderMotionStyles = useCallback((progress: number) => {
+    const root = headerMotionRootRef.current
+    if (!root) return
+
+    const nextProgress = clamp(progress, 0, 1)
+    const contentBlendProgress = clamp((nextProgress - 0.22) / 0.34, 0, 1)
+    const nextHeight = Math.round(lerp(HEADER_EXPANDED_HEIGHT, HEADER_CONDENSED_HEIGHT, nextProgress))
+    const expandedOpacity = Math.round((1 - contentBlendProgress) * 100) / 100
+    const condensedOpacity = Math.round(contentBlendProgress * 100) / 100
+    const expandedTranslateY = Math.round(lerp(0, -10, nextProgress))
+    const condensedTranslateY = Math.round(lerp(8, 0, nextProgress))
+    const expandedDisplay = expandedOpacity <= 0.02 ? 'none' : 'block'
+    const condensedDisplay = condensedOpacity <= 0.02 ? 'none' : 'block'
+    const expandedVisibility = expandedOpacity <= 0.02 ? 'hidden' : 'visible'
+    const condensedVisibility = condensedOpacity <= 0.02 ? 'hidden' : 'visible'
+    const expandedPointerEvents = contentBlendProgress < 0.5 ? 'auto' : 'none'
+    const condensedPointerEvents = contentBlendProgress >= 0.5 ? 'auto' : 'none'
+    const snapshot = [
+      nextHeight,
+      expandedOpacity,
+      condensedOpacity,
+      expandedTranslateY,
+      condensedTranslateY,
+      expandedDisplay,
+      condensedDisplay,
+      expandedVisibility,
+      condensedVisibility,
+      expandedPointerEvents,
+      condensedPointerEvents,
+    ].join('|')
+
+    if (snapshot === headerMotionSnapshotRef.current) {
+      return
+    }
+
+    headerMotionSnapshotRef.current = snapshot
+    root.style.setProperty('--creator-header-height', `${nextHeight}px`)
+    root.style.setProperty('--creator-expanded-display', expandedDisplay)
+    root.style.setProperty('--creator-condensed-display', condensedDisplay)
+    root.style.setProperty('--creator-expanded-opacity', `${expandedOpacity}`)
+    root.style.setProperty('--creator-condensed-opacity', `${condensedOpacity}`)
+    root.style.setProperty('--creator-expanded-translate-y', `${expandedTranslateY}px`)
+    root.style.setProperty('--creator-condensed-translate-y', `${condensedTranslateY}px`)
+    root.style.setProperty('--creator-expanded-visibility', expandedVisibility)
+    root.style.setProperty('--creator-condensed-visibility', condensedVisibility)
+    root.style.setProperty('--creator-expanded-pointer-events', expandedPointerEvents)
+    root.style.setProperty('--creator-condensed-pointer-events', condensedPointerEvents)
+  }, [])
 
   const fetchBootstrapData = useCallback(async (creatorId: number, requestId: number) => {
     const response = await fetch(`/api/creators/${creatorId}/media?mode=bootstrap`)
@@ -600,17 +671,13 @@ export default function CreatorDetailDrawer({
   }, [onError])
 
   useEffect(() => {
-    headerCondensedRef.current = headerCondensed
-  }, [headerCondensed])
+    updateHeaderMotionStyles(headerCollapseProgressRef.current)
+  }, [updateHeaderMotionStyles])
 
   useEffect(() => () => {
     if (scrollAnimationFrameRef.current !== null) {
       window.cancelAnimationFrame(scrollAnimationFrameRef.current)
       scrollAnimationFrameRef.current = null
-    }
-    if (headerToggleTimeoutRef.current !== null) {
-      window.clearTimeout(headerToggleTimeoutRef.current)
-      headerToggleTimeoutRef.current = null
     }
   }, [])
 
@@ -620,8 +687,9 @@ export default function CreatorDetailDrawer({
   useEffect(() => {
     if (!open) return
     setTab('viewed')
-    setHeaderCondensed(false)
-    headerCondensedRef.current = false
+    headerCollapseProgressRef.current = 0
+    headerMotionSnapshotRef.current = ''
+    updateHeaderMotionStyles(0)
     setLoadError(null)
     setSelectedRatings([])
     setSelectedTags([])
@@ -642,16 +710,12 @@ export default function CreatorDetailDrawer({
       window.cancelAnimationFrame(scrollAnimationFrameRef.current)
       scrollAnimationFrameRef.current = null
     }
-    if (headerToggleTimeoutRef.current !== null) {
-      window.clearTimeout(headerToggleTimeoutRef.current)
-      headerToggleTimeoutRef.current = null
-    }
     lastListScrollTopRef.current = 0
     pendingListScrollTopRef.current = 0
     viewedFilterKeyRef.current = JSON.stringify({ mediaType: 'all', ratings: [], tags: [] })
     unviewedFilterKeyRef.current = JSON.stringify({ mediaType: 'all' })
     groupFilterKeyRef.current = JSON.stringify({ viewed: 'all', ratings: [], tags: [] })
-  }, [open, creator?.id])
+  }, [open, creator?.id, updateHeaderMotionStyles])
 
   /**
    * 打开详情时仅拉基础信息、汇总统计和可用标签
@@ -760,15 +824,12 @@ export default function CreatorDetailDrawer({
       window.cancelAnimationFrame(scrollAnimationFrameRef.current)
       scrollAnimationFrameRef.current = null
     }
-    if (headerToggleTimeoutRef.current !== null) {
-      window.clearTimeout(headerToggleTimeoutRef.current)
-      headerToggleTimeoutRef.current = null
-    }
     lastListScrollTopRef.current = 0
     pendingListScrollTopRef.current = 0
-    setHeaderCondensed(false)
-    headerCondensedRef.current = false
-  }, [appliedGroupRatings, appliedGroupTags, appliedGroupViewedFilter, appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, mediaTypeFilter, tab, creator?.id])
+    headerCollapseProgressRef.current = 0
+    headerMotionSnapshotRef.current = ''
+    updateHeaderMotionStyles(0)
+  }, [appliedGroupRatings, appliedGroupTags, appliedGroupViewedFilter, appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, mediaTypeFilter, tab, creator?.id, updateHeaderMotionStyles])
 
   /**
    * 预览媒体变化时重置预览相关状态
@@ -1783,7 +1844,7 @@ export default function CreatorDetailDrawer({
    */
   const handleListScroll = useCallback(() => {
     const container = listContainerRef.current
-    if (!container || currentTabLoading) return
+    if (!container) return
 
     const currentTop = container.scrollTop
     pendingListScrollTopRef.current = currentTop
@@ -1792,49 +1853,22 @@ export default function CreatorDetailDrawer({
       scrollAnimationFrameRef.current = window.requestAnimationFrame(() => {
         scrollAnimationFrameRef.current = null
         const nextTop = pendingListScrollTopRef.current
-        const previousTop = lastListScrollTopRef.current
-        const delta = nextTop - previousTop
-
         lastListScrollTopRef.current = nextTop
+        const nextProgress = clamp(nextTop / HEADER_COLLAPSE_DISTANCE, 0, 1)
 
-        if (headerToggleTimeoutRef.current !== null) {
-          window.clearTimeout(headerToggleTimeoutRef.current)
-          headerToggleTimeoutRef.current = null
+        if (Math.abs(nextProgress - headerCollapseProgressRef.current) >= 0.006) {
+          headerCollapseProgressRef.current = nextProgress
+          updateHeaderMotionStyles(nextProgress)
         }
-
-        headerToggleTimeoutRef.current = window.setTimeout(() => {
-          headerToggleTimeoutRef.current = null
-          const isCondensed = headerCondensedRef.current
-          const settledTop = pendingListScrollTopRef.current
-
-          if (settledTop <= 12) {
-            if (isCondensed) {
-              headerCondensedRef.current = false
-              setHeaderCondensed(false)
-            }
-            return
-          }
-
-          if (!isCondensed && settledTop >= 88 && delta > 0) {
-            headerCondensedRef.current = true
-            setHeaderCondensed(true)
-            return
-          }
-
-          if (isCondensed && settledTop <= 40 && delta < 0) {
-            headerCondensedRef.current = false
-            setHeaderCondensed(false)
-          }
-        }, 90)
       })
     }
 
     const remaining = container.scrollHeight - container.scrollTop - container.clientHeight
     // 距离底部 120px 时触发加载更多
-    if (remaining <= 120) {
+    if (remaining <= 120 && !currentTabLoading) {
       void handleLoadMore()
     }
-  }, [currentTabLoading, handleLoadMore])
+  }, [currentTabLoading, handleLoadMore, updateHeaderMotionStyles])
 
   return (
     <Drawer
@@ -1863,21 +1897,31 @@ export default function CreatorDetailDrawer({
           }}
         >
           <Box
+            ref={headerMotionRootRef}
+            style={HEADER_MOTION_INITIAL_STYLE}
             sx={{
               position: 'relative',
-              height: headerCondensed ? HEADER_CONDENSED_HEIGHT : HEADER_EXPANDED_HEIGHT,
+              height: 'var(--creator-header-height)',
+              contain: 'layout paint',
             }}
           >
             <Box
               sx={{
                 position: 'absolute',
                 inset: 0,
-                display: headerCondensed ? 'none' : 'block',
                 overflow: 'hidden',
+                display: 'var(--creator-expanded-display)',
                 borderRadius: 3,
                 border: '1px solid rgba(255,255,255,0.08)',
                 background: 'linear-gradient(180deg, rgba(33,36,53,0.98) 0%, rgba(19,23,35,0.98) 100%)',
                 boxShadow: '0 14px 32px rgba(0,0,0,0.24)',
+                opacity: 'var(--creator-expanded-opacity)',
+                visibility: 'var(--creator-expanded-visibility)',
+                transform: 'translate3d(0, var(--creator-expanded-translate-y), 0)',
+                transformOrigin: 'top center',
+                pointerEvents: 'var(--creator-expanded-pointer-events)',
+                willChange: 'opacity, transform',
+                backfaceVisibility: 'hidden',
               }}
             >
               <Box sx={{ height: 76, background: 'linear-gradient(135deg, rgba(255,61,108,0.32) 0%, rgba(131,56,236,0.2) 38%, rgba(34,211,238,0.16) 100%)' }} />
@@ -2064,12 +2108,19 @@ export default function CreatorDetailDrawer({
               sx={{
                 position: 'absolute',
                 inset: 0,
-                display: headerCondensed ? 'block' : 'none',
                 overflow: 'hidden',
+                display: 'var(--creator-condensed-display)',
                 borderRadius: 3,
                 border: '1px solid rgba(255,255,255,0.08)',
                 background: 'linear-gradient(180deg, rgba(33,36,53,0.98) 0%, rgba(19,23,35,0.98) 100%)',
                 boxShadow: '0 14px 32px rgba(0,0,0,0.24)',
+                opacity: 'var(--creator-condensed-opacity)',
+                visibility: 'var(--creator-condensed-visibility)',
+                transform: 'translate3d(0, var(--creator-condensed-translate-y), 0)',
+                transformOrigin: 'top center',
+                pointerEvents: 'var(--creator-condensed-pointer-events)',
+                willChange: 'opacity, transform',
+                backfaceVisibility: 'hidden',
               }}
             >
               <IconButton
