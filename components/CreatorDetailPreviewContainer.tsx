@@ -6,9 +6,11 @@ import { Alert, Box, IconButton, Menu, MenuItem, Snackbar, Stack, Typography } f
 import {
   ArrowBack as ArrowBackIcon,
   OpenInNew as OpenInNewIcon,
+  Shuffle as ShuffleIcon,
 } from '@mui/icons-material'
 
 import CreatorTag from '@/components/CreatorTag'
+import DraggableFab from '@/components/DraggableFab'
 import InstantVideoPlayer, { type InstantVideoPlayerRef } from '@/components/InstantVideoPlayer'
 import MobileVideoPlayer from '@/components/MobileVideoPlayer'
 import CommonPreviewSurface from '@/components/split-main/CommonPreviewSurface'
@@ -167,6 +169,10 @@ const CreatorDetailPreviewContainer = forwardRef<CreatorDetailPreviewContainerRe
   const isStreamVideo = mediaType === 'stream-video'
   /** 控制栏是否显示 */
   const showControls = isImage ? imageControlsVisible : isStreamVideo ? streamControlsVisible : true
+  /** 是否有多个媒体可切换 */
+  const hasMultipleItems = items.length > 1
+  /** 是否还能切换到下一个媒体 */
+  const canGoNext = currentIndex < items.length - 1
 
   useImperativeHandle(ref, () => ({
     warmUp: (targetMediaType?: MediaType | null) => {
@@ -538,21 +544,23 @@ const CreatorDetailPreviewContainer = forwardRef<CreatorDetailPreviewContainerRe
                       </Box>
                     </Stack>
 
-                    {showExternalPlayerButton && onExternalPlayerClick ? (
-                      <IconButton
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          onExternalPlayerClick(event)
-                        }}
-                        sx={{
-                          color: '#fff',
-                          bgcolor: 'rgba(0,0,0,0.42)',
-                          border: '1px solid rgba(255,255,255,0.18)',
-                        }}
-                      >
-                        <OpenInNewIcon sx={{ fontSize: 18 }} />
-                      </IconButton>
-                    ) : <Box />}
+                    <Stack direction="row" spacing={1} alignItems="center" justifyContent="flex-end">
+                      {showExternalPlayerButton && onExternalPlayerClick ? (
+                        <IconButton
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            onExternalPlayerClick(event)
+                          }}
+                          sx={{
+                            color: '#fff',
+                            bgcolor: 'rgba(0,0,0,0.42)',
+                            border: '1px solid rgba(255,255,255,0.18)',
+                          }}
+                        >
+                          <OpenInNewIcon sx={{ fontSize: 18 }} />
+                        </IconButton>
+                      ) : null}
+                    </Stack>
                   </Stack>
                 </Box>
 
@@ -570,6 +578,26 @@ const CreatorDetailPreviewContainer = forwardRef<CreatorDetailPreviewContainerRe
                     defaultPosition={{ right: 10, bottom: 151 }}
                   />
                 )}
+
+                {hasMultipleItems ? (
+                  <DraggableFab
+                    storageKey="creator_detail_preview_next"
+                    color="primary"
+                    aria-label="换一个"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      handleNext()
+                    }}
+                    disabled={!canGoNext}
+                    defaultSx={{
+                      right: 10,
+                      bottom: 80,
+                      zIndex: 2202,
+                    }}
+                  >
+                    <ShuffleIcon />
+                  </DraggableFab>
+                ) : null}
               </>
             )}
             {centerOverlay}
