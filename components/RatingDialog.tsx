@@ -25,6 +25,72 @@ import {
 } from '@mui/material'
 import { Star, StarBorder } from '@mui/icons-material'
 
+type RatingDialogOptionCache = {
+  evaluations: string[] | null
+  categories: string[] | null
+  loadingPromise: Promise<{ evaluations: string[]; categories: string[] }> | null
+}
+
+const ratingDialogOptionCache: RatingDialogOptionCache = {
+  evaluations: null,
+  categories: null,
+  loadingPromise: null,
+}
+
+function updateRatingDialogOptionCache(data: { evaluations?: string[]; categories?: string[] }) {
+  if (data.evaluations) {
+    ratingDialogOptionCache.evaluations = [...data.evaluations]
+  }
+
+  if (data.categories) {
+    ratingDialogOptionCache.categories = [...data.categories]
+  }
+}
+
+async function loadRatingDialogOptions(): Promise<{ evaluations: string[]; categories: string[] }> {
+  if (ratingDialogOptionCache.evaluations && ratingDialogOptionCache.categories) {
+    return {
+      evaluations: [...ratingDialogOptionCache.evaluations],
+      categories: [...ratingDialogOptionCache.categories],
+    }
+  }
+
+  if (ratingDialogOptionCache.loadingPromise) {
+    return ratingDialogOptionCache.loadingPromise
+  }
+
+  ratingDialogOptionCache.loadingPromise = (async () => {
+    const [evaluationsRes, categoriesRes] = await Promise.all([
+      fetch('/api/ratings/evaluations'),
+      fetch('/api/ratings/categories'),
+    ])
+
+    const evaluationsData = await evaluationsRes.json()
+    const categoriesData = await categoriesRes.json()
+
+    const evaluations = evaluationsData.evaluations
+      ? evaluationsData.evaluations.map((e: any) => e.label)
+      : []
+
+    const categories = categoriesData.categories
+      ? categoriesData.categories.map((c: any) => c.name)
+      : []
+
+    updateRatingDialogOptionCache({ evaluations, categories })
+
+    return {
+      evaluations,
+      categories,
+    }
+  })()
+
+  try {
+    return await ratingDialogOptionCache.loadingPromise
+  } finally {
+    ratingDialogOptionCache.loadingPromise = null
+  }
+}
+
 interface RatingData {
   rating?: number
   recommendationReason?: string
@@ -71,7 +137,15 @@ export default function RatingDialog({
   // 加载可用的评价标签和分类
   useEffect(() => {
     if (open) {
-      loadAvailableData()
+      if (ratingDialogOptionCache.evaluations) {
+        setAvailableEvaluations(ratingDialogOptionCache.evaluations)
+      }
+
+      if (ratingDialogOptionCache.categories) {
+        setAvailableCategories(ratingDialogOptionCache.categories)
+      }
+
+      void loadAvailableData()
     }
   }, [open])
 
@@ -116,21 +190,9 @@ export default function RatingDialog({
 
   const loadAvailableData = async () => {
     try {
-      const [evaluationsRes, categoriesRes] = await Promise.all([
-        fetch('/api/ratings/evaluations'),
-        fetch('/api/ratings/categories')
-      ])
-      
-      const evaluationsData = await evaluationsRes.json()
-      const categoriesData = await categoriesRes.json()
-      
-      if (evaluationsData.evaluations) {
-        setAvailableEvaluations(evaluationsData.evaluations.map((e: any) => e.label))
-      }
-      
-      if (categoriesData.categories) {
-        setAvailableCategories(categoriesData.categories.map((c: any) => c.name))
-      }
+      const { evaluations, categories } = await loadRatingDialogOptions()
+      setAvailableEvaluations(evaluations)
+      setAvailableCategories(categories)
     } catch (error) {
       console.error('加载可用数据失败:', error)
     }
@@ -170,7 +232,11 @@ export default function RatingDialog({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ label: newEvaluation })
         })
-        setAvailableEvaluations(prev => [...prev, newEvaluation])
+        setAvailableEvaluations(prev => {
+          const next = [...prev, newEvaluation]
+          updateRatingDialogOptionCache({ evaluations: next })
+          return next
+        })
       } catch (error) {
         console.error('添加评价标签失败:', error)
       }
@@ -185,7 +251,11 @@ export default function RatingDialog({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: newCategory })
         })
-        setAvailableCategories(prev => [...prev, newCategory])
+        setAvailableCategories(prev => {
+          const next = [...prev, newCategory]
+          updateRatingDialogOptionCache({ categories: next })
+          return next
+        })
       } catch (error) {
         console.error('添加分类失败:', error)
       }
