@@ -169,6 +169,10 @@ export interface CreatorGroupCard {
   groupName: string
   /** 文件数量 */
   fileCount: number
+  /** 图组内已看过的文件数量 */
+  viewedFileCount?: number
+  /** 图组内未看过的文件数量 */
+  unviewedFileCount?: number
   /** 封面文件路径 */
   coverFilePath?: string | null
   /** 封面预览 URL */

@@ -16,6 +16,8 @@ type CreatorDetailMode = 'bootstrap' | 'tab' | 'group-media'
 type CreatorTab = 'viewed' | 'unviewed' | 'groups'
 /** 媒体类型过滤器 */
 type MediaTypeFilter = 'all' | 'image' | 'video' | 'small-video' | 'large-video'
+/** 图组已看状态过滤器 */
+type GroupViewedFilter = 'all' | 'viewed' | 'unviewed'
 
 type PaginationPayload = {
   page: number
@@ -126,6 +128,14 @@ function parseTags(value: string | null) {
 /** 解析媒体类型过滤参数。 */
 function parseMediaType(value: string | null): MediaTypeFilter {
   if (value === 'image' || value === 'video' || value === 'small-video' || value === 'large-video') {
+    return value
+  }
+  return 'all'
+}
+
+/** 解析图组已看状态过滤参数。 */
+function parseGroupViewedFilter(value: string | null): GroupViewedFilter {
+  if (value === 'viewed' || value === 'unviewed') {
     return value
   }
   return 'all'
@@ -385,9 +395,19 @@ function queryGroupMediaPage(options: {
   groupPath: string
   page: number
   pageSize: number
+  viewed?: boolean
 }): QueryPageResult<any> {
-  const { creatorId, defaultConfig, groupPath, page, pageSize } = options
+  const { creatorId, defaultConfig, groupPath, page, pageSize, viewed } = options
   const creatorGroupPathsSubquery = buildCreatorGroupPathsSubquery()
+  const whereParts = ['sf.parent_path = ?']
+  const params = [groupPath] as any[]
+
+  if (typeof viewed === 'boolean') {
+    whereParts.push('COALESCE(mr.is_viewed, sf.is_viewed, 0) = ?')
+    params.push(viewed ? 1 : 0)
+  }
+
+  const whereSql = whereParts.join(' AND ')
 
   const countRow = db.prepare(`
     SELECT COUNT(*) AS total
@@ -395,8 +415,9 @@ function queryGroupMediaPage(options: {
     INNER JOIN (
       ${creatorGroupPathsSubquery}
     ) creator_groups ON creator_groups.parent_path = sf.parent_path
-    WHERE sf.parent_path = ?
-  `).get(creatorId, groupPath) as { total: number }
+    LEFT JOIN media_ratings mr ON mr.file_path = sf.filename
+    WHERE ${whereSql}
+  `).get(creatorId, ...params) as { total: number }
 
   const total = countRow?.total || 0
   const offset = (page - 1) * pageSize
@@ -421,10 +442,10 @@ function queryGroupMediaPage(options: {
     ) creator_groups ON creator_groups.parent_path = sf.parent_path
     LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
     LEFT JOIN media_ratings mr ON mr.file_path = sf.filename
-    WHERE sf.parent_path = ?
+    WHERE ${whereSql}
     ORDER BY COALESCE(mr.rating, 0) DESC, sf.basename COLLATE NOCASE ASC
     LIMIT ? OFFSET ?
-  `).all(creatorId, creatorId, groupPath, pageSize, offset) as Array<any>
+  `).all(creatorId, creatorId, ...params, pageSize, offset) as Array<any>
 
   return {
     items: rows.map((row) => mapMediaRow(row, creatorId, defaultConfig)),
@@ -447,21 +468,22 @@ function queryGroupsPage(options: {
   defaultConfig: any
   page: number
   pageSize: number
+  viewedFilter?: GroupViewedFilter
+  ratings?: number[]
+  tags?: string[]
 }): QueryPageResult<any> {
-  const { creatorId, defaultConfig, page, pageSize } = options
+  const {
+    creatorId,
+    defaultConfig,
+    page,
+    pageSize,
+    viewedFilter = 'all',
+    ratings = [],
+    tags = [],
+  } = options
   const creatorGroupPathsSubquery = buildCreatorGroupPathsSubquery()
 
-  const totalRow = db.prepare(`
-    SELECT COUNT(*) AS total
-    FROM (
-      ${creatorGroupPathsSubquery}
-    ) grouped
-  `).get(creatorId) as { total: number }
-
-  const total = totalRow?.total || 0
-  const offset = (page - 1) * pageSize
-
-  const rows = db.prepare(`
+  const groupBaseSql = `
     SELECT
       cg.parent_path AS groupPath,
       gr.group_name AS groupName,
@@ -471,6 +493,20 @@ function queryGroupsPage(options: {
         WHERE sfi.parent_path = cg.parent_path
       ) AS fileCount,
       (
+        SELECT COUNT(*)
+        FROM scan_files sfi
+        LEFT JOIN media_ratings mri ON mri.file_path = sfi.filename
+        WHERE sfi.parent_path = cg.parent_path
+          AND COALESCE(mri.is_viewed, sfi.is_viewed, 0) = 1
+      ) AS viewedFileCount,
+      (
+        SELECT COUNT(*)
+        FROM scan_files sfi
+        LEFT JOIN media_ratings mri ON mri.file_path = sfi.filename
+        WHERE sfi.parent_path = cg.parent_path
+          AND COALESCE(mri.is_viewed, sfi.is_viewed, 0) = 0
+      ) AS unviewedFileCount,
+      (
         SELECT sfi.filename
         FROM scan_files sfi
         WHERE sfi.parent_path = cg.parent_path
@@ -479,38 +515,79 @@ function queryGroupsPage(options: {
         LIMIT 1
       ) AS coverFilePath,
       COALESCE(gr.is_viewed, (
-        SELECT MIN(sfi.is_viewed)
+        SELECT MIN(COALESCE(mri.is_viewed, sfi.is_viewed, 0))
         FROM scan_files sfi
+        LEFT JOIN media_ratings mri ON mri.file_path = sfi.filename
         WHERE sfi.parent_path = cg.parent_path
       )) AS isViewed,
       gr.rating,
       gr.recommendation_reason AS recommendationReason,
       gr.custom_evaluation AS customEvaluation,
-      gr.category,
-      ? AS creatorId
+      gr.category
     FROM (
       ${creatorGroupPathsSubquery}
     ) cg
     LEFT JOIN group_ratings gr ON gr.group_path = cg.parent_path
-    ORDER BY COALESCE(gr.is_viewed, (
-      SELECT MIN(sfi.is_viewed)
-      FROM scan_files sfi
-      WHERE sfi.parent_path = cg.parent_path
-    )) DESC, COALESCE(gr.rating, 0) DESC, cg.parent_path ASC
+  `
+
+  const whereParts: string[] = []
+  const params: any[] = []
+
+  if (viewedFilter === 'viewed') {
+    whereParts.push('group_rows.viewedFileCount > 0')
+  }
+
+  if (viewedFilter === 'unviewed') {
+    whereParts.push('group_rows.unviewedFileCount > 0')
+  }
+
+  if (ratings.length > 0) {
+    whereParts.push(`group_rows.rating IN (${ratings.map(() => '?').join(',')})`)
+    params.push(...ratings)
+  }
+
+  if (tags.length > 0) {
+    tags.forEach((tag) => {
+      whereParts.push('(group_rows.customEvaluation LIKE ? OR group_rows.category LIKE ?)')
+      params.push(`%"${tag}"%`, `%"${tag}"%`)
+    })
+  }
+
+  const whereSql = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : ''
+
+  const totalRow = db.prepare(`
+    SELECT COUNT(*) AS total
+    FROM (
+      ${groupBaseSql}
+    ) group_rows
+    ${whereSql}
+  `).get(creatorId, ...params) as { total: number }
+
+  const total = totalRow?.total || 0
+  const offset = (page - 1) * pageSize
+
+  const rows = db.prepare(`
+    SELECT *
+    FROM (
+      ${groupBaseSql}
+    ) group_rows
+    ${whereSql}
+    ORDER BY COALESCE(group_rows.isViewed, 0) DESC, COALESCE(group_rows.rating, 0) DESC, group_rows.groupPath ASC
     LIMIT ? OFFSET ?
-  `).all(creatorId, creatorId, pageSize, offset) as Array<any>
+  `).all(creatorId, ...params, pageSize, offset) as Array<any>
 
   const items = rows.map((row) => {
     const coverUrls = row.coverFilePath
       ? getPreviewUrls(row.coverFilePath, defaultConfig)
       : { previewUrl: null, streamUrl: null, transcodeUrl: null, directUrl: null }
 
-    const previewSeed = row.coverFilePath
+    const previewSeed = viewedFilter === 'all' && row.coverFilePath
       ? queryMediaByFilePath(row.coverFilePath, creatorId, defaultConfig)
       : (queryMediaPage({
         creatorId,
         defaultConfig,
         groupPath: row.groupPath,
+        viewed: viewedFilter === 'all' ? undefined : viewedFilter === 'viewed',
         page: 1,
         pageSize: 1,
       }).items[0] || null)
@@ -520,6 +597,8 @@ function queryGroupsPage(options: {
       groupPath: row.groupPath,
       groupName: row.groupName || getGroupNameFromPath(row.groupPath),
       fileCount: row.fileCount,
+      viewedFileCount: row.viewedFileCount ?? 0,
+      unviewedFileCount: row.unviewedFileCount ?? 0,
       coverFilePath: row.coverFilePath || null,
       coverPreviewUrl: coverUrls.previewUrl,
       previewSeed,
@@ -528,7 +607,7 @@ function queryGroupsPage(options: {
       customEvaluation: parseJsonArray(row.customEvaluation),
       category: parseJsonArray(row.category),
       isViewed: row.isViewed === 1,
-      creatorId: row.creatorId ?? creatorId,
+      creatorId,
     }
   })
 
@@ -640,6 +719,7 @@ export async function GET(
     const page = parsePositiveInt(searchParams.get('page'), 1)
     const pageSize = Math.min(MAX_PAGE_SIZE, parsePositiveInt(searchParams.get('pageSize'), DEFAULT_PAGE_SIZE))
     const mediaType = parseMediaType(searchParams.get('mediaType'))
+    const groupViewedFilter = parseGroupViewedFilter(searchParams.get('viewed'))
     const ratings = parseRatings(searchParams.get('ratings'))
     const tags = parseTags(searchParams.get('tags'))
     const tab = (searchParams.get('tab') || 'viewed') as CreatorTab
@@ -658,6 +738,7 @@ export async function GET(
         groupPath,
         page,
         pageSize,
+        viewed: groupViewedFilter === 'all' ? undefined : groupViewedFilter === 'viewed',
       })
 
       if (pageResult.total === 0) {
@@ -682,6 +763,9 @@ export async function GET(
           defaultConfig,
           page,
           pageSize,
+          viewedFilter: groupViewedFilter,
+          ratings,
+          tags,
         })
 
         return NextResponse.json({

@@ -96,6 +96,13 @@ export function useVideoHighlights({
   const highlightDraftFilePathRef = useRef<string | null>(null)
   // 高光列表加载请求序号；只允许最后一次请求回写状态，避免切换视频时旧响应串屏。
   const highlightsRequestIdRef = useRef(0)
+  // 统一缓存最新通知回调，避免父组件每次 render 传入新函数时，
+  // 让依赖它的 callback 身份变化，进一步触发 effect 重跑。
+  const onNotifyRef = useRef(onNotify)
+
+  useEffect(() => {
+    onNotifyRef.current = onNotify
+  }, [onNotify])
 
   /**
    * 清理当前正在编辑/提交中的精彩时刻草稿。
@@ -180,13 +187,13 @@ export function useVideoHighlights({
       console.error('加载精彩片段失败:', error)
       setVideoHighlights([])
       setHighlightsLoadedFilePath(null)
-      onNotify(error?.message || '加载精彩片段失败', 'error')
+      onNotifyRef.current(error?.message || '加载精彩片段失败', 'error')
     } finally {
       if (requestId === highlightsRequestIdRef.current) {
         setHighlightsLoading(false)
       }
     }
-  }, [onNotify])
+  }, [])
 
   /**
    * 保存一个新的精彩时刻区间。
@@ -198,7 +205,7 @@ export function useVideoHighlights({
     }
 
     if (endSeconds <= startSeconds) {
-      onNotify('结束时间必须大于开始时间', 'warning')
+      onNotifyRef.current('结束时间必须大于开始时间', 'warning')
       return { success: false as const, id: null as number | null }
     }
 
@@ -225,10 +232,10 @@ export function useVideoHighlights({
       }
     } catch (error: any) {
       console.error('保存精彩片段失败:', error)
-      onNotify(error.message || '保存精彩片段失败', 'error')
+      onNotifyRef.current(error.message || '保存精彩片段失败', 'error')
       return { success: false as const, id: null as number | null }
     }
-  }, [currentFile, onNotify])
+  }, [currentFile])
 
   /**
    * A 点打标逻辑：
@@ -260,7 +267,7 @@ export function useVideoHighlights({
    */
   const handleMarkHighlightEnd = useCallback(async () => {
     if (highlightStartSeconds === null) {
-      onNotify('请先点击 A 标记开始时间', 'warning')
+      onNotifyRef.current('请先点击 A 标记开始时间', 'warning')
       return
     }
 
@@ -328,7 +335,7 @@ export function useVideoHighlights({
       setHighlightActiveMarker('a')
       setHighlightPendingEndSeconds(null)
     }, 3000)
-  }, [currentFile?.filename, getCurrentTime, highlightCommitState, highlightCountdownActive, highlightStartSeconds, loadVideoHighlights, onNotify, resetHighlightDraft, saveHighlightRange])
+  }, [currentFile?.filename, getCurrentTime, highlightCommitState, highlightCountdownActive, highlightStartSeconds, loadVideoHighlights, resetHighlightDraft, saveHighlightRange])
 
   // 跳转到某个精彩时刻后，同步维护选中态，并在需要时尝试继续播放。
   const handleHighlightSeek = useCallback(async (highlight: { id: number; startSeconds: number }, play?: () => Promise<void>) => {
@@ -492,16 +499,16 @@ export function useVideoHighlights({
         await loadVideoHighlights(currentFile.filename)
       }
 
-      onNotify('精彩时刻已更新', 'success')
+      onNotifyRef.current('精彩时刻已更新', 'success')
       setHighlightEditorOpen(false)
       setEditingHighlight(null)
     } catch (error: any) {
       console.error('更新精彩时刻失败:', error)
-      onNotify(error.message || '更新精彩时刻失败', 'error')
+      onNotifyRef.current(error.message || '更新精彩时刻失败', 'error')
     } finally {
       setHighlightEditorSaving(false)
     }
-  }, [currentFile?.filename, editingHighlight, highlightEditorNote, highlightEditorTags, highlightEditorTitle, loadVideoHighlights, onNotify])
+  }, [currentFile?.filename, editingHighlight, highlightEditorNote, highlightEditorTags, highlightEditorTitle, loadVideoHighlights])
 
   /**
    * 删除当前正在编辑的精彩时刻。
@@ -549,15 +556,15 @@ export function useVideoHighlights({
         setSelectedHighlightId(null)
       }
 
-      onNotify('精彩时刻已删除', 'success')
+      onNotifyRef.current('精彩时刻已删除', 'success')
       closeHighlightEditor()
     } catch (error: any) {
       console.error('删除精彩时刻失败:', error)
-      onNotify(error.message || '删除精彩时刻失败', 'error')
+      onNotifyRef.current(error.message || '删除精彩时刻失败', 'error')
     } finally {
       setHighlightEditorSaving(false)
     }
-  }, [closeHighlightEditor, currentFile?.filename, editingHighlight, highlightContinuousIndex, highlightContinuousPlaying, loadVideoHighlights, onNotify, orderedHighlights, selectedHighlightId, stopContinuousHighlightPlayback])
+  }, [closeHighlightEditor, currentFile?.filename, editingHighlight, highlightContinuousIndex, highlightContinuousPlaying, loadVideoHighlights, orderedHighlights, selectedHighlightId, stopContinuousHighlightPlayback])
 
   // 指针按下时启动“长按编辑”检测，并记录起始坐标，用于后续判断是否发生滑动。
   const handleStripPointerDown = useCallback((highlight: VideoHighlightItem, clientX: number, clientY: number) => {

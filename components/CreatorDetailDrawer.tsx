@@ -86,6 +86,16 @@ function resolveGroupPreviewEntryItem(group: CreatorGroupCard, items: CreatorMed
   return items[0] || null
 }
 
+function resolveGroupDisplayCount(group: CreatorGroupCard, viewedFilter: CreatorDetailViewedStatusFilter) {
+  if (viewedFilter === 'viewed') {
+    return group.viewedFileCount ?? group.fileCount
+  }
+  if (viewedFilter === 'unviewed') {
+    return group.unviewedFileCount ?? group.fileCount
+  }
+  return group.fileCount
+}
+
 function getErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error && error.message) {
     return error.message
@@ -106,6 +116,8 @@ async function parseApiJsonResponse(response: Response) {
 type CreatorDetailTab = 'viewed' | 'unviewed' | 'groups'
 /** 媒体类型过滤器 */
 type CreatorDetailMediaTypeFilter = 'all' | 'image' | 'video' | 'small-video' | 'large-video'
+/** 已看状态过滤器 */
+type CreatorDetailViewedStatusFilter = 'all' | 'viewed' | 'unviewed'
 /** 预览播放模式 */
 type CreatorPreviewPlayMode = 'webdav' | 'direct' | 'transcode'
 
@@ -276,6 +288,18 @@ export default function CreatorDetailDrawer({
   const [appliedViewedMediaTypeFilter, setAppliedViewedMediaTypeFilter] = useState<CreatorDetailMediaTypeFilter>('all')
   /** 未看 Tab 媒体类型筛选条件 */
   const [mediaTypeFilter, setMediaTypeFilter] = useState<CreatorDetailMediaTypeFilter>('all')
+  /** 图组 Tab 草稿已看状态筛选条件 */
+  const [groupDraftViewedFilter, setGroupDraftViewedFilter] = useState<CreatorDetailViewedStatusFilter>('all')
+  /** 图组 Tab 草稿评分筛选条件 */
+  const [groupSelectedRatings, setGroupSelectedRatings] = useState<number[]>([])
+  /** 图组 Tab 草稿标签筛选条件 */
+  const [groupSelectedTags, setGroupSelectedTags] = useState<string[]>([])
+  /** 图组 Tab 已应用已看状态筛选条件 */
+  const [appliedGroupViewedFilter, setAppliedGroupViewedFilter] = useState<CreatorDetailViewedStatusFilter>('all')
+  /** 图组 Tab 已应用评分筛选条件 */
+  const [appliedGroupRatings, setAppliedGroupRatings] = useState<number[]>([])
+  /** 图组 Tab 已应用标签筛选条件 */
+  const [appliedGroupTags, setAppliedGroupTags] = useState<string[]>([])
   /** 头像预览对话框是否打开 */
   const [avatarPreviewOpen, setAvatarPreviewOpen] = useState(false)
   /** 加载失败的图片记录 */
@@ -290,6 +314,8 @@ export default function CreatorDetailDrawer({
   const [previewWarmUpToken, setPreviewWarmUpToken] = useState(0)
   /** 已看过标签页筛选区是否展开 */
   const [viewedFiltersExpanded, setViewedFiltersExpanded] = useState(false)
+  /** 图组标签页筛选区是否展开 */
+  const [groupFiltersExpanded, setGroupFiltersExpanded] = useState(false)
   /** 是否显示播放模式选择器 */
   const [showPlayModeSelector, setShowPlayModeSelector] = useState(false)
   /** 外部播放器菜单锚点 */
@@ -331,6 +357,7 @@ export default function CreatorDetailDrawer({
   const headerToggleTimeoutRef = useRef<number | null>(null)
   const viewedFilterKeyRef = useRef('')
   const unviewedFilterKeyRef = useRef('')
+  const groupFilterKeyRef = useRef('')
   const groupPreviewHalfLoadTriggeredPageRef = useRef<Record<string, number>>({})
 
   const fetchBootstrapData = useCallback(async (creatorId: number, requestId: number) => {
@@ -380,6 +407,7 @@ export default function CreatorDetailDrawer({
     options: {
       reset?: boolean
       mediaType?: CreatorDetailMediaTypeFilter
+      viewedState?: CreatorDetailViewedStatusFilter
       ratings?: number[]
       tags?: string[]
       requestId: number
@@ -388,6 +416,15 @@ export default function CreatorDetailDrawer({
   ) => {
     if (targetTab === 'groups') {
       const search = new URLSearchParams({ mode: 'tab', tab: 'groups', page: String(page), pageSize: String(PAGE_SIZE) })
+      if (options?.viewedState && options.viewedState !== 'all') {
+        search.set('viewed', options.viewedState)
+      }
+      if (options?.ratings?.length) {
+        search.set('ratings', options.ratings.join(','))
+      }
+      if (options?.tags?.length) {
+        search.set('tags', options.tags.join(','))
+      }
       const response = await fetch(`/api/creators/${creatorId}/media?${search.toString()}`)
       const data = await parseApiJsonResponse(response)
       if (!response.ok || !data.success) {
@@ -462,10 +499,14 @@ export default function CreatorDetailDrawer({
     groupPath: string,
     page: number,
     reset: boolean,
+    viewedState: CreatorDetailViewedStatusFilter,
     requestId: number,
     sessionId: number,
   ) => {
     const search = new URLSearchParams({ mode: 'group-media', groupPath, page: String(page), pageSize: String(PAGE_SIZE) })
+    if (viewedState !== 'all') {
+      search.set('viewed', viewedState)
+    }
     const response = await fetch(`/api/creators/${creatorId}/media?${search.toString()}`)
     const data = await parseApiJsonResponse(response)
     if (!response.ok || !data.success) {
@@ -496,6 +537,7 @@ export default function CreatorDetailDrawer({
     return {
       items,
       page: pagination.page || page,
+      total: pagination.total || items.length,
       hasMore: Boolean(pagination.hasMore),
     }
   }, [])
@@ -588,7 +630,14 @@ export default function CreatorDetailDrawer({
     setAppliedViewedTags([])
     setAppliedViewedMediaTypeFilter('all')
     setMediaTypeFilter('all')
+    setGroupDraftViewedFilter('all')
+    setGroupSelectedRatings([])
+    setGroupSelectedTags([])
+    setAppliedGroupViewedFilter('all')
+    setAppliedGroupRatings([])
+    setAppliedGroupTags([])
     setViewedFiltersExpanded(false)
+    setGroupFiltersExpanded(false)
     if (scrollAnimationFrameRef.current !== null) {
       window.cancelAnimationFrame(scrollAnimationFrameRef.current)
       scrollAnimationFrameRef.current = null
@@ -601,6 +650,7 @@ export default function CreatorDetailDrawer({
     pendingListScrollTopRef.current = 0
     viewedFilterKeyRef.current = JSON.stringify({ mediaType: 'all', ratings: [], tags: [] })
     unviewedFilterKeyRef.current = JSON.stringify({ mediaType: 'all' })
+    groupFilterKeyRef.current = JSON.stringify({ viewed: 'all', ratings: [], tags: [] })
   }, [open, creator?.id])
 
   /**
@@ -668,7 +718,14 @@ export default function CreatorDetailDrawer({
     ;(async () => {
       try {
         if (targetTab === 'groups') {
-          await fetchTabPage(creatorId, 'groups', 1, { reset: true, requestId, sessionId })
+          await fetchTabPage(creatorId, 'groups', 1, {
+            reset: true,
+            viewedState: appliedGroupViewedFilter,
+            ratings: appliedGroupRatings,
+            tags: appliedGroupTags,
+            requestId,
+            sessionId,
+          })
           return
         }
 
@@ -690,7 +747,7 @@ export default function CreatorDetailDrawer({
         }
       }
     })()
-  }, [appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, bootstrapLoading, bootstrapReadyForTabs, creatorId, fetchTabPage, loadError, loadingTab, mediaTypeFilter, onError, open, tab, tabInitialized])
+  }, [appliedGroupRatings, appliedGroupTags, appliedGroupViewedFilter, appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, bootstrapLoading, bootstrapReadyForTabs, creatorId, fetchTabPage, loadError, loadingTab, mediaTypeFilter, onError, open, tab, tabInitialized])
 
   /**
    * 筛选条件或标签页变化时，滚动到顶部
@@ -711,7 +768,7 @@ export default function CreatorDetailDrawer({
     pendingListScrollTopRef.current = 0
     setHeaderCondensed(false)
     headerCondensedRef.current = false
-  }, [appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, mediaTypeFilter, tab, creator?.id])
+  }, [appliedGroupRatings, appliedGroupTags, appliedGroupViewedFilter, appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, mediaTypeFilter, tab, creator?.id])
 
   /**
    * 预览媒体变化时重置预览相关状态
@@ -1107,6 +1164,11 @@ export default function CreatorDetailDrawer({
     [mediaTypeFilter],
   )
 
+  const groupFilterKey = useMemo(
+    () => JSON.stringify({ viewed: appliedGroupViewedFilter, ratings: appliedGroupRatings, tags: appliedGroupTags }),
+    [appliedGroupRatings, appliedGroupTags, appliedGroupViewedFilter],
+  )
+
   const activePreviewList = useMemo(() => {
     if (tab === 'groups') return []
     return currentMediaList
@@ -1117,15 +1179,25 @@ export default function CreatorDetailDrawer({
       return undefined
     }
 
-    return activePreviewGroupTotalCount
-      ?? localGroups.find((group) => group.groupPath === activePreviewGroupPath)?.fileCount
-  }, [activePreviewGroupPath, activePreviewGroupTotalCount, localGroups, tab])
+    if (activePreviewGroupTotalCount !== null) {
+      return activePreviewGroupTotalCount
+    }
+
+    const activeGroup = localGroups.find((group) => group.groupPath === activePreviewGroupPath)
+    return activeGroup ? resolveGroupDisplayCount(activeGroup, appliedGroupViewedFilter) : undefined
+  }, [activePreviewGroupPath, activePreviewGroupTotalCount, appliedGroupViewedFilter, localGroups, tab])
 
   const hasPendingViewedFilterChanges = useMemo(() => {
     return viewedDraftMediaTypeFilter !== appliedViewedMediaTypeFilter
       || JSON.stringify(selectedRatings) !== JSON.stringify(appliedViewedRatings)
       || JSON.stringify(selectedTags) !== JSON.stringify(appliedViewedTags)
   }, [appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, selectedRatings, selectedTags, viewedDraftMediaTypeFilter])
+
+  const hasPendingGroupFilterChanges = useMemo(() => {
+    return groupDraftViewedFilter !== appliedGroupViewedFilter
+      || JSON.stringify(groupSelectedRatings) !== JSON.stringify(appliedGroupRatings)
+      || JSON.stringify(groupSelectedTags) !== JSON.stringify(appliedGroupTags)
+  }, [appliedGroupRatings, appliedGroupTags, appliedGroupViewedFilter, groupDraftViewedFilter, groupSelectedRatings, groupSelectedTags])
 
   const displayedMediaTypeFilter = tab === 'viewed' ? viewedDraftMediaTypeFilter : mediaTypeFilter
 
@@ -1154,6 +1226,13 @@ export default function CreatorDetailDrawer({
       groupPreviewHalfLoadTriggeredPageRef.current = {}
     }
   }, [previewOpen, tab])
+
+  useEffect(() => {
+    groupMediaRequestIdRef.current = {}
+    groupMediaLoadingRef.current = {}
+    groupPreviewHalfLoadTriggeredPageRef.current = {}
+    setGroupMediaMap({})
+  }, [groupFilterKey])
 
   useEffect(() => {
     if (!open || !creatorId || bootstrapLoading) return
@@ -1235,6 +1314,46 @@ export default function CreatorDetailDrawer({
     })()
   }, [bootstrapLoading, creatorId, fetchTabPage, loadError, mediaTypeFilter, onError, open, summaryCounts.unviewedTotal, tab, tabInitialized.unviewed, unviewedFilterKey])
 
+  useEffect(() => {
+    if (!open || !creatorId || bootstrapLoading) return
+    if (loadError) return
+    if (tab !== 'groups') return
+    if (!tabInitialized.groups) return
+    if (groupFilterKeyRef.current === groupFilterKey) return
+
+    const sessionId = activeRequestIdRef.current
+    const requestId = tabRequestIdRef.current.groups + 1
+    tabRequestIdRef.current.groups = requestId
+
+    groupFilterKeyRef.current = groupFilterKey
+    setLoadingTab((prev) => ({ ...prev, groups: true }))
+    setLoadingMoreTab('groups')
+    setTabInitialized((prev) => ({ ...prev, groups: false }))
+    setTabPages((prev) => ({ ...prev, groups: 0 }))
+    setTabHasMore((prev) => ({ ...prev, groups: summaryCounts.groupTotal > 0 }))
+
+    ;(async () => {
+      try {
+        await fetchTabPage(creatorId, 'groups', 1, {
+          reset: true,
+          viewedState: appliedGroupViewedFilter,
+          ratings: appliedGroupRatings,
+          tags: appliedGroupTags,
+          requestId,
+          sessionId,
+        })
+      } catch (error) {
+        console.error('[CreatorDetailDrawer] 重置图组分页失败:', error)
+        onError?.(getErrorMessage(error, '重置图组分页失败'))
+      } finally {
+        if (activeRequestIdRef.current === sessionId && tabRequestIdRef.current.groups === requestId) {
+          setLoadingTab((prev) => ({ ...prev, groups: false }))
+          setLoadingMoreTab((prev) => (prev === 'groups' ? null : prev))
+        }
+      }
+    })()
+  }, [appliedGroupRatings, appliedGroupTags, appliedGroupViewedFilter, bootstrapLoading, creatorId, fetchTabPage, groupFilterKey, loadError, onError, open, summaryCounts.groupTotal, tab, tabInitialized.groups])
+
   const requestPreviewWarmUp = useCallback((item?: { fileType?: string; mediaType?: string | null }) => {
     if (!item) return
     const targetMediaType = item.mediaType === 'stream-video' || item.mediaType === 'small-video'
@@ -1286,7 +1405,7 @@ export default function CreatorDetailDrawer({
 
     flushSync(() => {
       setActivePreviewGroupPath(group.groupPath)
-      setActivePreviewGroupTotalCount(group.fileCount)
+      setActivePreviewGroupTotalCount(resolveGroupDisplayCount(group, appliedGroupViewedFilter))
     })
 
     const groupState = groupMediaMap[group.groupPath]
@@ -1317,8 +1436,10 @@ export default function CreatorDetailDrawer({
 
     ;(async () => {
       try {
-        const result = await fetchGroupMediaPage(creatorId, group.groupPath, 1, true, requestId, sessionId)
+        const result = await fetchGroupMediaPage(creatorId, group.groupPath, 1, true, appliedGroupViewedFilter, requestId, sessionId)
         if (!result) return
+
+        setActivePreviewGroupTotalCount(result.total)
 
         const nextInitialItem = resolveGroupPreviewEntryItem(group, result.items)
         const firstPagePreviewItems = buildGroupPreviewItems(result.items, nextInitialItem)
@@ -1349,7 +1470,7 @@ export default function CreatorDetailDrawer({
         }
       }
     })()
-  }, [creatorId, fetchGroupMediaPage, groupMediaMap, onError, onPreviewListChange, openPreviewWithWarmUp])
+  }, [appliedGroupViewedFilter, creatorId, fetchGroupMediaPage, groupMediaMap, onError, onPreviewListChange, openPreviewWithWarmUp])
 
   const handlePrimeGroupPreview = useCallback((group: CreatorGroupCard) => {
     const groupItems = groupMediaMap[group.groupPath]?.items || []
@@ -1384,8 +1505,9 @@ export default function CreatorDetailDrawer({
       }))
 
       try {
-        const result = await fetchGroupMediaPage(creatorId, currentGroup, (groupState.page || 0) + 1, false, requestId, sessionId)
+        const result = await fetchGroupMediaPage(creatorId, currentGroup, (groupState.page || 0) + 1, false, appliedGroupViewedFilter, requestId, sessionId)
         if (!result) return
+        setActivePreviewGroupTotalCount(result.total)
         // 关键：补页后不要重排/旋转列表，否则外部仅用 index 驱动的预览会发生“跳片”。
         // 这里以当前的 previewList 顺序为准做稳定追加，保证 previewIndex 仍然指向同一条媒体。
         const baseList = previewList.length > 0 ? previewList : (groupState.items || [])
@@ -1435,7 +1557,7 @@ export default function CreatorDetailDrawer({
         setLoadingMoreTab((prev) => (prev === targetTab ? null : prev))
       }
     }
-  }, [activePreviewGroupPath, appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, creatorId, fetchGroupMediaPage, fetchTabPage, groupMediaMap, loadingMoreTab, loadingTab, mediaTypeFilter, onPreviewListChange, previewList, previewMedia, tab, tabHasMore, tabPages])
+  }, [activePreviewGroupPath, appliedGroupViewedFilter, appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, creatorId, fetchGroupMediaPage, fetchTabPage, groupMediaMap, loadingMoreTab, loadingTab, mediaTypeFilter, onPreviewListChange, previewList, previewMedia, tab, tabHasMore, tabPages])
 
   const currentTabLoading = loadingTab[tab] || loadingMoreTab === tab
   const activePreviewGroupState = activePreviewGroupPath ? groupMediaMap[activePreviewGroupPath] : undefined
@@ -1628,7 +1750,13 @@ export default function CreatorDetailDrawer({
 
     try {
       if (targetTab === 'groups') {
-        await fetchTabPage(creatorId, 'groups', (tabPages.groups || 0) + 1, { requestId, sessionId })
+        await fetchTabPage(creatorId, 'groups', (tabPages.groups || 0) + 1, {
+          viewedState: appliedGroupViewedFilter,
+          ratings: appliedGroupRatings,
+          tags: appliedGroupTags,
+          requestId,
+          sessionId,
+        })
       } else {
         await fetchTabPage(creatorId, targetTab, (tabPages[targetTab] || 0) + 1, {
           mediaType: targetTab === 'viewed' ? appliedViewedMediaTypeFilter : mediaTypeFilter,
@@ -1647,7 +1775,7 @@ export default function CreatorDetailDrawer({
         setLoadingMoreTab((prev) => (prev === targetTab ? null : prev))
       }
     }
-  }, [appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, creatorId, currentTabLoading, fetchTabPage, mediaTypeFilter, tab, tabHasMore, tabPages])
+  }, [appliedGroupRatings, appliedGroupTags, appliedGroupViewedFilter, appliedViewedMediaTypeFilter, appliedViewedRatings, appliedViewedTags, creatorId, currentTabLoading, fetchTabPage, mediaTypeFilter, tab, tabHasMore, tabPages])
 
   /**
    * 处理列表滚动事件
@@ -2059,7 +2187,7 @@ export default function CreatorDetailDrawer({
           <Tab value="groups" label={`图组 ${summaryCounts.groupTotal}`} />
         </Tabs>
 
-        {(tab === 'viewed' || tab === 'unviewed') && (
+        {(tab === 'viewed' || tab === 'unviewed' || tab === 'groups') && (
           <Box sx={{ px: 2, pt: 1.5, pb: 1 }}>
             <Stack spacing={1.5}>
               {tab === 'viewed' && (
@@ -2090,43 +2218,73 @@ export default function CreatorDetailDrawer({
                 </Stack>
               )}
 
-              {(tab === 'unviewed' || viewedFiltersExpanded) && (
-                <Collapse in={tab === 'unviewed' || viewedFiltersExpanded} timeout="auto" unmountOnExit>
+              {tab === 'groups' && (
+                <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                  <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.62)', fontWeight: 700, letterSpacing: '0.04em' }}>
+                    图组筛选
+                  </Typography>
+                  <IconButton
+                    size="small"
+                    aria-label={groupFiltersExpanded ? '收起筛选' : '展开筛选'}
+                    onClick={() => setGroupFiltersExpanded((prev) => !prev)}
+                    sx={{
+                      width: 32,
+                      height: 32,
+                      borderRadius: 1.5,
+                      color: '#fff',
+                      bgcolor: groupFiltersExpanded ? 'rgba(236,72,153,0.18)' : 'rgba(255,255,255,0.08)',
+                      border: '1px solid',
+                      borderColor: groupFiltersExpanded ? 'rgba(236,72,153,0.38)' : 'rgba(255,255,255,0.12)',
+                    }}
+                  >
+                    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 0.4 }}>
+                      <Box sx={{ width: 14, height: 2, borderRadius: 999, bgcolor: 'currentColor' }} />
+                      <Box sx={{ width: 10, height: 2, borderRadius: 999, bgcolor: 'currentColor' }} />
+                      <Box sx={{ width: 6, height: 2, borderRadius: 999, bgcolor: 'currentColor' }} />
+                    </Box>
+                  </IconButton>
+                </Stack>
+              )}
+
+              {(tab === 'unviewed' || (tab === 'viewed' && viewedFiltersExpanded) || (tab === 'groups' && groupFiltersExpanded)) && (
+                <Collapse in={tab === 'unviewed' || (tab === 'viewed' && viewedFiltersExpanded) || (tab === 'groups' && groupFiltersExpanded)} timeout="auto" unmountOnExit>
                   <Stack spacing={1.5}>
-                    <ToggleButtonGroup
-                      exclusive
-                      value={displayedMediaTypeFilter}
-                      onChange={(_, value) => {
-                        if (!value) return
-                        if (tab === 'viewed') {
-                          setViewedDraftMediaTypeFilter(value)
-                          return
-                        }
-                        setMediaTypeFilter(value)
-                      }}
-                      size="small"
-                      sx={{
-                        flexWrap: 'wrap',
-                        gap: 1,
-                        '& .MuiToggleButton-root': {
-                          borderRadius: '999px !important',
-                          border: '1px solid rgba(255,255,255,0.16) !important',
-                          color: 'rgba(255,255,255,0.7)',
-                          px: 1.5,
-                        },
-                        '& .Mui-selected': {
-                          backgroundColor: 'rgba(236,72,153,0.2) !important',
-                          color: '#fff !important',
-                          borderColor: 'rgba(236,72,153,0.5) !important',
-                        },
-                      }}
-                    >
-                      <ToggleButton value="all">全部</ToggleButton>
-                      <ToggleButton value="image">图片</ToggleButton>
-                      <ToggleButton value="video">视频</ToggleButton>
-                      <ToggleButton value="small-video">小视频</ToggleButton>
-                      <ToggleButton value="large-video">大视频</ToggleButton>
-                    </ToggleButtonGroup>
+                    {tab !== 'groups' && (
+                      <ToggleButtonGroup
+                        exclusive
+                        value={displayedMediaTypeFilter}
+                        onChange={(_, value) => {
+                          if (!value) return
+                          if (tab === 'viewed') {
+                            setViewedDraftMediaTypeFilter(value)
+                            return
+                          }
+                          setMediaTypeFilter(value)
+                        }}
+                        size="small"
+                        sx={{
+                          flexWrap: 'wrap',
+                          gap: 1,
+                          '& .MuiToggleButton-root': {
+                            borderRadius: '999px !important',
+                            border: '1px solid rgba(255,255,255,0.16) !important',
+                            color: 'rgba(255,255,255,0.7)',
+                            px: 1.5,
+                          },
+                          '& .Mui-selected': {
+                            backgroundColor: 'rgba(236,72,153,0.2) !important',
+                            color: '#fff !important',
+                            borderColor: 'rgba(236,72,153,0.5) !important',
+                          },
+                        }}
+                      >
+                        <ToggleButton value="all">全部</ToggleButton>
+                        <ToggleButton value="image">图片</ToggleButton>
+                        <ToggleButton value="video">视频</ToggleButton>
+                        <ToggleButton value="small-video">小视频</ToggleButton>
+                        <ToggleButton value="large-video">大视频</ToggleButton>
+                      </ToggleButtonGroup>
+                    )}
 
                     {tab === 'viewed' && (
                       <>
@@ -2196,6 +2354,112 @@ export default function CreatorDetailDrawer({
                               setAppliedViewedRatings([])
                               setAppliedViewedTags([])
                               setAppliedViewedMediaTypeFilter('all')
+                            }}
+                            sx={{ borderRadius: 999, fontWeight: 700, color: '#fff', borderColor: 'rgba(255,255,255,0.24)' }}
+                          >
+                            重置
+                          </Button>
+                        </Stack>
+                      </>
+                    )}
+
+                    {tab === 'groups' && (
+                      <>
+                        <ToggleButtonGroup
+                          exclusive
+                          value={groupDraftViewedFilter}
+                          onChange={(_, value) => {
+                            if (!value) return
+                            setGroupDraftViewedFilter(value)
+                          }}
+                          size="small"
+                          sx={{
+                            flexWrap: 'wrap',
+                            gap: 1,
+                            '& .MuiToggleButton-root': {
+                              borderRadius: '999px !important',
+                              border: '1px solid rgba(255,255,255,0.16) !important',
+                              color: 'rgba(255,255,255,0.7)',
+                              px: 1.5,
+                            },
+                            '& .Mui-selected': {
+                              backgroundColor: 'rgba(236,72,153,0.2) !important',
+                              color: '#fff !important',
+                              borderColor: 'rgba(236,72,153,0.5) !important',
+                            },
+                          }}
+                        >
+                          <ToggleButton value="all">全部</ToggleButton>
+                          <ToggleButton value="viewed">已看过</ToggleButton>
+                          <ToggleButton value="unviewed">未看过</ToggleButton>
+                        </ToggleButtonGroup>
+
+                        <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap' }}>
+                          {[1, 2, 3, 4, 5].map((rating) => {
+                            const active = groupSelectedRatings.includes(rating)
+                            return (
+                              <Chip
+                                key={`group-rating-${rating}`}
+                                label={`${rating}星`}
+                                onClick={() => setGroupSelectedRatings((prev) => active ? prev.filter((item) => item !== rating) : [...prev, rating].sort())}
+                                sx={{
+                                  height: 34,
+                                  fontWeight: 700,
+                                  color: active ? '#fff' : 'rgba(255,255,255,0.82)',
+                                  background: active ? 'linear-gradient(135deg, rgba(245,158,11,0.95), rgba(251,191,36,0.82))' : 'rgba(255,255,255,0.06)',
+                                  border: '1px solid',
+                                  borderColor: active ? 'rgba(251,191,36,0.95)' : 'rgba(255,255,255,0.12)',
+                                }}
+                              />
+                            )
+                          })}
+                        </Stack>
+
+                        {localAvailableTags.length > 0 && (
+                          <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap' }}>
+                            {localAvailableTags.map((tag) => {
+                              const active = groupSelectedTags.includes(tag)
+                              return (
+                                <Chip
+                                  key={`group-tag-${tag}`}
+                                  label={tag}
+                                  onClick={() => setGroupSelectedTags((prev) => active ? prev.filter((item) => item !== tag) : [...prev, tag])}
+                                  sx={{
+                                    height: 32,
+                                    fontWeight: 600,
+                                    color: active ? '#fff' : 'rgba(255,255,255,0.78)',
+                                    bgcolor: active ? 'rgba(59,130,246,0.24)' : 'rgba(255,255,255,0.04)',
+                                    border: '1px solid',
+                                    borderColor: active ? 'rgba(96,165,250,0.82)' : 'rgba(255,255,255,0.12)',
+                                  }}
+                                />
+                              )
+                            })}
+                          </Stack>
+                        )}
+
+                        <Stack direction="row" spacing={1}>
+                          <Button
+                            variant="contained"
+                            disabled={!hasPendingGroupFilterChanges}
+                            onClick={() => {
+                              setAppliedGroupViewedFilter(groupDraftViewedFilter)
+                              setAppliedGroupRatings(groupSelectedRatings)
+                              setAppliedGroupTags(groupSelectedTags)
+                            }}
+                            sx={{ flex: 1, borderRadius: 999, fontWeight: 700, backgroundColor: '#ec4899' }}
+                          >
+                            应用筛选
+                          </Button>
+                          <Button
+                            variant="outlined"
+                            onClick={() => {
+                              setGroupDraftViewedFilter('all')
+                              setGroupSelectedRatings([])
+                              setGroupSelectedTags([])
+                              setAppliedGroupViewedFilter('all')
+                              setAppliedGroupRatings([])
+                              setAppliedGroupTags([])
                             }}
                             sx={{ borderRadius: 999, fontWeight: 700, color: '#fff', borderColor: 'rgba(255,255,255,0.24)' }}
                           >
@@ -2282,7 +2546,11 @@ export default function CreatorDetailDrawer({
                       {group.groupName}
                     </Typography>
                     <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.62)' }}>
-                      {group.fileCount} 个文件 · {group.isViewed ? '已看过' : '未看过'}
+                      {appliedGroupViewedFilter === 'viewed'
+                        ? `${resolveGroupDisplayCount(group, 'viewed')}已看过/${group.fileCount}总数`
+                        : appliedGroupViewedFilter === 'unviewed'
+                          ? `${resolveGroupDisplayCount(group, 'unviewed')}未看过/${group.fileCount}总数`
+                          : `${group.fileCount} 个文件 · ${group.isViewed ? '已看过' : '未看过'}`}
                     </Typography>
                   </Box>
                 </Box>
