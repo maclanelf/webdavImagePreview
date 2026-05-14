@@ -42,6 +42,7 @@ import { useSplitMainPreload } from '@/app/split-main/useSplitMainPreload'
 import { useSharedRatingActions } from '@/app/split-main/useSharedRatingActions'
 import CreatorDialog from '@/components/CreatorDialog'
 import CreatorDetailDrawer from '../components/CreatorDetailDrawer'
+import MovieSearchGate from '@/components/MovieSearchGate'
 import SettingsDrawer from '@/components/SettingsDrawer'
 import GalleryModePage from '@/components/split-main/modes/GalleryModePage'
 import LargeVideoModePage from '@/components/split-main/modes/LargeVideoModePage'
@@ -80,6 +81,9 @@ const isVideoFile = (filename: string) => /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3
 
 export default function HomePage() {
   const router = useRouter()
+
+  const [gateReady, setGateReady] = useState(false)
+  const [isUnlocked, setIsUnlocked] = useState(false)
 
   const [config, setConfig] = useState<WebDAVConfig | null>(null)
   const [currentFile, setCurrentFile] = useState<MediaFile | null>(null)
@@ -620,6 +624,17 @@ export default function HomePage() {
   }, [viewMode])
 
   useEffect(() => {
+    setIsUnlocked(window.sessionStorage.getItem('movie_search_gate_unlocked') === 'true')
+    setGateReady(true)
+  }, [])
+
+  const handleUnlock = useCallback(() => {
+    window.sessionStorage.setItem('movie_search_gate_unlocked', 'true')
+    setIsUnlocked(true)
+    router.replace('/')
+  }, [router])
+
+  useEffect(() => {
     const handleFullscreenChange = () => {
       if (!currentFile || mediaType !== 'small-video') {
         return
@@ -730,6 +745,14 @@ export default function HomePage() {
       setCreatorDetailSuspended(false)
     }
   }, [creatorDetailOpen])
+
+  if (!gateReady) {
+    return null
+  }
+
+  if (!isUnlocked) {
+    return <MovieSearchGate onUnlock={handleUnlock} />
+  }
 
   if (!config) {
     return (
