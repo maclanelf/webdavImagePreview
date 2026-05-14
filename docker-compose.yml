@@ -8,6 +8,9 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3001:3001"
+    # 飞牛应用图标相关配置
+    labels:
+      watchcow.enable: "true"
     environment:
       - NODE_ENV=production
       - PORT=3000
