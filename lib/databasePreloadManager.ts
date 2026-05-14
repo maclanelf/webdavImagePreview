@@ -58,7 +58,7 @@ class DatabasePreloadManager {
   private nextGroupFiles: any[] = []
   private currentGroupPreloadTriggered = false
 
-  // 并发控制
+  // 并发控制（所有模式统一限制为最多 4 个文件请求并发，避免触发风控）
   private activePreloadCount = 0
   private maxConcurrentPreloads = 4
   private pendingPreloadQueue: Array<() => void> = []
@@ -953,8 +953,8 @@ class DatabasePreloadManager {
     // 重置取消状态
     this.resetCancelState()
     
-    // ✅ 初始/切换模式预加载：禁用并发限制，让浏览器自己控制（最大化速度）
-    this.setConcurrencyLimitEnabled(false)
+    // 初始/切换模式也保持最多 4 个文件并发，刷新页面后同样受限。
+    this.setConcurrencyLimitEnabled(true)
     this.setMaxCacheSize(count)
     this.clearCache()
     
@@ -1040,13 +1040,13 @@ class DatabasePreloadManager {
         creatorResolved: Boolean(f.creatorResolved)
       }))
       
-      // ✅ 初始预加载：同时发起所有请求，让浏览器自己控制并发（最大化速度）
+      // 统一使用受控并发预加载：最大 4 个文件同时请求。
       let completedCount = 0
       let successCount = 0
       let failedCount = 0
       
       const preloadPromises = filesToPreload.map((file: any) =>
-        this.preloadFileWithoutLimit(config, file)  // 不限制并发，让浏览器控制
+        this.preloadFile(config, file)
           .then(() => {
             completedCount++
             successCount++
@@ -1066,9 +1066,8 @@ class DatabasePreloadManager {
       
       await Promise.allSettled(preloadPromises)
       
-      // ✅ 初始/切换模式预加载完成后，启用并发限制（后续的智能预加载会受到限制）
       this.setConcurrencyLimitEnabled(true)
-      console.log('[数据库模式] 初始/切换模式预加载完成，已启用并发限制（智能预加载将限制为4个）')
+      console.log('[数据库模式] 初始/切换模式预加载完成，全程已按最多4个并发执行')
       
       // 构建返回消息
       let message = `数据库预加载完成：成功 ${successCount} 个，失败 ${failedCount} 个`
@@ -1083,7 +1082,7 @@ class DatabasePreloadManager {
       }
       
     } catch (error: any) {
-      this.setConcurrencyLimitEnabled(true)  // 确保恢复并发限制
+      this.setConcurrencyLimitEnabled(true)
       console.error('[数据库模式] 预加载失败:', error)
       return {
         successCount: 0,
@@ -1122,8 +1121,8 @@ class DatabasePreloadManager {
     // 重置取消状态
     this.resetCancelState()
     
-    // ✅ 初始/切换模式预加载：禁用并发限制，让浏览器自己控制（最大化速度）
-    this.setConcurrencyLimitEnabled(false)
+    // 初始/切换模式也保持最多 4 个文件并发，刷新页面后同样受限。
+    this.setConcurrencyLimitEnabled(true)
     this.setMaxCacheSize(count)
     this.clearCache()
     
@@ -1198,13 +1197,13 @@ class DatabasePreloadManager {
       
       console.log(`[数据库模式] 选择图组 ${data.parentPath}，共 ${files.length} 个文件，预加载前 ${filesToPreload.length} 个`)
       
-      // ✅ 初始预加载：同时发起所有请求，让浏览器自己控制并发（最大化速度）
+      // 统一使用受控并发预加载：最大 4 个文件同时请求。
       let completedCount = 0
       let successCount = 0
       let failedCount = 0
       
       const preloadPromises = filesToPreload.map((file: any) =>
-        this.preloadFileWithoutLimit(config, file)  // 不限制并发，让浏览器控制
+        this.preloadFile(config, file)
           .then(() => {
             completedCount++
             successCount++
@@ -1224,9 +1223,8 @@ class DatabasePreloadManager {
       
       await Promise.allSettled(preloadPromises)
       
-      // ✅ 初始/切换模式预加载完成后，启用并发限制（后续的智能预加载会受到限制）
       this.setConcurrencyLimitEnabled(true)
-      console.log('[数据库模式] 初始/切换模式预加载完成，已启用并发限制（智能预加载将限制为4个）')
+      console.log('[数据库模式] 初始/切换模式预加载完成，全程已按最多4个并发执行')
       
       return {
         successCount,
@@ -1237,7 +1235,7 @@ class DatabasePreloadManager {
       }
       
     } catch (error: any) {
-      this.setConcurrencyLimitEnabled(true)  // 确保恢复并发限制
+      this.setConcurrencyLimitEnabled(true)
       console.error('[数据库模式] 图组预加载失败:', error)
       return {
         successCount: 0,
@@ -1362,15 +1360,14 @@ class DatabasePreloadManager {
     // ✅ 智能判断：如果缓存为空，自动当作初始加载（切换模式后的场景）
     const isActuallyInitialLoad = isInitialLoad || this.cache.size === 0
     
-    // 🔧 初始加载时：先重置取消状态（避免被旧的 AbortController 影响），再禁用并发限制
+    // 初始加载时先重置取消状态（避免被旧的 AbortController 影响），
+    // 但仍然保持最多 4 个文件并发。
     if (isActuallyInitialLoad) {
-      this.resetCancelState()  // 🔧 必须先重置，避免新请求被旧的取消操作中断
-      // 🔧 等待一小段时间，确保旧的请求完全取消
+      this.resetCancelState()
       await new Promise(resolve => setTimeout(resolve, 50))
-      this.setConcurrencyLimitEnabled(false)
-      console.log('[数据库模式] 检测到初始/切换模式加载，已重置取消状态并禁用并发限制')
+      this.setConcurrencyLimitEnabled(true)
+      console.log('[数据库模式] 检测到初始/切换模式加载，已重置取消状态并启用最多4个并发限制')
     }
-    // 后续补充加载时，确保并发限制已启用
     else {
       this.setConcurrencyLimitEnabled(true)
       console.log('[数据库模式] 智能预加载补充，启用并发限制（最多4个）')
@@ -1394,10 +1391,7 @@ class DatabasePreloadManager {
       if (onProgress) {
         onProgress(currentCacheSize, targetCount)
       }
-      // 恢复并发限制
-      if (isActuallyInitialLoad) {
-        this.setConcurrencyLimitEnabled(true)
-      }
+      this.setConcurrencyLimitEnabled(true)
       return {
         actualCount: currentCacheSize,
         requestedCount: targetCount,
@@ -1470,10 +1464,7 @@ class DatabasePreloadManager {
           }
         }
         
-        // 恢复并发限制
-        if (isActuallyInitialLoad) {
-          this.setConcurrencyLimitEnabled(true)
-        }
+        this.setConcurrencyLimitEnabled(true)
         return {
           actualCount: 0,
           requestedCount: needCount,
@@ -1509,10 +1500,7 @@ class DatabasePreloadManager {
       // 🔥 在后台异步下载文件（不阻塞返回）
       Promise.allSettled(
         filesToPreload.map((file: any) =>
-          (isActuallyInitialLoad 
-            ? this.preloadFileWithoutLimit(config, file)  // 初始加载：不限制，让浏览器控制
-            : this.preloadFile(config, file)              // 后续补充：限制4个并发
-          )
+          this.preloadFile(config, file)
             .then(() => {
               if (onProgress) {
                 onProgress(this.cache.size, targetCount)
@@ -1526,20 +1514,16 @@ class DatabasePreloadManager {
             })
         )
       ).then(() => {
-        // ✅ 初始/切换模式加载完成后，启用并发限制（后续的智能预加载会受到限制）
+        this.setConcurrencyLimitEnabled(true)
         if (isActuallyInitialLoad) {
-          this.setConcurrencyLimitEnabled(true)
-          console.log('[数据库模式] 初始/切换模式加载完成，已启用并发限制（智能预加载将限制为4个）')
+          console.log('[数据库模式] 初始/切换模式加载完成，全程已按最多4个并发执行')
         }
       })
       
       return result
     } catch (error) {
       console.error('[数据库模式] 补充缓存失败:', error)
-      // 恢复并发限制
-      if (isActuallyInitialLoad) {
-        this.setConcurrencyLimitEnabled(true)
-      }
+      this.setConcurrencyLimitEnabled(true)
       return {
         actualCount: 0,
         requestedCount: targetCount,
