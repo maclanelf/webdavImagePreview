@@ -3,6 +3,7 @@ import { useCallback, useRef, useState, type MutableRefObject, type SyntheticEve
 import databasePreloadManager from '@/lib/databasePreloadManager'
 import type {
   AdvancedFilters,
+  CreatorSummary,
   MediaFile,
   MediaFilter,
   MediaType,
@@ -17,6 +18,20 @@ interface RandomHistoryCacheEntry {
   mediaType: MediaType
   originalStreamUrl: string | null
   directPlayAvailable?: boolean
+  creator: CreatorSummary | null
+  creatorResolved: boolean
+}
+
+function patchMediaFileCreatorMetadata(
+  file: MediaFile,
+  creator: CreatorSummary | null,
+  creatorResolved: boolean,
+): MediaFile {
+  return {
+    ...file,
+    creator,
+    creatorResolved,
+  }
 }
 
 interface UseRandomModeOptions {
@@ -246,17 +261,12 @@ export function useRandomMode({
     hasAutoRatedRef.current = false
     videoStateRef.current = null
 
-    const shouldEnterVideoFullscreen = handleMediaTypeChangeInFullscreenRef.current(fileToLoad)
-
     // 历史回看仍然走“完整装载流程”，但数据来源优先使用随机历史内存缓存，
     // 避免回看时重复向后端请求同一文件。
     setLoading(true)
     setError(null)
 
     try {
-      setCurrentFile(fileToLoad)
-      setCurrentCreator(null)
-
       const cachedData = randomHistoryCache.current.get(fileToLoad.filename)
 
       if (!cachedData) {
@@ -265,6 +275,16 @@ export function useRandomMode({
         setLoading(false)
         return
       }
+
+      const normalizedFileToLoad = patchMediaFileCreatorMetadata(
+        fileToLoad,
+        cachedData.creator,
+        cachedData.creatorResolved,
+      )
+      const shouldEnterVideoFullscreen = handleMediaTypeChangeInFullscreenRef.current(normalizedFileToLoad)
+
+      setCurrentFile(normalizedFileToLoad)
+      setCurrentCreator(normalizedFileToLoad.creator ?? null)
 
       console.log(`[历史回看] 从内存缓存加载: ${fileToLoad.basename}`)
       const url = URL.createObjectURL(cachedData.blob)
@@ -291,8 +311,8 @@ export function useRandomMode({
       }
 
       setRatingType('media')
-      await loadCurrentRatingRef.current(fileToLoad, 'media')
-      startAutoMarkTimerRef.current(fileToLoad, suppressAutoRating)
+      await loadCurrentRatingRef.current(normalizedFileToLoad, 'media')
+      startAutoMarkTimerRef.current(normalizedFileToLoad, suppressAutoRating)
     } catch (e: any) {
       setError(e.message)
     } finally {
@@ -361,6 +381,8 @@ export function useRandomMode({
         size: randomFile.size,
         type: 'file',
         lastmod: randomFile.lastmod,
+        creator: randomFile.creator || null,
+        creatorResolved: Boolean(randomFile.creatorResolved),
       }
       console.log(`[DEBUG] 从预加载缓存中选择文件: ${fileToLoad?.basename}`)
     } else {
@@ -411,6 +433,8 @@ export function useRandomMode({
               size: dbFile.file_size || 0,
               type: 'file',
               lastmod: dbFile.lastmod || '',
+              creator: dbFile.creator || null,
+              creatorResolved: Boolean(dbFile.creatorResolved),
             }
             console.log(`[DEBUG] 从数据库随机获取文件: ${fileToLoad.basename}`)
           }
@@ -456,7 +480,7 @@ export function useRandomMode({
 
     try {
       setCurrentFile(fileToLoad)
-      setCurrentCreator(null)
+      setCurrentCreator(fileToLoad.creator ?? null)
 
       const preloadedBlob = databasePreloadManager.getPreloadedFile(fileToLoad.filename)
 
@@ -510,6 +534,8 @@ export function useRandomMode({
           mediaType: currentMediaType,
           originalStreamUrl: currentOriginalStreamUrl,
           directPlayAvailable: isMediumSizedVideo && Boolean(config?.enableDirectLink && config?.directLinkUrl),
+          creator: fileToLoad.creator ?? null,
+          creatorResolved: Boolean(fileToLoad.creatorResolved),
         })
         console.log(`[历史缓存] 保存当前文件: ${fileToLoad.basename}`)
 
@@ -801,6 +827,27 @@ export function useRandomMode({
     setShowRestartDialog(false)
   }, [])
 
+  const updateRandomHistoryCreatorMetadata = useCallback((
+    filepath: string,
+    creator: CreatorSummary | null,
+    creatorResolved: boolean,
+  ) => {
+    setRandomHistory((prev) => prev.map((file) => (
+      file.filename === filepath
+        ? patchMediaFileCreatorMetadata(file, creator, creatorResolved)
+        : file
+    )))
+
+    const cached = randomHistoryCache.current.get(filepath)
+    if (cached) {
+      randomHistoryCache.current.set(filepath, {
+        ...cached,
+        creator,
+        creatorResolved,
+      })
+    }
+  }, [])
+
   /**
    * 统一暴露给随机模式页面的状态与动作集合。
    * 页面层不关心内部缓存细节，只消费这里的输出。
@@ -817,5 +864,6 @@ export function useRandomMode({
     loadNextRandomFile,
     handleRestartViewing,
     handleCancelRestart,
+    updateRandomHistoryCreatorMetadata,
   }
 }

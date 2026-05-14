@@ -1,3 +1,5 @@
+import type { CreatorSummary } from '@/types'
+
 /**
  * 数据库预加载管理器
  * 
@@ -20,6 +22,8 @@ class DatabasePreloadManager {
     filepath: string
     size: number
     lastmod: string
+    creator?: CreatorSummary | null
+    creatorResolved?: boolean
   }>()
   
   // 图组模式专用：下一组预加载缓存
@@ -30,6 +34,8 @@ class DatabasePreloadManager {
     filepath: string
     size: number
     lastmod: string
+    creator?: CreatorSummary | null
+    creatorResolved?: boolean
   }>()
   
   // 预加载队列：正在预加载的文件路径集合
@@ -304,7 +310,9 @@ class DatabasePreloadManager {
           timestamp: Date.now(),
           filepath,
           size: file.size || 0,
-          lastmod: file.lastmod || ''
+          lastmod: file.lastmod || '',
+          creator: file.creator || null,
+          creatorResolved: Boolean(file.creatorResolved)
         })
 
         // 图组模式下不驱逐缓存（允许缓存整个图组）
@@ -428,7 +436,9 @@ class DatabasePreloadManager {
           timestamp: Date.now(),
           filepath,
           size: file.size || 0,
-          lastmod: file.lastmod || ''
+          lastmod: file.lastmod || '',
+          creator: file.creator || null,
+          creatorResolved: Boolean(file.creatorResolved)
         })
         
         console.log(`[数据库模式] 预加载完成: ${file.basename}`)
@@ -526,7 +536,9 @@ class DatabasePreloadManager {
           timestamp: Date.now(),
           filepath,
           size: file.size || 0,
-          lastmod: file.lastmod || ''
+          lastmod: file.lastmod || '',
+          creator: file.creator || null,
+          creatorResolved: Boolean(file.creatorResolved)
         })
         
         if (this.nextGroupCache.size > this.maxCacheSize) {
@@ -714,12 +726,14 @@ class DatabasePreloadManager {
   }
 
   // 获取所有缓存的文件信息（包含元数据）
-  getCachedFiles(): Array<{ filename: string, basename: string, size: number, lastmod: string }> {
+  getCachedFiles(): Array<{ filename: string, basename: string, size: number, lastmod: string, creator?: CreatorSummary | null, creatorResolved?: boolean }> {
     return Array.from(this.cache.entries()).map(([filepath, cached]) => ({
       filename: filepath,
       basename: filepath.substring(filepath.lastIndexOf('/') + 1),
       size: cached.size,
-      lastmod: cached.lastmod
+      lastmod: cached.lastmod,
+      creator: cached.creator || null,
+      creatorResolved: Boolean(cached.creatorResolved)
     }))
   }
 
@@ -778,8 +792,46 @@ class DatabasePreloadManager {
     }
   }
 
+  // 同步更新文件的博主元数据
+  patchFileCreatorMetadata(filepath: string, creator: CreatorSummary | null, creatorResolved: boolean): void {
+    const nextCreator = creator || null
+    const nextCreatorResolved = Boolean(creatorResolved)
+
+    const cached = this.cache.get(filepath)
+    if (cached) {
+      cached.creator = nextCreator
+      cached.creatorResolved = nextCreatorResolved
+    }
+
+    const nextGroupCached = this.nextGroupCache.get(filepath)
+    if (nextGroupCached) {
+      nextGroupCached.creator = nextCreator
+      nextGroupCached.creatorResolved = nextCreatorResolved
+    }
+
+    this.currentGroupFiles = this.currentGroupFiles.map((file) => (
+      file.filename === filepath
+        ? {
+            ...file,
+            creator: nextCreator,
+            creatorResolved: nextCreatorResolved,
+          }
+        : file
+    ))
+
+    this.nextGroupFiles = this.nextGroupFiles.map((file) => (
+      file.filename === filepath
+        ? {
+            ...file,
+            creator: nextCreator,
+            creatorResolved: nextCreatorResolved,
+          }
+        : file
+    ))
+  }
+
   // 直接添加文件到缓存
-  addToCacheDirectly(filepath: string, blob: Blob, size: number = 0, lastmod: string = ''): void {
+  addToCacheDirectly(filepath: string, blob: Blob, size: number = 0, lastmod: string = '', creator?: CreatorSummary | null, creatorResolved: boolean = false): void {
     if (this.cache.has(filepath)) return
 
     const url = URL.createObjectURL(blob)
@@ -790,7 +842,9 @@ class DatabasePreloadManager {
       timestamp: Date.now(),
       filepath,
       size,
-      lastmod
+      lastmod,
+      creator: creator || null,
+      creatorResolved,
     })
   }
 
@@ -981,7 +1035,9 @@ class DatabasePreloadManager {
         basename: f.basename,
         size: f.file_size || 0,
         type: f.file_type,
-        lastmod: f.lastmod || ''
+        lastmod: f.lastmod || '',
+        creator: f.creator || null,
+        creatorResolved: Boolean(f.creatorResolved)
       }))
       
       // ✅ 初始预加载：同时发起所有请求，让浏览器自己控制并发（最大化速度）
@@ -1132,7 +1188,9 @@ class DatabasePreloadManager {
         basename: f.basename,
         size: f.file_size || 0,
         type: f.file_type,
-        lastmod: f.lastmod || ''
+        lastmod: f.lastmod || '',
+        creator: f.creator || null,
+        creatorResolved: Boolean(f.creatorResolved)
       }))
       this.currentGroupPreloadTriggered = false
       
@@ -1255,7 +1313,9 @@ class DatabasePreloadManager {
         basename: f.basename,
         size: f.file_size || 0,
         type: f.file_type,
-        lastmod: f.lastmod || ''
+        lastmod: f.lastmod || '',
+        creator: f.creator || null,
+        creatorResolved: Boolean(f.creatorResolved)
       }))
       
       const filesToPreload = this.nextGroupFiles.slice(0, Math.min(count, data.files.length))
@@ -1434,7 +1494,9 @@ class DatabasePreloadManager {
         basename: f.basename,
         size: f.file_size || 0,
         type: f.file_type,
-        lastmod: f.lastmod || ''
+        lastmod: f.lastmod || '',
+        creator: f.creator || null,
+        creatorResolved: Boolean(f.creatorResolved)
       }))
       
       // ✅ 立即返回结果（不等待文件下载完成）
@@ -1540,7 +1602,9 @@ class DatabasePreloadManager {
         basename: data.files[0].basename,
         size: data.files[0].file_size || 0,
         type: 'file',
-        lastmod: data.files[0].lastmod || ''
+        lastmod: data.files[0].lastmod || '',
+        creator: data.files[0].creator || null,
+        creatorResolved: Boolean(data.files[0].creatorResolved)
       }
       
       return {
@@ -1844,7 +1908,9 @@ class DatabasePreloadManager {
           basename: f.basename,
           size: f.file_size || 0,
           type: f.file_type,
-          lastmod: f.lastmod || ''
+          lastmod: f.lastmod || '',
+          creator: f.creator || null,
+          creatorResolved: Boolean(f.creatorResolved)
         }))
         
         console.log(`[数据库模式] 开始并行预加载 ${filesToPreload.length} 个文件（受并发控制，最多4个同时进行）`)

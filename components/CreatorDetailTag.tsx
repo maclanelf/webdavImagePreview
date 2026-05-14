@@ -6,6 +6,7 @@ import { Box, Typography, keyframes } from '@mui/material'
 import { ChevronRight as ChevronRightIcon, Home as HomeIcon } from '@mui/icons-material'
 
 import { useCreatorIdentification } from '@/hooks/useCreatorIdentification'
+import type { CreatorSummary } from '@/types'
 
 /**
  * 脉冲动画效果 - 用于标签的呼吸灯效果
@@ -25,6 +26,10 @@ interface CreatorDetailTagProps {
   onTagClick: (creator: any | null) => void
   /** 博主识别完成后的回调函数（可选） */
   onCreatorIdentified?: (creator: any | null) => void
+  /** 已关联的博主信息 */
+  creator?: CreatorSummary | null
+  /** 是否已经通过关联表完成博主解析 */
+  creatorResolved?: boolean
   /** 标签在屏幕上的位置（可选） */
   position?: { top?: string; bottom?: string; left?: string; right?: string }
   /** 标签是否可见（默认为 true） */
@@ -46,11 +51,16 @@ export default function CreatorDetailTag({
   filePath,
   onTagClick,
   onCreatorIdentified,
+  creator,
+  creatorResolved,
   position,
   visible = true,
   refreshKey = 0,
 }: CreatorDetailTagProps) {
-  const { creatorName, identifiedCreator, loading } = useCreatorIdentification(filePath, refreshKey)
+  const { creatorName, identifiedCreator, loading } = useCreatorIdentification(filePath, refreshKey, {
+    creator,
+    creatorResolved,
+  })
 
   useEffect(() => {
     if (!loading) {

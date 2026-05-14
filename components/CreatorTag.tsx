@@ -5,6 +5,7 @@ import { Box, Typography, keyframes } from '@mui/material'
 import { TouchApp as TouchAppIcon, ChevronRight as ChevronRightIcon } from '@mui/icons-material'
 
 import { useCreatorIdentification } from '@/hooks/useCreatorIdentification'
+import type { CreatorSummary } from '@/types'
 
 const breatheAnimation = keyframes`
   0%, 100% {
@@ -21,6 +22,8 @@ interface CreatorTagProps {
   filePath: string
   onTagClick: () => void
   onCreatorIdentified?: (creator: any | null) => void
+  creator?: CreatorSummary | null
+  creatorResolved?: boolean
   position?: { top?: string; bottom?: string; left?: string; right?: string }
   visible?: boolean // 外部控制显示/隐藏
   refreshKey?: number // 用于强制刷新识别
@@ -30,12 +33,17 @@ export default function CreatorTag({
   filePath, 
   onTagClick, 
   onCreatorIdentified, 
+  creator,
+  creatorResolved,
   position,
   visible = true,
   refreshKey = 0
 }: CreatorTagProps) {
   const [calculatedPosition, setCalculatedPosition] = useState<{ top: string; left: string } | null>(null)
-  const { creatorName, identifiedCreator, loading } = useCreatorIdentification(filePath, refreshKey)
+  const { creatorName, identifiedCreator, loading } = useCreatorIdentification(filePath, refreshKey, {
+    creator,
+    creatorResolved,
+  })
 
   // 生成随机位置（更保守的策略，确保不会溢出和出现在黑边）
   const generateRandomPosition = () => {

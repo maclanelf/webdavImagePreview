@@ -627,6 +627,12 @@ export default function CreatorDetailDrawer({
     return previewList.map((item) => localMedia.find((mediaItem) => mediaItem.id === item.id) || item)
   }, [localMedia, previewList])
 
+  const activePreviewMedia = previewSourceList[previewIndex] || previewMedia || null
+  const activePreviewCreator = activePreviewMedia?.creatorResolved !== undefined
+    ? (activePreviewMedia.creator || null)
+    : (localCreator || null)
+  const activePreviewCreatorResolved = activePreviewMedia?.creatorResolved ?? Boolean(localCreator)
+
   /**
    * 同步外部传入的博主和媒体数据到本地状态
    */
@@ -2779,8 +2785,10 @@ export default function CreatorDetailDrawer({
           && previewMedia.fileSize <= 100 * 1024 * 1024
         )}
         onSmallVideoDirectPlay={() => setPreviewPlayMode('direct')}
-        creatorOverlayProps={previewMedia?.filePath ? {
-          filePath: previewMedia.filePath,
+        creatorOverlayProps={activePreviewMedia?.filePath ? {
+          filePath: activePreviewMedia.filePath,
+          creator: activePreviewCreator,
+          creatorResolved: activePreviewCreatorResolved,
           creatorRefreshKey: previewCreatorRefreshKey,
           onCreatorIdentified: setPreviewIdentifiedCreator,
           onCreatorTagClick: () => setPreviewCreatorDialogOpen(true),
@@ -2804,12 +2812,25 @@ export default function CreatorDetailDrawer({
         open={previewCreatorDialogOpen}
         onClose={() => setPreviewCreatorDialogOpen(false)}
         filePath={previewMedia?.filePath || ''}
-        existingCreator={previewIdentifiedCreator || creator || null}
+        existingCreator={previewIdentifiedCreator || activePreviewCreator || null}
         onMarkUnknown={() => {
           setPreviewIdentifiedCreator(null)
+          if (activePreviewMedia?.filePath) {
+            updateLocalMediaCard(activePreviewMedia.filePath, {
+              creator: null,
+              creatorResolved: true,
+            })
+          }
           setPreviewCreatorRefreshKey((value) => value + 1)
         }}
         onSuccess={() => {
+          setPreviewIdentifiedCreator(null)
+          if (activePreviewMedia?.filePath) {
+            updateLocalMediaCard(activePreviewMedia.filePath, {
+              creator: null,
+              creatorResolved: false,
+            })
+          }
           setPreviewCreatorRefreshKey((value) => value + 1)
         }}
       />

@@ -375,6 +375,8 @@ const CreatorDetailPreviewContainer = forwardRef<CreatorDetailPreviewContainerRe
   const creatorOverlay = currentItem?.filePath && creatorOverlayProps?.onCreatorTagClick ? (
     <CreatorTag
       filePath={currentItem.filePath}
+      creator={creatorOverlayProps.creator}
+      creatorResolved={creatorOverlayProps.creatorResolved}
       onTagClick={creatorOverlayProps.onCreatorTagClick}
       onCreatorIdentified={creatorOverlayProps.onCreatorIdentified}
       position={creatorOverlayProps.creatorTagPosition}

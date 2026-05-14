@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useRef, useState, type MutableRefObject, type SyntheticEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type MutableRefObject, type SyntheticEvent } from 'react'
 
 import {
   Box,
@@ -43,6 +43,7 @@ import { useModeSwitchGuard } from '@/components/split-main/shared/useModeSwitch
 import { useRandomMode } from '@/app/split-main/random/useRandomMode'
 import type {
   AdvancedFilters,
+  CreatorSummary,
   GroupRating,
   MediaFile,
   MediaFilter,
@@ -118,6 +119,7 @@ interface RandomModePageProps {
   setSnackbarMessage: (message: string) => void
   setSnackbarSeverity: (severity: SnackbarSeverity) => void
   setSnackbarOpen: (open: boolean) => void
+  creatorMetadataPatchRef?: MutableRefObject<(filePath: string, creator: CreatorSummary | null, creatorResolved: boolean) => void>
 }
 
 /**
@@ -197,6 +199,7 @@ export default function RandomModePage({
   setSnackbarMessage,
   setSnackbarSeverity,
   setSnackbarOpen,
+  creatorMetadataPatchRef,
 }: RandomModePageProps) {
   /**
    * 随机模式固定使用 random 视图类型，这里用 ref 提供给 [`useRandomMode()`](app/split-main/random/useRandomMode.ts:63)
@@ -256,6 +259,7 @@ export default function RandomModePage({
     loadNextRandomFile,
     handleRestartViewing,
     handleCancelRestart,
+    updateRandomHistoryCreatorMetadata,
   } = useRandomMode({
     config,
     currentFile,
@@ -299,6 +303,18 @@ export default function RandomModePage({
   })
 
   saveAndSwitchRef.current = saveAndSwitch
+
+  useEffect(() => {
+    if (!creatorMetadataPatchRef) {
+      return
+    }
+
+    creatorMetadataPatchRef.current = updateRandomHistoryCreatorMetadata
+
+    return () => {
+      creatorMetadataPatchRef.current = () => {}
+    }
+  }, [creatorMetadataPatchRef, updateRandomHistoryCreatorMetadata])
 
   const {
     anchorEl: externalPlayerAnchor,
@@ -559,6 +575,8 @@ export default function RandomModePage({
                 {currentFile && (
                   <CreatorTag
                     filePath={currentFile.filename}
+                    creator={currentFile.creator ?? null}
+                    creatorResolved={currentFile.creatorResolved}
                     onCreatorIdentified={setCurrentCreator}
                     onTagClick={onOpenCreatorDialog}
                     refreshKey={creatorRefreshKey}
@@ -567,6 +585,8 @@ export default function RandomModePage({
                 {currentFile && (
                   <CreatorDetailTag
                     filePath={currentFile.filename}
+                    creator={currentFile.creator ?? null}
+                    creatorResolved={currentFile.creatorResolved}
                     onTagClick={(creator: any | null) => onOpenCreatorDetail?.(creator)}
                     refreshKey={creatorRefreshKey}
                   />
@@ -611,6 +631,8 @@ export default function RandomModePage({
             {isMobile && currentFile && mediaType === 'small-video' && (
               <CreatorTag
                 filePath={currentFile.filename}
+                creator={currentFile.creator ?? null}
+                creatorResolved={currentFile.creatorResolved}
                 onCreatorIdentified={setCurrentCreator}
                 onTagClick={onOpenCreatorDialog}
                 position={{ top: '15%', left: '15%' }}
@@ -620,6 +642,8 @@ export default function RandomModePage({
             {isMobile && currentFile && mediaType === 'small-video' && (
               <CreatorDetailTag
                 filePath={currentFile.filename}
+                creator={currentFile.creator ?? null}
+                creatorResolved={currentFile.creatorResolved}
                 onTagClick={(creator: any | null) => onOpenCreatorDetail?.(creator)}
                 position={{ top: '22%', right: '10%' }}
                 refreshKey={creatorRefreshKey}
@@ -715,6 +739,8 @@ export default function RandomModePage({
                 {currentFile && (
                   <CreatorTag
                     filePath={currentFile.filename}
+                    creator={currentFile.creator ?? null}
+                    creatorResolved={currentFile.creatorResolved}
                     onCreatorIdentified={setCurrentCreator}
                     onTagClick={onOpenCreatorDialog}
                     refreshKey={creatorRefreshKey}
@@ -723,6 +749,8 @@ export default function RandomModePage({
                 {currentFile && (
                   <CreatorDetailTag
                     filePath={currentFile.filename}
+                    creator={currentFile.creator ?? null}
+                    creatorResolved={currentFile.creatorResolved}
                     onTagClick={(creator: any | null) => onOpenCreatorDetail?.(creator)}
                     position={{ top: '22%', right: '10%' }}
                     refreshKey={creatorRefreshKey}

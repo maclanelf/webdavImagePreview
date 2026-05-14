@@ -2,9 +2,16 @@
 
 import { useEffect, useState } from 'react'
 
+import type { CreatorSummary } from '@/types'
+
 interface CreatorIdentifyResult {
-  creator: any | null
+  creator: CreatorSummary | null
   creatorName: string | null
+}
+
+interface CreatorIdentifyOptions {
+  creator?: CreatorSummary | null
+  creatorResolved?: boolean
 }
 
 const resolvedCache = new Map<string, CreatorIdentifyResult>()
@@ -12,6 +19,13 @@ const pendingCache = new Map<string, Promise<CreatorIdentifyResult>>()
 
 function buildCacheKey(filePath: string, refreshKey: number) {
   return `${refreshKey}:${filePath}`
+}
+
+function buildResultFromCreator(creator: CreatorSummary | null): CreatorIdentifyResult {
+  return {
+    creator,
+    creatorName: creator?.primaryName || null,
+  }
 }
 
 async function requestCreatorIdentification(cacheKey: string, filePath: string) {
@@ -57,15 +71,35 @@ async function requestCreatorIdentification(cacheKey: string, filePath: string) 
   return promise
 }
 
-export function useCreatorIdentification(filePath: string, refreshKey: number = 0) {
+export function useCreatorIdentification(
+  filePath: string,
+  refreshKey: number = 0,
+  options?: CreatorIdentifyOptions,
+) {
   const [creatorName, setCreatorName] = useState<string | null>(null)
-  const [identifiedCreator, setIdentifiedCreator] = useState<any | null>(null)
+  const [identifiedCreator, setIdentifiedCreator] = useState<CreatorSummary | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     if (!filePath) {
       setCreatorName(null)
       setIdentifiedCreator(null)
+      setLoading(false)
+      return
+    }
+
+    if (options?.creatorResolved) {
+      const result = buildResultFromCreator(options.creator || null)
+      setCreatorName(result.creatorName)
+      setIdentifiedCreator(result.creator)
+      setLoading(false)
+      return
+    }
+
+    if (options?.creator?.id) {
+      const result = buildResultFromCreator(options.creator)
+      setCreatorName(result.creatorName)
+      setIdentifiedCreator(result.creator)
       setLoading(false)
       return
     }
@@ -109,7 +143,7 @@ export function useCreatorIdentification(filePath: string, refreshKey: number = 
     return () => {
       active = false
     }
-  }, [filePath, refreshKey])
+  }, [filePath, options?.creator, options?.creatorResolved, refreshKey])
 
   return {
     creatorName,

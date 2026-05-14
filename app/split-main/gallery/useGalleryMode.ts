@@ -1,7 +1,19 @@
 import { useCallback, useState, type MutableRefObject } from 'react'
 
 import databasePreloadManager from '@/lib/databasePreloadManager'
-import type { AdvancedFilters, MediaFile, MediaType, ViewedFilter, WebDAVConfig } from '@/types'
+import type { AdvancedFilters, CreatorSummary, MediaFile, MediaType, ViewedFilter, WebDAVConfig } from '@/types'
+
+function patchMediaFileCreatorMetadata(
+  file: MediaFile,
+  creator: CreatorSummary | null,
+  creatorResolved: boolean,
+): MediaFile {
+  return {
+    ...file,
+    creator,
+    creatorResolved,
+  }
+}
 
 interface UseGalleryModeOptions {
   config: WebDAVConfig | null
@@ -113,7 +125,7 @@ export function useGalleryMode({
 
     try {
       setCurrentFile(file)
-      setCurrentCreator(null)
+      setCurrentCreator(file.creator ?? null)
       setCurrentGroupIndex(index)
 
       // 图组模式优先使用预加载数据，保证组内切换足够平滑；
@@ -147,10 +159,10 @@ export function useGalleryMode({
           blob = await streamResponse.blob()
 
           if (preloadEnabled) {
-            databasePreloadManager.addToCacheDirectly(file.filename, blob, file.size, file.lastmod)
+            databasePreloadManager.addToCacheDirectly(file.filename, blob, file.size, file.lastmod, file.creator, Boolean(file.creatorResolved))
             setPreloadStatus(databasePreloadManager.getCacheStatus())
           }
-        }
+}
       } else {
         console.log(`[DEBUG] 图组模式文件不在预加载缓存中，正常加载: ${file.basename}`)
         const streamResponse = await fetch('/api/webdav/stream', {
@@ -165,11 +177,11 @@ export function useGalleryMode({
         if (!streamResponse.ok) throw new Error('获取文件流失败')
         blob = await streamResponse.blob()
 
-        if (preloadEnabled) {
-          databasePreloadManager.addToCacheDirectly(file.filename, blob, file.size, file.lastmod)
-          setPreloadStatus(databasePreloadManager.getCacheStatus())
-        }
-      }
+          if (preloadEnabled) {
+            databasePreloadManager.addToCacheDirectly(file.filename, blob, file.size, file.lastmod, file.creator, Boolean(file.creatorResolved))
+            setPreloadStatus(databasePreloadManager.getCacheStatus())
+          }
+}
 
       const url = URL.createObjectURL(blob)
       const isSmallVideoTarget = isVideoRef.current(file.filename)
@@ -422,6 +434,18 @@ export function useGalleryMode({
     })
   }, [currentGroup, currentGroupIndex, loadFileFromGroup, playIntentRef, saveAndSwitchRef])
 
+  const updateCurrentGroupCreatorMetadata = useCallback((
+    filepath: string,
+    creator: CreatorSummary | null,
+    creatorResolved: boolean,
+  ) => {
+    setCurrentGroup((prev) => prev.map((file) => (
+      file.filename === filepath
+        ? patchMediaFileCreatorMetadata(file, creator, creatorResolved)
+        : file
+    )))
+  }, [])
+
   /**
    * 暴露图组模式页面所需的最小状态面：
    * - 当前图组
@@ -436,6 +460,7 @@ export function useGalleryMode({
     loadRandomGroup,
     nextInGroup,
     previousInGroup,
+    updateCurrentGroupCreatorMetadata,
   }
 }
 

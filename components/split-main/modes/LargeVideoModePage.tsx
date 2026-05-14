@@ -596,6 +596,8 @@ export default function LargeVideoModePage({
                     <>
                       <CreatorTag
                         filePath={currentFile.filename}
+                        creator={currentFile.creator ?? null}
+                        creatorResolved={currentFile.creatorResolved}
                         onCreatorIdentified={setCurrentCreator}
                         onTagClick={onOpenCreatorDialog}
                         visible={streamVideoTagVisible}
@@ -603,6 +605,8 @@ export default function LargeVideoModePage({
                       />
                       <CreatorDetailTag
                         filePath={currentFile.filename}
+                        creator={currentFile.creator ?? null}
+                        creatorResolved={currentFile.creatorResolved}
                         onTagClick={(creator: any | null) => onOpenCreatorDetail?.(creator)}
                         visible={streamVideoTagVisible}
                         position={{ top: '26%', right: '10%' }}

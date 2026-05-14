@@ -50,6 +50,7 @@ import { useExternalPlayerMenu } from '@/components/split-main/shared/useExterna
 import { useModeSwitchGuard } from '@/components/split-main/shared/useModeSwitchGuard'
 import type {
   AdvancedFilters,
+  CreatorSummary,
   GroupRating,
   MediaFile,
   MediaRating,
@@ -137,6 +138,7 @@ interface GalleryModePageProps {
   setPlayIntent: (intent: boolean) => void
   stopAutoMarkTimer: () => void
   onGalleryStateChange: (group: MediaFile[], index: number) => void
+  creatorMetadataPatchRef?: MutableRefObject<(filePath: string, creator: CreatorSummary | null, creatorResolved: boolean) => void>
 }
 
 /**
@@ -212,6 +214,7 @@ export default function GalleryModePage({
   setPlayIntent,
   stopAutoMarkTimer,
   onGalleryStateChange,
+  creatorMetadataPatchRef,
 }: GalleryModePageProps) {
   /**
    * 图组模式自己的播放器与切换状态。
@@ -252,6 +255,7 @@ export default function GalleryModePage({
     loadRandomGroup,
     nextInGroup,
     previousInGroup,
+    updateCurrentGroupCreatorMetadata,
   } = useGalleryMode({
     config,
     currentFile,
@@ -292,6 +296,18 @@ export default function GalleryModePage({
   useEffect(() => {
     onGalleryStateChange(currentGroup, currentGroupIndex)
   }, [currentGroup, currentGroupIndex, onGalleryStateChange])
+
+  useEffect(() => {
+    if (!creatorMetadataPatchRef) {
+      return
+    }
+
+    creatorMetadataPatchRef.current = updateCurrentGroupCreatorMetadata
+
+    return () => {
+      creatorMetadataPatchRef.current = () => {}
+    }
+  }, [creatorMetadataPatchRef, updateCurrentGroupCreatorMetadata])
 
   /**
    * 离开小视频形态时，清理图组模式自己维护的“直链播放按钮”显示状态。
@@ -597,6 +613,8 @@ export default function GalleryModePage({
                 {currentFile && (
                   <CreatorTag
                     filePath={currentFile.filename}
+                    creator={currentFile.creator ?? null}
+                    creatorResolved={currentFile.creatorResolved}
                     onCreatorIdentified={setCurrentCreator}
                     onTagClick={onOpenCreatorDialog}
                     refreshKey={creatorRefreshKey}
@@ -605,6 +623,8 @@ export default function GalleryModePage({
                 {currentFile && (
                   <CreatorDetailTag
                     filePath={currentFile.filename}
+                    creator={currentFile.creator ?? null}
+                    creatorResolved={currentFile.creatorResolved}
                     onTagClick={(creator: any | null) => onOpenCreatorDetail?.(creator)}
                     refreshKey={creatorRefreshKey}
                   />
@@ -646,6 +666,8 @@ export default function GalleryModePage({
             {isMobile && currentFile && mediaType === 'small-video' && (
               <CreatorTag
                 filePath={currentFile.filename}
+                creator={currentFile.creator ?? null}
+                creatorResolved={currentFile.creatorResolved}
                 onCreatorIdentified={setCurrentCreator}
                 onTagClick={onOpenCreatorDialog}
                 position={{ top: '15%', left: '15%' }}
@@ -655,6 +677,8 @@ export default function GalleryModePage({
             {isMobile && currentFile && mediaType === 'small-video' && (
               <CreatorDetailTag
                 filePath={currentFile.filename}
+                creator={currentFile.creator ?? null}
+                creatorResolved={currentFile.creatorResolved}
                 onTagClick={(creator: any | null) => onOpenCreatorDetail?.(creator)}
                 position={{ top: '22%', right: '10%' }}
                 refreshKey={creatorRefreshKey}
@@ -751,6 +775,8 @@ export default function GalleryModePage({
                 {currentFile && (
                   <CreatorTag
                     filePath={currentFile.filename}
+                    creator={currentFile.creator ?? null}
+                    creatorResolved={currentFile.creatorResolved}
                     onCreatorIdentified={setCurrentCreator}
                     onTagClick={onOpenCreatorDialog}
                     refreshKey={creatorRefreshKey}
@@ -759,6 +785,8 @@ export default function GalleryModePage({
                 {currentFile && (
                   <CreatorDetailTag
                     filePath={currentFile.filename}
+                    creator={currentFile.creator ?? null}
+                    creatorResolved={currentFile.creatorResolved}
                     onTagClick={(creator: any | null) => onOpenCreatorDetail?.(creator)}
                     position={{ top: '22%', right: '10%' }}
                     refreshKey={creatorRefreshKey}

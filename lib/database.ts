@@ -2556,6 +2556,61 @@ function normalizeAvatarPath(value: unknown): string | null {
   return trimmed
 }
 
+function parseCreatorOtherNames(value: unknown): string[] | undefined {
+  if (typeof value !== 'string') {
+    return undefined
+  }
+
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return undefined
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (Array.isArray(parsed)) {
+      const filtered = parsed.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      return filtered.length > 0 ? filtered : undefined
+    }
+
+    if (typeof parsed === 'string' && parsed.trim()) {
+      return [parsed.trim()]
+    }
+  } catch {
+    return [trimmed]
+  }
+
+  return undefined
+}
+
+function buildCreatorSummaryFromJoinedRow(row: any) {
+  const linkedCreatorId = row.creator_linked_id
+  if (typeof linkedCreatorId !== 'number') {
+    return null
+  }
+
+  return {
+    id: linkedCreatorId,
+    primaryName: row.creator_primary_name,
+    otherNames: parseCreatorOtherNames(row.creator_other_names),
+    appearanceRating: row.creator_appearance_rating ?? null,
+    bodyRating: row.creator_body_rating ?? null,
+    bio: row.creator_bio ?? null,
+    avatarPath: normalizeAvatarPath(row.creator_avatar_path),
+  }
+}
+
+function attachCreatorInfoToScanFileRow(row: any) {
+  const creatorId = typeof row.creator_id === 'number' ? row.creator_id : null
+  const creator = buildCreatorSummaryFromJoinedRow(row)
+
+  return {
+    ...row,
+    creator,
+    creatorResolved: creatorId === UNKNOWN_CREATOR_ID || creator !== null,
+  }
+}
+
 // 文件级博主关联表操作
 export const scanFileCreators = {
   get: (filePath: string) => {
@@ -3163,7 +3218,7 @@ export const scanFiles = {
       const buildWhereClause = (includeParentPath?: string) => {
         let whereClause = needsRatingJoin ? `sf.cache_id IN (${placeholders})` : `cache_id IN (${placeholders})`
         const params: any[] = [...cacheIds]
-        const prefix = needsRatingJoin ? 'sf.' : ''
+        const prefix = 'sf.'
 
         if (includeParentPath) {
           whereClause += ` AND ${prefix}parent_path = ?`
@@ -3291,18 +3346,40 @@ export const scanFiles = {
       const { whereClause: fileWhereClause, params: filesParams } = buildWhereClause(selectedParentPath)
       let filesSql = needsRatingJoin
         ? `
-            SELECT sf.*
+            SELECT
+              sf.*,
+              sfc.creator_id AS creator_id,
+              c.id AS creator_linked_id,
+              c.primary_name AS creator_primary_name,
+              c.other_names AS creator_other_names,
+              c.appearance_rating AS creator_appearance_rating,
+              c.body_rating AS creator_body_rating,
+              c.bio AS creator_bio,
+              c.avatar_path AS creator_avatar_path
             FROM scan_files sf
             INNER JOIN media_ratings mr ON sf.filename = mr.file_path
+            LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
+            LEFT JOIN creators c ON c.id = sfc.creator_id
             WHERE ${fileWhereClause}
           `
         : `
-            SELECT *
-            FROM scan_files
+            SELECT
+              sf.*,
+              sfc.creator_id AS creator_id,
+              c.id AS creator_linked_id,
+              c.primary_name AS creator_primary_name,
+              c.other_names AS creator_other_names,
+              c.appearance_rating AS creator_appearance_rating,
+              c.body_rating AS creator_body_rating,
+              c.bio AS creator_bio,
+              c.avatar_path AS creator_avatar_path
+            FROM scan_files sf
+            LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
+            LEFT JOIN creators c ON c.id = sfc.creator_id
             WHERE ${fileWhereClause}
           `
 
-      filesSql += needsRatingJoin ? ` ORDER BY sf.basename` : ` ORDER BY basename`
+      filesSql += ` ORDER BY sf.basename`
        
       const files = db.prepare(filesSql).all(...filesParams)
       
@@ -3312,7 +3389,7 @@ export const scanFiles = {
       })
       
       return {
-        files: sortedFiles,
+        files: sortedFiles.map((row: any) => attachCreatorInfoToScanFileRow(row)),
         parentPath: selectedParentPath,
         totalGroups: groups.length
       }
@@ -3521,9 +3598,20 @@ export const scanFiles = {
       const buildSelectSql = (whereClause: string, orderBy: string = 'RANDOM()', limit?: number) => {
         if (needsRatingJoin) {
           let sql = `
-            SELECT sf.* 
+            SELECT
+              sf.*,
+              sfc.creator_id AS creator_id,
+              c.id AS creator_linked_id,
+              c.primary_name AS creator_primary_name,
+              c.other_names AS creator_other_names,
+              c.appearance_rating AS creator_appearance_rating,
+              c.body_rating AS creator_body_rating,
+              c.bio AS creator_bio,
+              c.avatar_path AS creator_avatar_path
             FROM scan_files sf
             INNER JOIN media_ratings mr ON sf.filename = mr.file_path
+            LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
+            LEFT JOIN creators c ON c.id = sfc.creator_id
             WHERE ${whereClause}
             ORDER BY ${orderBy}
           `
@@ -3531,7 +3619,19 @@ export const scanFiles = {
           return sql
         } else {
           let sql = `
-            SELECT * FROM scan_files 
+            SELECT
+              sf.*,
+              sfc.creator_id AS creator_id,
+              c.id AS creator_linked_id,
+              c.primary_name AS creator_primary_name,
+              c.other_names AS creator_other_names,
+              c.appearance_rating AS creator_appearance_rating,
+              c.body_rating AS creator_body_rating,
+              c.bio AS creator_bio,
+              c.avatar_path AS creator_avatar_path
+            FROM scan_files sf
+            LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
+            LEFT JOIN creators c ON c.id = sfc.creator_id
             WHERE ${whereClause}
             ORDER BY ${orderBy}
           `
@@ -3550,7 +3650,7 @@ export const scanFiles = {
             WHERE ${whereClause}
           `
         } else {
-          return `SELECT COUNT(*) as count FROM scan_files WHERE ${whereClause}`
+          return `SELECT COUNT(*) as count FROM scan_files sf WHERE ${whereClause}`
         }
       }
       
@@ -3562,7 +3662,7 @@ export const scanFiles = {
           const file = db.prepare(sql).get(...params) as any
           
           if (file && !excludeSet.has(file.filename)) {
-            return file
+            return attachCreatorInfoToScanFileRow(file)
           }
           return null
         }
@@ -3575,12 +3675,12 @@ export const scanFiles = {
           // 从桶中随机选择一个文件（使用 ORDER BY RANDOM() 增加多样性）
           const bucketWhere = needsRatingJoin 
             ? `(sf.id % ${bucketCount}) = ? AND ${whereClause}`
-            : `(id % ${bucketCount}) = ? AND ${whereClause}`
+            : `(sf.id % ${bucketCount}) = ? AND ${whereClause}`
           const sql = buildSelectSql(bucketWhere, 'RANDOM()', 1)
           const file = db.prepare(sql).get(randomBucket, ...params) as any
           
           if (file && !excludeSet.has(file.filename)) {
-            return file
+            return attachCreatorInfoToScanFileRow(file)
           }
         }
         
@@ -3590,8 +3690,8 @@ export const scanFiles = {
              FROM scan_files sf
              INNER JOIN media_ratings mr ON sf.filename = mr.file_path
              WHERE ${whereClause}`
-          : `SELECT DISTINCT (id % ${bucketCount}) as bucket 
-             FROM scan_files 
+          : `SELECT DISTINCT (sf.id % ${bucketCount}) as bucket 
+             FROM scan_files sf
              WHERE ${whereClause}`
         const buckets = db.prepare(bucketSql).all(...params) as Array<{ bucket: number }>
         
@@ -3606,12 +3706,12 @@ export const scanFiles = {
           
           const bucketWhere = needsRatingJoin 
             ? `(sf.id % ${bucketCount}) = ? AND ${whereClause}`
-            : `(id % ${bucketCount}) = ? AND ${whereClause}`
+            : `(sf.id % ${bucketCount}) = ? AND ${whereClause}`
           const sql = buildSelectSql(bucketWhere, 'RANDOM()', 1)
           const file = db.prepare(sql).get(randomBucket, ...params) as any
           
           if (file && !excludeSet.has(file.filename)) {
-            return file
+            return attachCreatorInfoToScanFileRow(file)
           }
         }
         
@@ -3720,7 +3820,7 @@ export const scanFiles = {
         console.log(`   参数:`, JSON.stringify(params))
         console.log(`📊 [批量随机] 获取数量: ${fetchCount}（总数: ${totalCount}, 需要: ${count}, 排除: ${excludeSet.size}）`)
         
-        const allFiles = db.prepare(sql).all(...params) as any[]
+        const allFiles = (db.prepare(sql).all(...params) as any[]).map((row) => attachCreatorInfoToScanFileRow(row))
         console.log(`📊 [批量随机] SQL返回: ${allFiles.length} 条记录`)
         
         // 过滤掉排除列表中的文件

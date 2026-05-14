@@ -23,6 +23,10 @@ export interface MediaFile {
   filepath?: string
   /** 关联的博主 ID */
   creatorId?: number | null
+  /** 已关联的博主信息 */
+  creator?: CreatorSummary | null
+  /** 是否已经通过关联表完成博主解析 */
+  creatorResolved?: boolean
 }
 
 /**
@@ -123,6 +127,10 @@ export interface CreatorMediaCard {
   isViewed: boolean
   /** 关联的博主 ID */
   creatorId?: number | null
+  /** 已关联的博主信息 */
+  creator?: CreatorSummary | null
+  /** 是否已经通过关联表完成博主解析 */
+  creatorResolved?: boolean
 }
 
 /**
@@ -229,6 +237,10 @@ export interface MediaExperienceItem {
 export interface MediaExperienceCreatorOverlayProps {
   /** 文件路径 */
   filePath: string
+  /** 已关联的博主信息 */
+  creator?: CreatorSummary | null
+  /** 是否已经通过关联表完成博主解析 */
+  creatorResolved?: boolean
   /** 博主标签是否可见 */
   creatorTagVisible?: boolean
   /** 博主标签位置 */

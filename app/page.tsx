@@ -52,6 +52,7 @@ import { QUICK_RATING_CONFIG } from '@/types'
 import type {
   AdvancedFilters,
   CreatorMediaCard,
+  CreatorSummary,
   GroupRating,
   MediaFile,
   MediaFilter,
@@ -158,6 +159,8 @@ export default function HomePage() {
     viewMode: ViewMode
     advancedFilters: AdvancedFilters
   } | null>(null)
+  const randomModeCreatorMetadataPatchRef = useRef<(filePath: string, creator: CreatorSummary | null, creatorResolved: boolean) => void>(() => {})
+  const galleryModeCreatorMetadataPatchRef = useRef<(filePath: string, creator: CreatorSummary | null, creatorResolved: boolean) => void>(() => {})
   const initialPreloadTriggeredRef = useRef(false)
   const viewModeRef = useRef<ViewMode>(viewMode)
   const hasAutoRatedRef = useRef(false)
@@ -194,6 +197,22 @@ export default function HomePage() {
   const setPlayIntent = useCallback((intent: boolean) => {
     playIntentRef.current = intent
     setShouldAutoPlay(intent)
+  }, [])
+
+  const patchCreatorMetadataAcrossState = useCallback((
+    filePath: string,
+    creator: CreatorSummary | null,
+    creatorResolved: boolean,
+  ) => {
+    setCurrentFile((prev) => prev && prev.filename === filePath ? {
+      ...prev,
+      creator,
+      creatorResolved,
+    } : prev)
+
+    randomModeCreatorMetadataPatchRef.current(filePath, creator, creatorResolved)
+    galleryModeCreatorMetadataPatchRef.current(filePath, creator, creatorResolved)
+    databasePreloadManager.patchFileCreatorMetadata(filePath, creator, creatorResolved)
   }, [])
 
   const notify = useCallback((message: string, severity: SnackbarSeverity = 'info') => {
@@ -874,6 +893,7 @@ export default function HomePage() {
             setSnackbarMessage={setSnackbarMessage}
             setSnackbarSeverity={setSnackbarSeverity}
             setSnackbarOpen={setSnackbarOpen}
+            creatorMetadataPatchRef={randomModeCreatorMetadataPatchRef}
           />
         ) : viewMode === 'gallery' ? (
           <GalleryModePage
@@ -940,6 +960,7 @@ export default function HomePage() {
               setCurrentGroup(group)
               setCurrentGroupIndex(index)
             }}
+            creatorMetadataPatchRef={galleryModeCreatorMetadataPatchRef}
           />
         ) : viewMode === 'large-video' ? (
           <LargeVideoModePage
@@ -1044,10 +1065,15 @@ export default function HomePage() {
         existingCreator={currentCreator}
         onMarkUnknown={() => {
           setCurrentCreator(null)
+          if (currentFile?.filename) {
+            patchCreatorMetadataAcrossState(currentFile.filename, null, true)
+          }
           setCreatorRefreshKey((prev) => prev + 1)
         }}
         onSuccess={() => {
           if (currentFile) {
+            setCurrentCreator(null)
+            patchCreatorMetadataAcrossState(currentFile.filename, null, false)
             setCreatorRefreshKey((prev) => prev + 1)
             void loadMediaRating(currentFile.filename)
           }

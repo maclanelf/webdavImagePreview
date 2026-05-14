@@ -169,6 +169,8 @@ export function useLargeVideoMode({
         size: dbFile.file_size || 0,
         type: 'file',
         lastmod: dbFile.lastmod || '',
+        creator: dbFile.creator || null,
+        creatorResolved: Boolean(dbFile.creatorResolved),
       }
 
       console.log(`[大视频模式] 从数据库获取: ${fileToLoad.basename}`)
@@ -181,7 +183,7 @@ export function useLargeVideoMode({
       setLoading(true)
       setError(null)
       setCurrentFile(fileToLoad)
-      setCurrentCreator(null)
+      setCurrentCreator(fileToLoad.creator ?? null)
 
       // 如果已经配置直链能力，则大视频优先直接走直链，
       // 这样可以最大限度利用浏览器原生流式能力，减少中转开销。
