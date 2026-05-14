@@ -17,6 +17,7 @@ services:
       watchcow.path: "/"
       watchcow.icon: "/vol1/1000/project/webdavImagePreview/webdav.png"   # 这里替换成你自己的图标库
       # watchcow.icon: "https://example.com/libretv.png"     # 这里也可以改成在线图标，把前面注释掉就行了
+      watchcow.all_users: "false"          # 普通用户直接看不到图标,管理员可以看见
     environment:
       - NODE_ENV=production
       - PORT=3000
