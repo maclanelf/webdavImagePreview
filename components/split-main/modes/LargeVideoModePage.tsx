@@ -199,6 +199,7 @@ export default function LargeVideoModePage({
   const fullscreenActionOverlayZIndex = 2202
   const [isNativeVideoFullscreen, setIsNativeVideoFullscreen] = useState(false)
   const activeMediaUrl = suspended ? null : mediaUrl
+  const ratingDialogContainer = instantVideoRef.current?.getContainerElement?.() || videoPlayerContainerRef.current
   const { isSwitching, runSwitch: saveAndSwitch } = useModeSwitchGuard({
     currentFile,
     setPreloadStatus,
@@ -935,7 +936,7 @@ export default function LargeVideoModePage({
         subtitle={currentFile?.basename}
         initialData={currentRating || undefined}
         type="media"
-        container={videoPlayerContainerRef.current}
+        container={ratingDialogContainer}
       />
 
       {/* 大视频模式专属右上角全屏入口。 */}

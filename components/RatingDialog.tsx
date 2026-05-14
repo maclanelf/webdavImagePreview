@@ -134,6 +134,10 @@ export default function RatingDialog({
   const [availableEvaluations, setAvailableEvaluations] = useState<string[]>([])
   const [availableCategories, setAvailableCategories] = useState<string[]>([])
 
+  const stopInteractionPropagation = (event: React.SyntheticEvent) => {
+    event.stopPropagation()
+  }
+
   // 加载可用的评价标签和分类
   useEffect(() => {
     if (open) {
@@ -277,6 +281,11 @@ export default function RatingDialog({
         }
       }}
       PaperProps={{
+        onClick: stopInteractionPropagation,
+        onMouseDown: stopInteractionPropagation,
+        onTouchStart: stopInteractionPropagation,
+        onTouchMove: stopInteractionPropagation,
+        onTouchEnd: stopInteractionPropagation,
         sx: { zIndex: 2100 }
       }}
       sx={{ 
@@ -356,6 +365,11 @@ export default function RatingDialog({
               popper: {
                 placement: 'top-start',
                 container: container || undefined,
+                onClick: stopInteractionPropagation,
+                onMouseDown: stopInteractionPropagation,
+                onTouchStart: stopInteractionPropagation,
+                onTouchMove: stopInteractionPropagation,
+                onTouchEnd: stopInteractionPropagation,
                 sx: {
                   zIndex: 2200,
                   '&[data-popper-placement*="top"] .MuiAutocomplete-paper': {
@@ -415,6 +429,11 @@ export default function RatingDialog({
               popper: {
                 placement: 'top-start',
                 container: container || undefined,
+                onClick: stopInteractionPropagation,
+                onMouseDown: stopInteractionPropagation,
+                onTouchStart: stopInteractionPropagation,
+                onTouchMove: stopInteractionPropagation,
+                onTouchEnd: stopInteractionPropagation,
                 sx: {
                   zIndex: 2200,
                   '&[data-popper-placement*="top"] .MuiAutocomplete-paper': {
