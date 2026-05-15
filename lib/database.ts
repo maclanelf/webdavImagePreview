@@ -3438,10 +3438,12 @@ export const scanFiles = {
     const totalStartTime = Date.now()
     try {
       ensureInitialized()
-      
-      // 🔧 查询前执行 checkpoint，确保读取最新数据
-      performCheckpoint('RESTART')
-      
+
+      // ⚠️ 这里是随机模式高频热路径，避免在查询前执行 RESTART checkpoint。
+      // RESTART checkpoint 会把当前请求放大成重型同步操作，容易连带阻塞
+      // 同进程中的评分接口（如 `/api/ratings/optimistic`）。
+      // 数据一致性仍由 WAL + 定时 PASSIVE checkpoint 保证。
+
       // 🔍 调试：检查数据库状态
       const dbStatus = getDatabaseStatus()
       if (dbStatus) {

@@ -40,6 +40,7 @@ class ServerRatingQueue {
   private queue: RatingTask[] = []
   private failedTasks: FailedTask[] = [] // 记录失败的任务
   private isProcessing = false
+  private currentProcessingTaskId: string | null = null
   private maxRetries = 3
   private processingInterval: NodeJS.Timeout | null = null
   private maxFailedTasks = 100 // 最多保留 100 个失败任务，防止内存泄漏
@@ -61,6 +62,26 @@ class ServerRatingQueue {
     category?: string | string[]
     isViewed?: boolean
   }): string {
+    const existingTask = this.queue.find((task) => (
+      task.filePath === data.filePath && task.taskId !== this.currentProcessingTaskId
+    ))
+
+    if (existingTask) {
+      existingTask.fileName = data.fileName
+      existingTask.fileType = data.fileType
+      existingTask.rating = data.rating
+      existingTask.recommendationReason = data.recommendationReason
+      existingTask.customEvaluation = data.customEvaluation
+      existingTask.category = data.category
+      existingTask.isViewed = data.isViewed
+      existingTask.retryCount = 0
+      existingTask.createdAt = new Date()
+      existingTask.errorMessage = undefined
+
+      console.log(`📝 [评分队列] 同文件任务已去重并更新: ${data.fileName}, 队列长度: ${this.queue.length}`)
+      return existingTask.taskId
+    }
+
     const taskId = `rating_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`
     
     const task: RatingTask = {
@@ -121,7 +142,16 @@ class ServerRatingQueue {
         if (this.queue.length === 0) break
         
         const task = this.queue[0]
-        const success = await this.processTask(task)
+        this.currentProcessingTaskId = task.taskId
+
+        let success = false
+        try {
+          success = await this.processTask(task)
+        } finally {
+          if (this.currentProcessingTaskId === task.taskId) {
+            this.currentProcessingTaskId = null
+          }
+        }
         
         if (success) {
           // 成功：从队列中移除
