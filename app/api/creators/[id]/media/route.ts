@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-import db, { creators, ensureInitialized, webdavConfigs } from '@/lib/database'
+import db from '@/lib/databaseCore'
+import { ensureInitialized } from '@/lib/databaseInitialization'
+import { creators } from '@/lib/creatorRepository'
+import { webdavConfigs } from '@/lib/database'
 import { QUICK_RATING_CONFIG } from '@/types'
 
 /** 默认分页大小 */

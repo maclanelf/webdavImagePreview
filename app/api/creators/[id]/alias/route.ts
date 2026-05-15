@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { creators } from '@/lib/database'
+import { creators } from '@/lib/creatorRepository'
 
 // POST /api/creators/[id]/alias - 添加别名（可选批量关联）
 export async function POST(

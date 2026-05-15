@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
-import { statistics, ensureInitialized } from '@/lib/database'
+import { ensureInitialized } from '@/lib/databaseInitialization'
+import { statistics } from '@/lib/ratingMetadataRepository'
 
 export async function GET() {
   try {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { creators } from '@/lib/database'
+import { creators } from '@/lib/creatorRepository'
 
 // POST /api/creators/preview-batch-link - 预览批量关联影响范围
 export async function POST(request: NextRequest) {

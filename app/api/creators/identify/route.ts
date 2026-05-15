@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { creators, scanFileCreators } from '@/lib/database'
+import { creators, scanFileCreators } from '@/lib/creatorRepository'
 import { UNKNOWN_CREATOR_ID } from '@/lib/constants'
 
 /**

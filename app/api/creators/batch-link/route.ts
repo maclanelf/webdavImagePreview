@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { creators } from '@/lib/database'
+import { creators } from '@/lib/creatorRepository'
 
 // POST /api/creators/batch-link - 批量关联文件到博主
 export async function POST(request: NextRequest) {

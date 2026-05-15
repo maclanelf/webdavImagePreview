@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { scanFiles, scanCache } from '@/lib/database'
+import { scanCache } from '@/lib/scanCacheRepository'
+import { scanFiles } from '@/lib/scanFilesRepository'
 
 // POST: 随机获取文件（支持批量）- 使用 POST 避免 URL 过长导致 431 错误
 export async function POST(request: NextRequest) {

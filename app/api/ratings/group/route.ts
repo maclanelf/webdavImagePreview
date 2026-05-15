@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
-import db, { groupRatings, customEvaluations, categories, ensureInitialized, performCheckpoint } from '@/lib/database'
+import { groupRatings } from '@/lib/groupRatingRepository'
+import db, { performCheckpoint } from '@/lib/databaseCore'
+import { ensureInitialized } from '@/lib/databaseInitialization'
 import { UNKNOWN_CREATOR_ID } from '@/lib/constants'
+import { categories, customEvaluations } from '@/lib/ratingMetadataRepository'
 
 // 辅助函数：解析JSON字段
 function parseRatingData(rating: any) {

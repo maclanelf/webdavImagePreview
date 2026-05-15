@@ -47,3 +47,6 @@ logs/
 # Docker 数据目录（映射到宿主机的数据和日志）
 docker-data/
 /vol1/1000/webdavimagepreview/
+
+# 运行时目录
+dist-runtime/

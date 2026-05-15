@@ -7,7 +7,8 @@
     "dev": "next dev",
     "dev1": "nvm use 20.14.0 && next dev -H localhost -p 3000",
     "dev2": "nvm use 20.14.0 && next dev",
-    "build": "next build",
+    "build": "next build && npm run build:runtime",
+    "build:runtime": "node -e \"require('fs').rmSync('dist-runtime', { recursive: true, force: true })\" && tsc -p tsconfig.scripts.json",
     "start": "next start",
     "lint": "next lint"
   },

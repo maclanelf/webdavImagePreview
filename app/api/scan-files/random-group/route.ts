@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { scanFiles, scanCache } from '@/lib/database'
+import { scanCache } from '@/lib/scanCacheRepository'
+import { scanFiles } from '@/lib/scanFilesRepository'
 
 // GET: 随机获取一个图组（目录）
 export async function GET(request: NextRequest) {

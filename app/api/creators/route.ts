@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { creators } from '@/lib/database'
+import { creators } from '@/lib/creatorRepository'
 
 // GET /api/creators - 获取所有博主
 export async function GET() {

@@ -12,7 +12,8 @@
 
 import { recursiveScanTasks } from './database'
 import { getWebDAVClient, recursiveScanDirectory } from './webdav-optimized'
-import { scanCache, scanFiles } from './database'
+import { scanCache } from './scanCacheRepository'
+import { scanFiles } from './scanFilesRepository'
 import { writeScanLog } from './scanLogger'
 
 // 风控退避时间（毫秒）

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { scanCache } from '@/lib/database'
+import { scanCache } from '@/lib/scanCacheRepository'
 
 interface ScanCacheItem {
   path: string

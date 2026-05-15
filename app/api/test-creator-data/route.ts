@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server'
-import { mediaRatings, groupRatings, creators, scanFileCreators } from '@/lib/database'
+import { creators, scanFileCreators } from '@/lib/creatorRepository'
+import { mediaRatings } from '@/lib/mediaRatingRepository'
+import { groupRatings } from '@/lib/groupRatingRepository'
 
 // GET /api/test-creator-data - 测试数据和关联
 export async function GET() {

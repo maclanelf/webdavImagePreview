@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { serverRatingQueue } from '@/lib/serverRatingQueue'
+import { RatingQueueUnavailableError, serverRatingQueue } from '@/lib/serverRatingQueue'
 
 /**
  * 乐观更新的评分 API（简化版）
@@ -34,7 +34,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 添加到服务器端队列，立即返回
-    const taskId = serverRatingQueue.addTask({
+    const result = await serverRatingQueue.addTask({
       filePath,
       fileName,
       fileType,
@@ -47,13 +47,15 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ 
       success: true,
-      taskId
+      taskId: result.taskId,
+      workerStarted: result.workerStarted,
+      deferred: !result.workerStarted,
     })
   } catch (error: any) {
     console.error('❌ [乐观评分 API] 失败:', error)
     return NextResponse.json(
       { error: `添加任务失败: ${error.message}` },
-      { status: 500 }
+      { status: error instanceof RatingQueueUnavailableError ? 503 : 500 }
     )
   }
 }
@@ -66,12 +68,12 @@ export async function GET(request: NextRequest) {
     switch (action) {
       case 'status':
         // 获取队列状态
-        const status = serverRatingQueue.getStatus()
+        const status = await serverRatingQueue.getStatus()
         return NextResponse.json(status)
 
       case 'failed':
         // 获取失败任务列表
-        const failedTasks = serverRatingQueue.getFailedTasks()
+        const failedTasks = await serverRatingQueue.getFailedTasks()
         return NextResponse.json({ 
           failed: failedTasks,
           count: failedTasks.length
@@ -79,15 +81,18 @@ export async function GET(request: NextRequest) {
 
       case 'retry':
         // 重试所有失败任务
-        const retryCount = serverRatingQueue.retryFailedTasks()
+        const retryResult = await serverRatingQueue.retryFailedTasks()
         return NextResponse.json({
           success: true,
-          message: `已重新添加 ${retryCount} 个失败任务到队列`
+          message: `已重新添加 ${retryResult.retryCount} 个失败任务到队列`,
+          retryCount: retryResult.retryCount,
+          workerStarted: retryResult.workerStarted,
+          deferred: retryResult.retryCount > 0 && !retryResult.workerStarted,
         })
 
       case 'clear':
         // 清除失败任务记录
-        const clearCount = serverRatingQueue.clearFailedTasks()
+        const clearCount = await serverRatingQueue.clearFailedTasks()
         return NextResponse.json({
           success: true,
           message: `已清除 ${clearCount} 个失败任务记录`
@@ -103,7 +108,7 @@ export async function GET(request: NextRequest) {
     console.error('❌ [乐观评分 API] 获取状态失败:', error)
     return NextResponse.json(
       { error: `操作失败: ${error.message}` },
-      { status: 500 }
+      { status: error instanceof RatingQueueUnavailableError ? 503 : 500 }
     )
   }
 }

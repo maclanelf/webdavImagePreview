@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { customEvaluations, ensureInitialized } from '@/lib/database'
+import { ensureInitialized } from '@/lib/databaseInitialization'
+import { customEvaluations } from '@/lib/ratingMetadataRepository'
 
 export async function GET() {
   try {

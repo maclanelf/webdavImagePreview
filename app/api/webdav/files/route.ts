@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { scanCache } from '@/lib/database'
+import { scanCache } from '@/lib/scanCacheRepository'
 
 /**
  * 文件列表接口 - 仅从缓存/数据库读取

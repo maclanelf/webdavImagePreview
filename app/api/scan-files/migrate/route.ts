@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { scanFiles, scanCache } from '@/lib/database'
+import { scanCache } from '@/lib/scanCacheRepository'
+import { scanFiles } from '@/lib/scanFilesRepository'
 
 // POST: 迁移数据
 export async function POST(request: NextRequest) {
