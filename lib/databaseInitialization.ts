@@ -225,31 +225,6 @@ export function initDatabase() {
     }
 
     db.exec(`
-      CREATE TABLE IF NOT EXISTS rating_task_queue (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        task_id TEXT NOT NULL UNIQUE,
-        file_path TEXT NOT NULL,
-        file_name TEXT NOT NULL,
-        file_type TEXT NOT NULL,
-        rating INTEGER CHECK(rating >= 1 AND rating <= 5),
-        recommendation_reason TEXT,
-        custom_evaluation TEXT,
-        category TEXT,
-        is_viewed BOOLEAN,
-        status TEXT NOT NULL DEFAULT 'pending',
-        retry_count INTEGER DEFAULT 0,
-        error_message TEXT,
-        last_attempt_at DATETIME,
-        failed_at DATETIME,
-        created_at DATETIME DEFAULT (datetime('now', 'localtime')),
-        updated_at DATETIME DEFAULT (datetime('now', 'localtime'))
-      )
-    `)
-
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_rating_task_queue_status_created ON rating_task_queue(status, created_at)`)
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_rating_task_queue_file_status ON rating_task_queue(file_path, status)`)
-
-    db.exec(`
       CREATE TABLE IF NOT EXISTS scan_files (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         cache_id INTEGER NOT NULL,
