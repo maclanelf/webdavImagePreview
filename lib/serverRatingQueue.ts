@@ -1,16 +1,17 @@
-import fs from 'fs'
-import { ChildProcess, fork } from 'child_process'
-import path from 'path'
-import {
-  clearFailedRatingTasks,
-  enqueueRatingTask,
-  getFailedRatingTasks,
-  getRatingQueueStatusSnapshot,
-  hasRecoverableRatingTasks,
-  retryFailedRatingTasks,
-} from './ratingTaskQueueRepository'
+/**
+ * 服务器端评分队列管理器（简化版）
+ *
+ * 特点：
+ * 1. 完全在服务器端运行
+ * 2. 使用内存存储队列（轻量、快速）
+ * 3. 后台自动处理队列任务
+ * 4. 记录失败任务，方便排查
+ */
 
-export interface RatingTaskPayload {
+import { mediaRatings, customEvaluations, categories, ensureInitialized } from './database'
+
+interface RatingTask {
+  taskId: string
   filePath: string
   fileName: string
   fileType: string
@@ -19,290 +20,243 @@ export interface RatingTaskPayload {
   customEvaluation?: string | string[]
   category?: string | string[]
   isViewed?: boolean
-}
-
-export interface AddTaskResult {
-  taskId: string
-  workerStarted: boolean
-}
-
-export interface RetryFailedTasksResult {
   retryCount: number
-  workerStarted: boolean
+  createdAt: Date
+  errorMessage?: string
 }
 
-interface QueueStatusTask {
-  taskId: string
-  fileName: string
-  retryCount: number
-  createdAt: string
-}
-
-interface QueueStatus {
-  pending: number
-  isProcessing: boolean
-  failed: number
-  tasks: QueueStatusTask[]
-  workerPid: number | null
-}
-
-interface FailedTaskInfo {
-  taskId: string
-  fileName: string
-  filePath: string
-  failedAt: string
+interface FailedTask {
+  task: RatingTask
+  failedAt: Date
   reason: string
-  retryCount: number
 }
 
-interface WorkerRequestMessage {
-  type: 'wakeUp'
-}
-
-interface WorkerLaunchConfig {
-  scriptPath: string
-  execArgv: string[]
-  env: NodeJS.ProcessEnv
-  mode: 'runtime-js' | 'ts-source'
-}
-
-function getErrorMessage(error: unknown) {
-  if (error instanceof Error && error.message) {
-    return error.message
-  }
-
-  return String(error)
-}
-
-export class RatingQueueUnavailableError extends Error {
-  override cause?: unknown
-  readonly recoverable: boolean
-
-  constructor(message: string, cause?: unknown, options?: { recoverable?: boolean }) {
-    super(message)
-    this.name = 'RatingQueueUnavailableError'
-    this.cause = cause
-    this.recoverable = options?.recoverable ?? true
-  }
-}
-
+// 使用 globalThis 缓存队列实例，避免开发模式下重复初始化
 declare global {
   var __serverRatingQueue: ServerRatingQueue | undefined
 }
 
 class ServerRatingQueue {
-  private worker: ChildProcess | null = null
-  private restartTimer: NodeJS.Timeout | null = null
-  private readonly runtimeWorkerScriptPath = path.join(process.cwd(), 'dist-runtime', 'workers', 'ratingQueueWorker.js')
-  private readonly sourceWorkerScriptPath = path.join(process.cwd(), 'workers', 'ratingQueueWorker.ts')
+  private queue: RatingTask[] = []
+  private failedTasks: FailedTask[] = []
+  private isProcessing = false
+  private maxRetries = 3
+  private processingInterval: NodeJS.Timeout | null = null
+  private maxFailedTasks = 100
 
   constructor() {
-    if (hasRecoverableRatingTasks()) {
-      console.log('🔄 [评分队列] 检测到可恢复评分任务，准备恢复 Worker 消费')
-      void this.kickWorkerProcessing().catch((error) => {
-        console.error('❌ [评分队列] 恢复 Worker 消费失败:', error)
-      })
-    }
+    this.startProcessing()
   }
 
-  private resolveSourceWorkerLaunchConfig(): WorkerLaunchConfig | null {
-    if (!fs.existsSync(this.sourceWorkerScriptPath)) {
-      return null
+  /**
+   * 添加评分任务到队列
+   */
+  addTask(data: {
+    filePath: string
+    fileName: string
+    fileType: string
+    rating?: number
+    recommendationReason?: string
+    customEvaluation?: string | string[]
+    category?: string | string[]
+    isViewed?: boolean
+  }): string {
+    const taskId = `rating_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`
+
+    const task: RatingTask = {
+      taskId,
+      ...data,
+      retryCount: 0,
+      createdAt: new Date(),
     }
 
-    const tsNodeRegisterModule = 'ts-node/register/transpile-only'
+    this.queue.push(task)
+    console.log(`📥 [评分队列] 任务已添加: ${data.fileName}, 队列长度: ${this.queue.length}`)
 
-    try {
-      require.resolve(tsNodeRegisterModule)
-    } catch {
-      console.warn(`⚠️ [评分队列] 源码 Worker 运行时依赖缺失，跳过 ts-source 模式: ${tsNodeRegisterModule}`)
-      return null
-    }
-
-    return {
-      scriptPath: this.sourceWorkerScriptPath,
-      execArgv: ['-r', tsNodeRegisterModule],
-      env: {
-        ...process.env,
-        TS_NODE_PROJECT: path.join(process.cwd(), 'tsconfig.scripts.json'),
-      },
-      mode: 'ts-source' as const,
-    }
+    return taskId
   }
 
-  private resolveWorkerLaunchConfig(): WorkerLaunchConfig {
-    const runtimeWorkerConfig = fs.existsSync(this.runtimeWorkerScriptPath)
-      ? {
-          scriptPath: this.runtimeWorkerScriptPath,
-          execArgv: [],
-          env: {
-            ...process.env,
-          },
-          mode: 'runtime-js' as const,
-        }
-      : null
-
-    const sourceWorkerConfig = this.resolveSourceWorkerLaunchConfig()
-
-    const preferredConfig = process.env.NODE_ENV === 'production'
-      ? runtimeWorkerConfig ?? sourceWorkerConfig
-      : sourceWorkerConfig ?? runtimeWorkerConfig
-
-    if (preferredConfig) {
-      return preferredConfig
-    }
-
-    throw new RatingQueueUnavailableError(
-      `评分 Worker 启动失败：未找到可执行脚本（${this.runtimeWorkerScriptPath} / ${this.sourceWorkerScriptPath}）`,
-      undefined,
-      { recoverable: false }
-    )
-  }
-
-  private isWorkerUsable() {
-    return Boolean(
-      this.worker
-      && this.worker.connected
-      && !this.worker.killed
-      && this.worker.exitCode === null
-    )
-  }
-
-  private getWorkerPid() {
-    return this.isWorkerUsable() ? (this.worker?.pid ?? null) : null
-  }
-
-  private scheduleRestart() {
-    if (this.restartTimer || !hasRecoverableRatingTasks()) {
+  /**
+   * 启动后台处理
+   */
+  private startProcessing() {
+    if (this.processingInterval) {
       return
     }
 
-    this.restartTimer = setTimeout(() => {
-      this.restartTimer = null
-      void this.kickWorkerProcessing().catch((error) => {
-        console.error('❌ [评分队列] Worker 重启失败:', error)
-      })
-    }, 500)
+    this.processingInterval = setInterval(() => {
+      void this.processQueue()
+    }, 100)
+
+    console.log('✅ [评分队列] 后台处理已启动')
   }
 
-  private ensureWorker() {
-    if (this.isWorkerUsable()) {
-      return this.worker!
+  /**
+   * 停止后台处理
+   */
+  stopProcessing() {
+    if (this.processingInterval) {
+      clearInterval(this.processingInterval)
+      this.processingInterval = null
+      console.log('⏹️ [评分队列] 后台处理已停止')
+    }
+  }
+
+  /**
+   * 处理队列中的任务
+   */
+  private async processQueue() {
+    if (this.isProcessing || this.queue.length === 0) {
+      return
     }
 
-    const launchConfig = this.resolveWorkerLaunchConfig()
+    this.isProcessing = true
 
-    const worker = fork(launchConfig.scriptPath, [], {
-      cwd: process.cwd(),
-      execArgv: launchConfig.execArgv,
-      env: launchConfig.env,
-    })
-
-    worker.on('error', (error) => {
-      console.error('❌ [评分队列] Worker 进程错误:', error)
-    })
-
-    worker.on('exit', (code, signal) => {
-      console.warn(`⚠️ [评分队列] Worker 已退出，code=${code ?? 'null'}, signal=${signal ?? 'null'}`)
-      if (this.worker === worker) {
-        this.worker = null
-      }
-      this.scheduleRestart()
-    })
-
-    this.worker = worker
-    console.log(`✅ [评分队列] Worker 已启动，模式=${launchConfig.mode}，pid=${worker.pid ?? 'unknown'}`)
-    return worker
-  }
-
-  private async kickWorkerProcessing(): Promise<void> {
     try {
-      const worker = this.ensureWorker()
-      const message: WorkerRequestMessage = { type: 'wakeUp' }
+      const batchSize = Math.min(10, this.queue.length)
 
-      await new Promise<void>((resolve, reject) => {
-        worker.send(message, (error) => {
-          if (error) {
-            reject(error)
-            return
+      for (let i = 0; i < batchSize; i += 1) {
+        if (this.queue.length === 0) break
+
+        const task = this.queue[0]
+        const success = await this.processTask(task)
+
+        if (success) {
+          this.queue.shift()
+          console.log(`✅ [评分队列] 任务完成: ${task.fileName}, 剩余: ${this.queue.length}`)
+        } else if (task.retryCount >= this.maxRetries) {
+          this.failedTasks.push({
+            task,
+            failedAt: new Date(),
+            reason: task.errorMessage || '未知错误',
+          })
+
+          if (this.failedTasks.length > this.maxFailedTasks) {
+            this.failedTasks.shift()
           }
 
-          resolve()
-        })
-      })
-    } catch (error) {
-      console.error('❌ [评分队列] 启动 Worker 失败:', error)
-
-      if (error instanceof RatingQueueUnavailableError) {
-        if (error.recoverable) {
-          this.scheduleRestart()
+          this.queue.shift()
+          console.error(`❌ [评分队列] 任务失败: ${task.fileName}, 原因: ${task.errorMessage}`)
+        } else {
+          this.queue.shift()
+          this.queue.push(task)
+          console.log(`🔄 [评分队列] 任务重试 (${task.retryCount}/${this.maxRetries}): ${task.fileName}`)
         }
-        throw error
       }
-
-      this.scheduleRestart()
-      throw new RatingQueueUnavailableError(`评分 Worker 不可用: ${getErrorMessage(error)}`, error)
+    } catch (error) {
+      console.error('❌ [评分队列] 处理队列失败:', error)
+    } finally {
+      this.isProcessing = false
     }
   }
 
-  async addTask(data: RatingTaskPayload): Promise<AddTaskResult> {
-    const enqueueResult = enqueueRatingTask(data)
-    let workerStarted = false
-
+  /**
+   * 处理单个任务
+   */
+  private async processTask(task: RatingTask): Promise<boolean> {
     try {
-      await this.kickWorkerProcessing()
-      workerStarted = true
-    } catch (error) {
-      if (error instanceof RatingQueueUnavailableError && !error.recoverable) {
-        throw error
+      console.log(`🚀 [评分队列] 开始处理: ${task.fileName}`)
+
+      ensureInitialized()
+
+      mediaRatings.save({
+        filePath: task.filePath,
+        fileName: task.fileName,
+        fileType: task.fileType,
+        rating: task.rating,
+        recommendationReason: task.recommendationReason,
+        customEvaluation: task.customEvaluation,
+        category: task.category,
+        isViewed: task.isViewed,
+      })
+
+      if (task.customEvaluation) {
+        const evaluations = Array.isArray(task.customEvaluation)
+          ? task.customEvaluation
+          : [task.customEvaluation]
+
+        evaluations.forEach((evaluation) => {
+          if (typeof evaluation === 'string' && evaluation.trim()) {
+            customEvaluations.add(evaluation.trim())
+          }
+        })
       }
 
-      console.warn('⚠️ [评分队列] 任务已入队，但 Worker 暂时不可用，等待自动恢复:', error)
-    }
+      if (task.category) {
+        const categoriesList = Array.isArray(task.category)
+          ? task.category
+          : [task.category]
 
-    return {
-      taskId: enqueueResult.taskId,
-      workerStarted,
-    }
-  }
-
-  async getStatus(): Promise<QueueStatus> {
-    const snapshot = getRatingQueueStatusSnapshot()
-    return {
-      ...snapshot,
-      workerPid: this.getWorkerPid(),
-    }
-  }
-
-  async getFailedTasks(): Promise<FailedTaskInfo[]> {
-    return getFailedRatingTasks()
-  }
-
-  async clearFailedTasks(): Promise<number> {
-    return clearFailedRatingTasks()
-  }
-
-  async retryFailedTasks(): Promise<RetryFailedTasksResult> {
-    const retryCount = retryFailedRatingTasks()
-    let workerStarted = false
-
-    if (retryCount > 0) {
-      try {
-        await this.kickWorkerProcessing()
-        workerStarted = true
-      } catch (error) {
-        if (error instanceof RatingQueueUnavailableError && !error.recoverable) {
-          throw error
-        }
-
-        console.warn('⚠️ [评分队列] 失败任务已重新入队，但 Worker 暂时不可用，等待自动恢复:', error)
+        categoriesList.forEach((category) => {
+          if (typeof category === 'string' && category.trim()) {
+            categories.add(category.trim())
+          }
+        })
       }
-    }
 
-    return {
-      retryCount,
-      workerStarted,
+      return true
+    } catch (error: any) {
+      console.error(`❌ [评分队列] 处理失败: ${task.fileName}`, error)
+      task.retryCount += 1
+      task.errorMessage = error.message
+      return false
     }
+  }
+
+  /**
+   * 获取队列状态
+   */
+  getStatus() {
+    return {
+      pending: this.queue.length,
+      isProcessing: this.isProcessing,
+      failed: this.failedTasks.length,
+      tasks: this.queue.map((task) => ({
+        taskId: task.taskId,
+        fileName: task.fileName,
+        retryCount: task.retryCount,
+        createdAt: task.createdAt,
+      })),
+    }
+  }
+
+  /**
+   * 获取失败的任务列表
+   */
+  getFailedTasks() {
+    return this.failedTasks.map((failed) => ({
+      taskId: failed.task.taskId,
+      fileName: failed.task.fileName,
+      filePath: failed.task.filePath,
+      failedAt: failed.failedAt,
+      reason: failed.reason,
+      retryCount: failed.task.retryCount,
+    }))
+  }
+
+  /**
+   * 清除失败任务记录
+   */
+  clearFailedTasks() {
+    const count = this.failedTasks.length
+    this.failedTasks = []
+    console.log(`🗑️ [评分队列] 已清除 ${count} 个失败任务记录`)
+    return count
+  }
+
+  /**
+   * 重试失败的任务
+   */
+  retryFailedTasks() {
+    const count = this.failedTasks.length
+    this.failedTasks.forEach((failed) => {
+      failed.task.retryCount = 0
+      failed.task.errorMessage = undefined
+      this.queue.push(failed.task)
+    })
+    this.failedTasks = []
+    console.log(`🔄 [评分队列] 已重新添加 ${count} 个失败任务到队列`)
+    return count
   }
 }
 
