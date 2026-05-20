@@ -65,47 +65,35 @@ export const mediaRatings = {
   save: async (data: MediaRatingRecordPayload) => {
     await ensureMySqlInitialized()
 
-    const existing = await mediaRatings.get(data.filePath) as any
     const customEvaluationStr = toStoredJsonValue(data.customEvaluation)
     const categoryStr = toStoredJsonValue(data.category)
-
-    let result: any
-    if (existing) {
-      result = await executeMySqlStatement(
-        `
-          UPDATE media_ratings
-          SET rating = ?, recommendation_reason = ?, custom_evaluation = ?,
-              category = ?, is_viewed = ?
-          WHERE file_path = ?
-        `,
-        [
-          data.rating !== undefined ? data.rating : existing.rating,
-          data.recommendationReason !== undefined ? data.recommendationReason : existing.recommendation_reason,
-          customEvaluationStr !== null ? customEvaluationStr : existing.custom_evaluation,
-          categoryStr !== null ? categoryStr : existing.category,
-          data.isViewed !== undefined ? (data.isViewed ? 1 : 0) : existing.is_viewed,
-          data.filePath,
-        ],
-      )
-    } else {
-      result = await executeMySqlStatement(
-        `
-          INSERT INTO media_ratings
-          (file_path, file_name, file_type, rating, recommendation_reason, custom_evaluation, category, is_viewed)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        [
-          data.filePath,
-          data.fileName,
-          data.fileType,
-          data.rating || null,
-          data.recommendationReason || null,
-          customEvaluationStr,
-          categoryStr,
-          data.isViewed ? 1 : 0,
-        ],
-      )
-    }
+    const isViewedValue = data.isViewed === undefined ? null : (data.isViewed ? 1 : 0)
+    const result = await executeMySqlStatement(
+      `
+        INSERT INTO media_ratings
+        (file_path, file_name, file_type, rating, recommendation_reason, custom_evaluation, category, is_viewed)
+        VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0))
+        ON DUPLICATE KEY UPDATE
+          file_name = VALUES(file_name),
+          file_type = VALUES(file_type),
+          rating = COALESCE(VALUES(rating), rating),
+          recommendation_reason = COALESCE(VALUES(recommendation_reason), recommendation_reason),
+          custom_evaluation = COALESCE(VALUES(custom_evaluation), custom_evaluation),
+          category = COALESCE(VALUES(category), category),
+          is_viewed = COALESCE(?, is_viewed)
+      `,
+      [
+        data.filePath,
+        data.fileName,
+        data.fileType,
+        data.rating ?? null,
+        data.recommendationReason ?? null,
+        customEvaluationStr,
+        categoryStr,
+        isViewedValue,
+        isViewedValue,
+      ],
+    )
 
     if (data.creatorId !== undefined) {
       await upsertScanFileCreator(data.filePath, getParentPath(data.filePath), data.creatorId ?? null)
@@ -165,30 +153,21 @@ export const mediaRatings = {
   saveViewedState: async (filePath: string, isViewed: boolean) => {
     await ensureMySqlInitialized()
 
-    const existing = await mediaRatings.get(filePath) as any
+    const fileName = filePath.split('/').pop() || filePath
+    const fileType = /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(fileName) ? 'image' : 'video'
 
-    if (existing) {
-      await executeMySqlStatement(
-        `
-          UPDATE media_ratings
-          SET is_viewed = ?
-          WHERE file_path = ?
-        `,
-        [isViewed ? 1 : 0, filePath],
-      )
-    } else {
-      const fileName = filePath.split('/').pop() || filePath
-      const fileType = /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(fileName) ? 'image' : 'video'
-
-      await executeMySqlStatement(
-        `
-          INSERT INTO media_ratings
-          (file_path, file_name, file_type, is_viewed)
-          VALUES (?, ?, ?, ?)
-        `,
-        [filePath, fileName, fileType, isViewed ? 1 : 0],
-      )
-    }
+    await executeMySqlStatement(
+      `
+        INSERT INTO media_ratings
+        (file_path, file_name, file_type, is_viewed)
+        VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          file_name = VALUES(file_name),
+          file_type = VALUES(file_type),
+          is_viewed = VALUES(is_viewed)
+      `,
+      [filePath, fileName, fileType, isViewed ? 1 : 0],
+    )
 
     try {
       const scanResult = await executeMySqlStatement(

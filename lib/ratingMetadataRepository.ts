@@ -8,13 +8,15 @@ export const customEvaluations = {
 
   add: async (label: string) => {
     await ensureMySqlInitialized()
-    const existing = await queryMySqlOne('SELECT * FROM custom_evaluations WHERE label = ?', [label])
-
-    if (existing) {
-      return executeMySqlStatement('UPDATE custom_evaluations SET usage_count = usage_count + 1 WHERE label = ?', [label])
-    }
-
-    return executeMySqlStatement('INSERT INTO custom_evaluations (label) VALUES (?)', [label])
+    return executeMySqlStatement(
+      `
+        INSERT INTO custom_evaluations (label, usage_count)
+        VALUES (?, 1)
+        ON DUPLICATE KEY UPDATE
+          usage_count = usage_count + 1
+      `,
+      [label],
+    )
   },
 
   delete: async (label: string) => {
@@ -31,13 +33,15 @@ export const categories = {
 
   add: async (name: string) => {
     await ensureMySqlInitialized()
-    const existing = await queryMySqlOne('SELECT * FROM categories WHERE name = ?', [name])
-
-    if (existing) {
-      return executeMySqlStatement('UPDATE categories SET usage_count = usage_count + 1 WHERE name = ?', [name])
-    }
-
-    return executeMySqlStatement('INSERT INTO categories (name) VALUES (?)', [name])
+    return executeMySqlStatement(
+      `
+        INSERT INTO categories (name, usage_count)
+        VALUES (?, 1)
+        ON DUPLICATE KEY UPDATE
+          usage_count = usage_count + 1
+      `,
+      [name],
+    )
   },
 
   delete: async (name: string) => {

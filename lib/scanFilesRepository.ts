@@ -236,6 +236,7 @@ function sortFilesByBasename(rows: any[]) {
 }
 
 const MAX_RANDOM_KEY = 0xffffffff
+const MAX_RANDOM_BATCH_EXCLUDES = 200
 
 function createRandomSeekKey() {
   return Math.floor(Math.random() * (MAX_RANDOM_KEY + 1))
@@ -687,7 +688,7 @@ export const scanFiles = {
       || ratingEmptyFilter !== undefined || evaluationEmptyFilter !== undefined || categoryEmptyFilter !== undefined,
     )
 
-    const excludeSet = new Set(excludeFilenames)
+    const excludeSet = new Set(excludeFilenames.slice(-MAX_RANDOM_BATCH_EXCLUDES))
 
     const loadFilesByIds = async (ids: number[]) => {
       if (ids.length === 0) return []

@@ -26,7 +26,7 @@ function normalizeMysqlConfig(config: Partial<Record<keyof MysqlRuntimeConfig, u
     database: FIXED_MYSQL_DATABASE,
     charset: String(config.charset || 'utf8mb4').trim() || 'utf8mb4',
     timezone: String(config.timezone || '+08:00').trim() || '+08:00',
-    connectionLimit: Number(config.connectionLimit || 10),
+    connectionLimit: Number(config.connectionLimit || 24),
   }
 }
 

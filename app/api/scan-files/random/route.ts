@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { scanCache } from '@/lib/scanCacheRepository'
 import { scanFiles } from '@/lib/scanFilesRepository'
 
+const MAX_EXCLUDE_FILENAMES = 200
+
 // POST: 随机获取文件（支持批量）- 使用 POST 避免 URL 过长导致 431 错误
 export async function POST(request: NextRequest) {
   const startTime = Date.now()
@@ -40,18 +42,17 @@ export async function POST(request: NextRequest) {
 
     // 支持数组或逗号分隔的字符串
     const pathList = Array.isArray(paths) ? paths : paths.split(',').filter((p: string) => p.trim())
-    const excludeList = excludeFilenames 
-      ? (Array.isArray(excludeFilenames) ? excludeFilenames : excludeFilenames.split(',').filter((f: string) => f.trim()))
+    const rawExcludeList: string[] = excludeFilenames
+      ? (Array.isArray(excludeFilenames)
+          ? excludeFilenames.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          : excludeFilenames.split(',').filter((f: string) => f.trim()))
       : []
+    const excludeList = Array.from(new Set<string>(rawExcludeList)).slice(-MAX_EXCLUDE_FILENAMES)
     console.log(`⏱️ [random] 解析参数完成: ${Date.now() - startTime}ms, paths=${pathList.length}, excludeList=${excludeList.length}`)
 
     // 批量获取所有相关 cache 的 ID（一次查询代替循环）
     const cacheStartTime = Date.now()
-    
-    // 先检查 scan_cache 表的数据量
-    const cacheCount = await scanCache.count()
-    console.log(`⏱️ [random] scan_cache 表数据量: ${cacheCount}`)
-    
+
     const caches = await scanCache.getMultiple(webdavUrl, webdavUsername, pathList) as any[]
     const cacheIds = caches.map(c => c.id)
     console.log(`⏱️ [random] 批量获取cacheIds完成: ${Date.now() - cacheStartTime}ms, cacheIds=${cacheIds.length}`)
@@ -60,13 +61,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ files: [], message: '未找到缓存数据' })
     }
 
-    // 检查是否有迁移数据
+    // 检查是否有迁移数据，避免把“未迁移”误判成“无匹配文件”
     const hasDataStartTime = Date.now()
     if (!await scanFiles.hasDataMultiple(cacheIds)) {
-      return NextResponse.json({ 
-        files: [], 
+      return NextResponse.json({
+        files: [],
         hasData: false,
-        message: '数据尚未迁移，请先执行迁移' 
+        message: '数据尚未迁移，请先执行迁移'
       })
     }
     console.log(`⏱️ [random] hasDataMultiple完成: ${Date.now() - hasDataStartTime}ms`)

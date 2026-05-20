@@ -41,11 +41,13 @@ class ServerRatingQueue {
   private failedTasks: FailedTask[] = []
   private isProcessing = false
   private maxRetries = 3
-  private processingInterval: NodeJS.Timeout | null = null
+  private processingTimer: NodeJS.Timeout | null = null
   private maxFailedTasks = 100
+  private batchSize = 5
+  private batchDelayMs = 50
 
   constructor() {
-    this.startProcessing()
+    console.log('✅ [评分队列] 事件驱动处理器已就绪')
   }
 
   /**
@@ -72,32 +74,32 @@ class ServerRatingQueue {
 
     this.queue.push(task)
     console.log(`📥 [评分队列] 任务已添加: ${data.fileName}, 队列长度: ${this.queue.length}`)
+    this.scheduleProcessing()
 
     return taskId
   }
 
   /**
-   * 启动后台处理
+   * 按需调度后台处理
    */
-  private startProcessing() {
-    if (this.processingInterval) {
+  private scheduleProcessing(delayMs: number = 0) {
+    if (this.processingTimer || this.isProcessing || this.queue.length === 0) {
       return
     }
 
-    this.processingInterval = setInterval(() => {
+    this.processingTimer = setTimeout(() => {
+      this.processingTimer = null
       void this.processQueue()
-    }, 100)
-
-    console.log('✅ [评分队列] 后台处理已启动')
+    }, delayMs)
   }
 
   /**
    * 停止后台处理
    */
   stopProcessing() {
-    if (this.processingInterval) {
-      clearInterval(this.processingInterval)
-      this.processingInterval = null
+    if (this.processingTimer) {
+      clearTimeout(this.processingTimer)
+      this.processingTimer = null
       console.log('⏹️ [评分队列] 后台处理已停止')
     }
   }
@@ -113,7 +115,7 @@ class ServerRatingQueue {
     this.isProcessing = true
 
     try {
-      const batchSize = Math.min(10, this.queue.length)
+      const batchSize = Math.min(this.batchSize, this.queue.length)
 
       for (let i = 0; i < batchSize; i += 1) {
         if (this.queue.length === 0) break
@@ -147,6 +149,9 @@ class ServerRatingQueue {
       console.error('❌ [评分队列] 处理队列失败:', error)
     } finally {
       this.isProcessing = false
+      if (this.queue.length > 0) {
+        this.scheduleProcessing(this.batchDelayMs)
+      }
     }
   }
 
@@ -253,6 +258,7 @@ class ServerRatingQueue {
       this.queue.push(failed.task)
     })
     this.failedTasks = []
+    this.scheduleProcessing()
     console.log(`🔄 [评分队列] 已重新添加 ${count} 个失败任务到队列`)
     return count
   }
