@@ -49,10 +49,10 @@ export async function POST(request: NextRequest) {
     const cacheStartTime = Date.now()
     
     // 先检查 scan_cache 表的数据量
-    const cacheCount = (scanCache as any).count?.() || 'unknown'
+    const cacheCount = await scanCache.count()
     console.log(`⏱️ [random] scan_cache 表数据量: ${cacheCount}`)
     
-    const caches = scanCache.getMultiple(webdavUrl, webdavUsername, pathList) as any[]
+    const caches = await scanCache.getMultiple(webdavUrl, webdavUsername, pathList) as any[]
     const cacheIds = caches.map(c => c.id)
     console.log(`⏱️ [random] 批量获取cacheIds完成: ${Date.now() - cacheStartTime}ms, cacheIds=${cacheIds.length}`)
 
@@ -62,7 +62,7 @@ export async function POST(request: NextRequest) {
 
     // 检查是否有迁移数据
     const hasDataStartTime = Date.now()
-    if (!scanFiles.hasDataMultiple(cacheIds)) {
+    if (!await scanFiles.hasDataMultiple(cacheIds)) {
       return NextResponse.json({ 
         files: [], 
         hasData: false,
@@ -73,7 +73,7 @@ export async function POST(request: NextRequest) {
 
     // 使用批量随机获取方法（支持随机性控制和高级过滤）
     const randomStartTime = Date.now()
-    const files = scanFiles.getRandomBatchMultiple(cacheIds, count, {
+    const files = await scanFiles.getRandomBatchMultiple(cacheIds, count, {
       fileType: fileType || undefined,
       isViewed: isViewed !== null && isViewed !== undefined ? isViewed === true || isViewed === 'true' : undefined,
       excludeFilenames: excludeList,

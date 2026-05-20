@@ -14,7 +14,7 @@ export async function POST(request: NextRequest) {
       )
     }
     
-    const result = creators.batchLinkFilesByName(creatorId, namePattern)
+    const result = await creators.batchLinkFilesByName(creatorId, namePattern)
     
     return NextResponse.json({ 
       success: true, 

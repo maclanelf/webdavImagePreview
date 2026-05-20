@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { ensureInitialized, videoHighlights } from '@/lib/database'
+import { videoHighlights } from '@/lib/database'
 
 // 数据库存储的 tags 是 JSON 字符串；接口层统一在这里反序列化为前端直接可用的数组。
 function parseTags(value: string | null) {
@@ -56,7 +56,6 @@ function validateRange(startSeconds: number, endSeconds: number) {
 
 export async function GET(request: NextRequest) {
   try {
-    ensureInitialized()
     const { searchParams } = new URL(request.url)
     const filePath = searchParams.get('filePath')
 
@@ -64,7 +63,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '缺少 filePath 参数' }, { status: 400 })
     }
 
-    const highlights = videoHighlights.getByFilePath(filePath).map(parseHighlightRow)
+    const highlights = (await videoHighlights.getByFilePath(filePath)).map(parseHighlightRow)
     return NextResponse.json({ highlights })
   } catch (error: any) {
     console.error('获取精彩片段失败:', error)
@@ -74,7 +73,6 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    ensureInitialized()
     const body = await request.json()
     const filePath = typeof body.filePath === 'string' ? body.filePath.trim() : ''
     const fileName = typeof body.fileName === 'string' ? body.fileName.trim() : ''
@@ -91,7 +89,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: errorMessage }, { status: 400 })
     }
 
-    const result = videoHighlights.create({
+    const result = await videoHighlights.create({
       filePath,
       fileName,
       startSeconds,
@@ -104,7 +102,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      id: result.lastInsertRowid,
+      id: result.insertId,
       changes: result.changes,
     })
   } catch (error: any) {
@@ -120,7 +118,6 @@ export async function POST(request: NextRequest) {
 
 export async function PUT(request: NextRequest) {
   try {
-    ensureInitialized()
     const body = await request.json()
     // 更新接口也走同样的时间归一化逻辑，避免编辑多次后出现 1.999999 之类的浮点误差。
     const id = Number(body.id)
@@ -136,7 +133,7 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: errorMessage }, { status: 400 })
     }
 
-    const result = videoHighlights.update(id, {
+    const result = await videoHighlights.update(id, {
       startSeconds,
       endSeconds,
       title: typeof body.title === 'string' ? body.title : undefined,
@@ -162,7 +159,6 @@ export async function PUT(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
-    ensureInitialized()
     const { searchParams } = new URL(request.url)
     const id = Number(searchParams.get('id'))
 
@@ -170,7 +166,7 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: '缺少有效的片段 id' }, { status: 400 })
     }
 
-    const result = videoHighlights.delete(id)
+    const result = await videoHighlights.delete(id)
     return NextResponse.json({ success: true, changes: result.changes })
   } catch (error: any) {
     console.error('删除精彩片段失败:', error)

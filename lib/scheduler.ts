@@ -16,17 +16,17 @@ class Scheduler {
     this.isRunning = true
     
     // 动态调整检查间隔
-    this.adjustCheckInterval()
+    void this.adjustCheckInterval()
     
     // 每5分钟检查一次
     this.intervalId = setInterval(() => {
-      this.checkAndExecuteTasks()
+      void this.checkAndExecuteTasks()
       // 每次检查后重新调整间隔
-      this.adjustCheckInterval()
+      void this.adjustCheckInterval()
     }, this.checkInterval)
 
     // 立即执行一次检查
-    this.checkAndExecuteTasks()
+    void this.checkAndExecuteTasks()
   }
 
   // 停止调度器
@@ -40,9 +40,9 @@ class Scheduler {
   }
 
   // 动态调整检查间隔
-  private adjustCheckInterval() {
+  private async adjustCheckInterval() {
     try {
-      const activeTasks = scheduledScans.getActive()
+      const activeTasks = await scheduledScans.getActive()
       let minInterval = 5 * 60 * 1000 // 默认5分钟
       
       for (const task of activeTasks) {
@@ -67,8 +67,8 @@ class Scheduler {
         if (this.intervalId) {
           clearInterval(this.intervalId)
           this.intervalId = setInterval(() => {
-            this.checkAndExecuteTasks()
-            this.adjustCheckInterval()
+            void this.checkAndExecuteTasks()
+            void this.adjustCheckInterval()
           }, this.checkInterval)
         }
       }
@@ -84,27 +84,39 @@ class Scheduler {
       if (parts.length !== 5) return 5 * 60 * 1000
       
       const [minute, hour] = parts
+      const minuteStepMatch = minute.match(/^\*\/(\d+)$/)
+      const hourStepMatch = hour.match(/^\*\/(\d+)$/)
+
+      const minuteIsWildcard = minute === '*'
+      const hourIsWildcard = hour === '*'
+
+      // 每天一次或更少频率的任务，不要退化成每分钟轮询
+      if (!minuteStepMatch && !minuteIsWildcard && hourIsWildcard) {
+        return 60 * 60 * 1000
+      }
+
+      if (!minuteStepMatch && !minuteIsWildcard && !hourIsWildcard && !hourStepMatch) {
+        return 24 * 60 * 60 * 1000
+      }
       
       // 如果分钟不是*，计算分钟间隔
-      if (minute !== '*') {
-        if (minute.includes('/')) {
-          const [, interval] = minute.split('/')
-          const intervalNum = parseInt(interval) || 1
-          return intervalNum * 60 * 1000 // 转换为毫秒
-        } else {
-          return 60 * 1000 // 每分钟
-        }
+      if (minuteStepMatch) {
+        const intervalNum = parseInt(minuteStepMatch[1]) || 1
+        return intervalNum * 60 * 1000 // 转换为毫秒
+      }
+
+      if (!minuteIsWildcard) {
+        return hourIsWildcard ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000
       }
       
       // 如果小时不是*，计算小时间隔
-      if (hour !== '*') {
-        if (hour.includes('/')) {
-          const [, interval] = hour.split('/')
-          const intervalNum = parseInt(interval) || 1
-          return intervalNum * 60 * 60 * 1000 // 转换为毫秒
-        } else {
-          return 60 * 60 * 1000 // 每小时
-        }
+      if (hourStepMatch) {
+        const intervalNum = parseInt(hourStepMatch[1]) || 1
+        return intervalNum * 60 * 60 * 1000 // 转换为毫秒
+      }
+
+      if (!hourIsWildcard) {
+        return 60 * 60 * 1000 // 每小时
       }
       
       return 5 * 60 * 1000 // 默认5分钟
@@ -121,7 +133,7 @@ class Scheduler {
       console.log(`[${now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}] 检查定时任务...`)
 
       // 获取所有活跃的定时扫描任务
-      const activeTasks = scheduledScans.getActive()
+      const activeTasks = await scheduledScans.getActive() as any[]
       console.log(`找到 ${activeTasks.length} 个活跃的定时扫描任务`)
 
       const executedTasks: any[] = []
@@ -142,7 +154,6 @@ class Scheduler {
             
             // 在Node.js环境中，我们需要使用不同的方式调用API
             // 这里直接调用数据库操作而不是通过HTTP API
-            const { scheduledScans } = await import('./database')
             const { getWebDAVClient, getMediaFiles } = await import('./webdav-optimized')
             const { scanCache } = await import('./database')
             
@@ -188,7 +199,7 @@ class Scheduler {
                 lastmod: file.lastmod,
               }))
 
-              scanCache.save({
+              await scanCache.save({
                 webdavUrl: taskData.webdav_url,
                 webdavUsername: taskData.webdav_username,
                 path,
@@ -205,7 +216,7 @@ class Scheduler {
             }
 
             // 更新任务最后运行时间
-            scheduledScans.updateLastRun(taskData.id)
+            await scheduledScans.updateLastRun(taskData.id)
             
             console.log(`任务 ${taskData.id} 执行成功: 扫描了 ${mediaPaths.length} 个路径，找到 ${totalFiles} 个文件`)
             executedTasks.push({

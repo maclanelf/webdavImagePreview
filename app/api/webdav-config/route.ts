@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
+
 import { webdavConfigs } from '@/lib/database'
 
 // 获取所有 WebDAV 配置
-export async function GET(request: NextRequest) {
+export async function GET(_request: NextRequest) {
   try {
-    const configs = webdavConfigs.getAll()
+    const configs = await webdavConfigs.getAll()
     return NextResponse.json({ configs })
   } catch (error: any) {
     console.error('获取 WebDAV 配置失败:', error)
@@ -28,40 +29,30 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (!mediaPaths || !Array.isArray(mediaPaths) || mediaPaths.length === 0) {
+    if (!mediaPaths || !Array.isArray(mediaPaths)) {
       return NextResponse.json(
-        { error: '请至少提供一个媒体路径' },
+        { error: '媒体路径格式不正确' },
         { status: 400 }
       )
     }
 
-    try {
-      const result = webdavConfigs.save({
-        url,
-        username,
-        password,
-        mediaPaths,
-        scanSettings: scanSettings || { concurrency: 10, preloadCount: 10 },
-        isDefault,
-        sourceType: sourceType || 'clouddrive2',
-        directLinkUrl,
-        enableDirectLink
-      })
+    const result = await webdavConfigs.save({
+      url,
+      username,
+      password,
+      mediaPaths,
+      scanSettings: scanSettings || { concurrency: 10, preloadCount: 10 },
+      isDefault,
+      sourceType: sourceType || 'clouddrive2',
+      directLinkUrl,
+      enableDirectLink,
+    })
 
-      return NextResponse.json({
-        id: result.lastInsertRowid,
-        message: 'WebDAV 配置保存成功'
-      })
-    } catch (saveError: any) {
-      // 检查是否是重复配置的错误
-      if (saveError.message && saveError.message.includes('该配置已存在')) {
-        return NextResponse.json(
-          { error: saveError.message, isDuplicate: true },
-          { status: 409 } // 409 Conflict
-        )
-      }
-      throw saveError
-    }
+    return NextResponse.json({
+      id: result.insertId || undefined,
+      affectedRows: result.affectedRows,
+      message: 'WebDAV 配置保存成功',
+    })
   } catch (error: any) {
     console.error('保存 WebDAV 配置失败:', error)
     return NextResponse.json(
@@ -85,7 +76,7 @@ export async function DELETE(request: NextRequest) {
       )
     }
 
-    webdavConfigs.delete(url, username)
+    await webdavConfigs.delete(url, username)
     return NextResponse.json({ message: '配置删除成功' })
   } catch (error: any) {
     console.error('删除 WebDAV 配置失败:', error)

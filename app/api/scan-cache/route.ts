@@ -25,7 +25,7 @@ export async function GET(request: NextRequest) {
     }
 
     // 获取匹配的WebDAV配置的缓存数据
-    const cacheData = scanCache.getByWebDAVConfig(webdavUrl, webdavUsername)
+    const cacheData = await scanCache.getByWebDAVConfig(webdavUrl, webdavUsername)
     
     // 转换为前端需要的格式
     const pathStats = new Map()

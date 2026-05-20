@@ -1,6 +1,18 @@
-import db from './databaseCore'
-import { ensureInitialized } from './databaseInitialization'
+import {
+  ensureMySqlInitialized,
+  executeMySqlStatement,
+  queryMySqlOne,
+  queryMySqlRows,
+} from './database'
 import { UNKNOWN_CREATOR_ID } from './constants'
+
+let scanFilesRandomKeySchemaReady = false
+let scanFilesRandomKeySchemaPromise: Promise<void> | null = null
+
+export function resetScanFilesRandomKeySchemaState() {
+  scanFilesRandomKeySchemaReady = false
+  scanFilesRandomKeySchemaPromise = null
+}
 
 function getParentPath(filename: string): string {
   const lastSlash = filename.lastIndexOf('/')
@@ -17,10 +29,7 @@ const IMAGE_EXTENSIONS = new Set([
 
 function getFileType(basename: string): 'image' | 'video' {
   const ext = basename.substring(basename.lastIndexOf('.')).toLowerCase()
-  if (IMAGE_EXTENSIONS.has(ext)) {
-    return 'image'
-  }
-  return 'video'
+  return IMAGE_EXTENSIONS.has(ext) ? 'image' : 'video'
 }
 
 function normalizeAvatarPath(value: unknown): string | null {
@@ -64,8 +73,8 @@ function parseCreatorOtherNames(value: unknown): string[] | undefined {
 }
 
 function buildCreatorSummaryFromJoinedRow(row: any) {
-  const linkedCreatorId = row.creator_linked_id
-  if (typeof linkedCreatorId !== 'number') {
+  const linkedCreatorId = row.creator_linked_id == null ? null : Number(row.creator_linked_id)
+  if (!Number.isFinite(linkedCreatorId)) {
     return null
   }
 
@@ -81,7 +90,7 @@ function buildCreatorSummaryFromJoinedRow(row: any) {
 }
 
 function attachCreatorInfoToScanFileRow(row: any) {
-  const creatorId = typeof row.creator_id === 'number' ? row.creator_id : null
+  const creatorId = row.creator_id == null ? null : Number(row.creator_id)
   const creator = buildCreatorSummaryFromJoinedRow(row)
 
   return {
@@ -91,61 +100,223 @@ function attachCreatorInfoToScanFileRow(row: any) {
   }
 }
 
-function ensureScanFileCreators(batch: Array<{ filePath: string; parentPath: string }>) {
+async function ensureScanFileCreators(batch: Array<{ filePath: string; parentPath: string }>) {
   if (batch.length === 0) {
     return { inserted: 0, parentPathUpdated: 0 }
   }
 
-  const insertStmt = db.prepare(`
-    INSERT OR IGNORE INTO scan_file_creators (file_path, parent_path, creator_id)
-    VALUES (?, ?, NULL)
-  `)
-
-  const updateParentPathStmt = db.prepare(`
-    UPDATE scan_file_creators
-    SET parent_path = ?,
-        updated_at = datetime('now', 'localtime')
-    WHERE file_path = ?
-      AND parent_path != ?
-  `)
-
-  const insertMany = db.transaction((rows: Array<{ filePath: string; parentPath: string }>) => {
-    let inserted = 0
-    let parentPathUpdated = 0
-
-    for (const row of rows) {
-      const insertResult = insertStmt.run(row.filePath, row.parentPath)
-      inserted += insertResult.changes
-
-      const updateResult = updateParentPathStmt.run(row.parentPath, row.filePath, row.parentPath)
-      parentPathUpdated += updateResult.changes
-    }
-
-    return { inserted, parentPathUpdated }
+  const insertPlaceholders = batch.map(() => '(?, ?)').join(',')
+  const insertValues: any[] = []
+  batch.forEach((row) => {
+    insertValues.push(row.filePath, row.parentPath)
   })
 
-  return insertMany(batch)
+  const insertResult = await executeMySqlStatement(
+    `INSERT IGNORE INTO scan_file_creators (file_path, parent_path) VALUES ${insertPlaceholders}`,
+    insertValues,
+  )
+
+  const updateSelectSql = batch.map(() => 'SELECT ? AS file_path, ? AS parent_path').join(' UNION ALL ')
+  const updateValues: any[] = []
+  batch.forEach((row) => {
+    updateValues.push(row.filePath, row.parentPath)
+  })
+
+  const updateResult = await executeMySqlStatement(
+    `
+      UPDATE scan_file_creators sfc
+      INNER JOIN (
+        ${updateSelectSql}
+      ) incoming ON incoming.file_path = sfc.file_path
+      SET sfc.parent_path = incoming.parent_path
+      WHERE sfc.parent_path <> incoming.parent_path
+    `,
+    updateValues,
+  )
+
+  return {
+    inserted: insertResult.affectedRows ?? 0,
+    parentPathUpdated: updateResult.affectedRows ?? 0,
+  }
+}
+
+function buildAdvancedFiltersClause(
+  options: {
+    ratings?: number[]
+    evaluations?: string[]
+    categories?: string[]
+    reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword'
+    reasonKeyword?: string
+    ratingEmptyFilter?: boolean
+    evaluationEmptyFilter?: boolean
+    categoryEmptyFilter?: boolean
+  },
+  where: string[],
+  params: any[],
+) {
+  const {
+    ratings,
+    evaluations,
+    categories,
+    reasonFilter,
+    reasonKeyword,
+    ratingEmptyFilter,
+    evaluationEmptyFilter,
+    categoryEmptyFilter,
+  } = options
+
+  if (ratings && ratings.length > 0) {
+    const ratingPlaceholders = ratings.map(() => '?').join(',')
+    if (ratingEmptyFilter === true) {
+      where.push(`(mr.rating IN (${ratingPlaceholders}) OR mr.rating IS NULL)`)
+      params.push(...ratings)
+    } else if (ratingEmptyFilter === false) {
+      where.push(`mr.rating IN (${ratingPlaceholders})`)
+      params.push(...ratings)
+    } else {
+      where.push(`mr.rating IN (${ratingPlaceholders})`)
+      params.push(...ratings)
+    }
+  } else if (ratingEmptyFilter === true) {
+    where.push('mr.rating IS NULL')
+  } else if (ratingEmptyFilter === false) {
+    where.push('mr.rating IS NOT NULL')
+  }
+
+  if (evaluations && evaluations.length > 0) {
+    const evalConditions = evaluations.map(() => '(mr.custom_evaluation LIKE ? OR mr.custom_evaluation = ?)').join(' OR ')
+    if (evaluationEmptyFilter === true) {
+      where.push(`((${evalConditions}) OR mr.custom_evaluation IS NULL OR mr.custom_evaluation = '')`)
+    } else if (evaluationEmptyFilter === false) {
+      where.push(`(${evalConditions})`)
+    } else {
+      where.push(`(${evalConditions})`)
+    }
+    evaluations.forEach((evaluation) => {
+      params.push(`%"${evaluation}"%`)
+      params.push(evaluation)
+    })
+  } else if (evaluationEmptyFilter === true) {
+    where.push('(mr.custom_evaluation IS NULL OR mr.custom_evaluation = \'\')')
+  } else if (evaluationEmptyFilter === false) {
+    where.push('(mr.custom_evaluation IS NOT NULL AND mr.custom_evaluation <> \'\')')
+  }
+
+  if (categories && categories.length > 0) {
+    const catConditions = categories.map(() => '(mr.category LIKE ? OR mr.category = ?)').join(' OR ')
+    if (categoryEmptyFilter === true) {
+      where.push(`((${catConditions}) OR mr.category IS NULL OR mr.category = '')`)
+    } else if (categoryEmptyFilter === false) {
+      where.push(`(${catConditions})`)
+    } else {
+      where.push(`(${catConditions})`)
+    }
+    categories.forEach((category) => {
+      params.push(`%"${category}"%`)
+      params.push(category)
+    })
+  } else if (categoryEmptyFilter === true) {
+    where.push('(mr.category IS NULL OR mr.category = \'\')')
+  } else if (categoryEmptyFilter === false) {
+    where.push('(mr.category IS NOT NULL AND mr.category <> \'\')')
+  }
+
+  if (reasonFilter === 'empty') {
+    where.push('(mr.recommendation_reason IS NULL OR mr.recommendation_reason = \'\')')
+  } else if (reasonFilter === 'nonempty') {
+    where.push('(mr.recommendation_reason IS NOT NULL AND mr.recommendation_reason <> \'\')')
+  } else if (reasonFilter === 'keyword' && reasonKeyword) {
+    where.push('mr.recommendation_reason LIKE ?')
+    params.push(`%${reasonKeyword}%`)
+  }
+}
+
+function sortFilesByBasename(rows: any[]) {
+  return [...rows].sort((a, b) => String(a.basename).localeCompare(String(b.basename), undefined, { numeric: true, sensitivity: 'base' }))
+}
+
+const MAX_RANDOM_KEY = 0xffffffff
+
+function createRandomSeekKey() {
+  return Math.floor(Math.random() * (MAX_RANDOM_KEY + 1))
+}
+
+async function ensureScanFilesRandomKeySchema() {
+  if (scanFilesRandomKeySchemaReady) {
+    return
+  }
+
+  if (scanFilesRandomKeySchemaPromise) {
+    await scanFilesRandomKeySchemaPromise
+    return
+  }
+
+  scanFilesRandomKeySchemaPromise = (async () => {
+    const randomKeyColumn = await queryMySqlOne<{ Field: string }>("SHOW COLUMNS FROM scan_files LIKE 'random_key'")
+    const parentRandomKeyColumn = await queryMySqlOne<{ Field: string }>("SHOW COLUMNS FROM scan_files LIKE 'parent_random_key'")
+
+    if (!randomKeyColumn) {
+      await executeMySqlStatement(
+        `
+          ALTER TABLE scan_files
+          ADD COLUMN random_key INT UNSIGNED GENERATED ALWAYS AS (CRC32(filename)) STORED AFTER parent_path
+        `,
+      )
+    }
+
+    if (!parentRandomKeyColumn) {
+      await executeMySqlStatement(
+        `
+          ALTER TABLE scan_files
+          ADD COLUMN parent_random_key INT UNSIGNED GENERATED ALWAYS AS (CRC32(parent_path)) STORED AFTER random_key
+        `,
+      )
+    }
+
+    const ensureIndex = async (indexName: string, sql: string) => {
+      const existingIndex = await queryMySqlOne<{ Key_name: string }>(`SHOW INDEX FROM scan_files WHERE Key_name = ?`, [indexName])
+      if (!existingIndex) {
+        await executeMySqlStatement(sql)
+      }
+    }
+
+    await ensureIndex('idx_scan_files_cache_random', 'ALTER TABLE scan_files ADD INDEX idx_scan_files_cache_random (cache_id, random_key)')
+    await ensureIndex('idx_scan_files_cache_viewed_random', 'ALTER TABLE scan_files ADD INDEX idx_scan_files_cache_viewed_random (cache_id, is_viewed, random_key)')
+    await ensureIndex('idx_scan_files_cache_type_random', 'ALTER TABLE scan_files ADD INDEX idx_scan_files_cache_type_random (cache_id, file_type, random_key)')
+    await ensureIndex('idx_scan_files_cache_parent_random', 'ALTER TABLE scan_files ADD INDEX idx_scan_files_cache_parent_random (cache_id, parent_path, random_key)')
+    await ensureIndex('idx_scan_files_cache_group_random', 'ALTER TABLE scan_files ADD INDEX idx_scan_files_cache_group_random (cache_id, parent_random_key, parent_path)')
+
+    scanFilesRandomKeySchemaReady = true
+  })()
+
+  try {
+    await scanFilesRandomKeySchemaPromise
+  } finally {
+    scanFilesRandomKeySchemaPromise = null
+  }
 }
 
 export const scanFiles = {
-  batchInsert: (cacheId: number, files: Array<{
+  batchInsert: async (cacheId: number, files: Array<{
     filename: string
     basename: string
     size?: number
     type?: string
     lastmod?: string
   }>) => {
-    ensureInitialized()
+    await ensureMySqlInitialized()
 
-    const insert = db.prepare(`
-      INSERT OR REPLACE INTO scan_files
-      (cache_id, filename, basename, parent_path, file_size, file_type, lastmod)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `)
+    const batchSize = 500
+    let inserted = 0
 
-    const insertMany = db.transaction((batch: typeof files) => {
+    for (let i = 0; i < files.length; i += batchSize) {
+      const batch = files.slice(i, i + batchSize)
+      if (batch.length === 0) continue
+
+      const placeholders = batch.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(',')
+      const values: any[] = []
       for (const file of batch) {
-        insert.run(
+        values.push(
           cacheId,
           file.filename,
           file.basename,
@@ -155,100 +326,123 @@ export const scanFiles = {
           file.lastmod || null,
         )
       }
-    })
 
-    const batchSize = 1000
-    let inserted = 0
-    for (let i = 0; i < files.length; i += batchSize) {
-      const batch = files.slice(i, i + batchSize)
-      insertMany(batch)
-      ensureScanFileCreators(batch.map((file) => ({
+      await executeMySqlStatement(
+        `
+          INSERT INTO scan_files
+          (cache_id, filename, basename, parent_path, file_size, file_type, lastmod)
+          VALUES ${placeholders}
+          ON DUPLICATE KEY UPDATE
+            basename = VALUES(basename),
+            parent_path = VALUES(parent_path),
+            file_size = VALUES(file_size),
+            file_type = VALUES(file_type),
+            lastmod = VALUES(lastmod)
+        `,
+        values,
+      )
+
+      await ensureScanFileCreators(batch.map((file) => ({
         filePath: file.filename,
         parentPath: getParentPath(file.filename),
       })))
+
       inserted += batch.length
     }
 
     return { inserted }
   },
 
-  getStats: (cacheId: number) => {
-    ensureInitialized()
-    const stmt = db.prepare(`
-      SELECT
-        COUNT(*) as total,
-        SUM(CASE WHEN file_type = 'image' THEN 1 ELSE 0 END) as images,
-        SUM(CASE WHEN file_type = 'video' THEN 1 ELSE 0 END) as videos,
-        SUM(CASE WHEN is_viewed = 1 THEN 1 ELSE 0 END) as viewed
-      FROM scan_files
-      WHERE cache_id = ?
-    `)
-    return stmt.get(cacheId) as { total: number, images: number, videos: number, viewed: number }
+  getStats: async (cacheId: number) => {
+    await ensureMySqlInitialized()
+    const result = await queryMySqlOne<{ total: number; images: number; videos: number; viewed: number }>(
+      `
+        SELECT
+          COUNT(*) as total,
+          SUM(CASE WHEN file_type = 'image' THEN 1 ELSE 0 END) as images,
+          SUM(CASE WHEN file_type = 'video' THEN 1 ELSE 0 END) as videos,
+          SUM(CASE WHEN is_viewed = 1 THEN 1 ELSE 0 END) as viewed
+        FROM scan_files
+        WHERE cache_id = ?
+      `,
+      [cacheId],
+    )
+    return {
+      total: result?.total || 0,
+      images: result?.images || 0,
+      videos: result?.videos || 0,
+      viewed: result?.viewed || 0,
+    }
   },
 
-  getStatsMultiple: (cacheIds: number[]) => {
-    ensureInitialized()
+  getStatsMultiple: async (cacheIds: number[]) => {
+    await ensureMySqlInitialized()
     if (cacheIds.length === 0) {
       return { total: 0, images: 0, videos: 0, viewed: 0 }
     }
 
     const placeholders = cacheIds.map(() => '?').join(',')
-    const stmt = db.prepare(`
-      SELECT
-        COUNT(*) as total,
-        SUM(CASE WHEN file_type = 'image' THEN 1 ELSE 0 END) as images,
-        SUM(CASE WHEN file_type = 'video' THEN 1 ELSE 0 END) as videos,
-        SUM(CASE WHEN is_viewed = 1 THEN 1 ELSE 0 END) as viewed
-      FROM scan_files
-      WHERE cache_id IN (${placeholders})
-    `)
-    return stmt.get(...cacheIds) as { total: number, images: number, videos: number, viewed: number }
+    const result = await queryMySqlOne<{ total: number; images: number; videos: number; viewed: number }>(
+      `
+        SELECT
+          COUNT(*) as total,
+          SUM(CASE WHEN file_type = 'image' THEN 1 ELSE 0 END) as images,
+          SUM(CASE WHEN file_type = 'video' THEN 1 ELSE 0 END) as videos,
+          SUM(CASE WHEN is_viewed = 1 THEN 1 ELSE 0 END) as viewed
+        FROM scan_files
+        WHERE cache_id IN (${placeholders})
+      `,
+      cacheIds,
+    )
+
+    return {
+      total: result?.total || 0,
+      images: result?.images || 0,
+      videos: result?.videos || 0,
+      viewed: result?.viewed || 0,
+    }
   },
 
-  deleteByCache: (cacheId: number) => {
-    ensureInitialized()
-    const stmt = db.prepare('DELETE FROM scan_files WHERE cache_id = ?')
-    return stmt.run(cacheId)
+  deleteByCache: async (cacheId: number) => {
+    await ensureMySqlInitialized()
+    return executeMySqlStatement('DELETE FROM scan_files WHERE cache_id = ?', [cacheId])
   },
 
-  hasData: (cacheId: number) => {
-    ensureInitialized()
-    const stmt = db.prepare('SELECT COUNT(*) as count FROM scan_files WHERE cache_id = ? LIMIT 1')
-    const result = stmt.get(cacheId) as { count: number }
-    return result.count > 0
+  hasData: async (cacheId: number) => {
+    await ensureMySqlInitialized()
+    const result = await queryMySqlOne<{ count: number }>('SELECT COUNT(*) as count FROM scan_files WHERE cache_id = ? LIMIT 1', [cacheId])
+    return (result?.count || 0) > 0
   },
 
-  hasDataMultiple: (cacheIds: number[]) => {
-    ensureInitialized()
+  hasDataMultiple: async (cacheIds: number[]) => {
+    await ensureMySqlInitialized()
     if (cacheIds.length === 0) return false
 
     const placeholders = cacheIds.map(() => '?').join(',')
-    const stmt = db.prepare(`SELECT COUNT(*) as count FROM scan_files WHERE cache_id IN (${placeholders}) LIMIT 1`)
-    const result = stmt.get(...cacheIds) as { count: number }
-    return result.count > 0
+    const result = await queryMySqlOne<{ count: number }>(`SELECT COUNT(*) as count FROM scan_files WHERE cache_id IN (${placeholders}) LIMIT 1`, cacheIds)
+    return (result?.count || 0) > 0
   },
 
-  syncViewedFromRatings: (cacheId: number) => {
-    ensureInitialized()
-    const stmt = db.prepare(`
-      UPDATE scan_files
-      SET is_viewed = 1
-      WHERE cache_id = ?
-        AND is_viewed = 0
-        AND EXISTS (
-          SELECT 1 FROM media_ratings
-          WHERE media_ratings.file_path = scan_files.filename
-            AND media_ratings.is_viewed = 1
-        )
-    `)
+  syncViewedFromRatings: async (cacheId: number) => {
+    await ensureMySqlInitialized()
+    const result = await executeMySqlStatement(
+      `
+        UPDATE scan_files sf
+        INNER JOIN media_ratings mr ON mr.file_path = sf.filename
+        SET sf.is_viewed = 1
+        WHERE sf.cache_id = ?
+          AND sf.is_viewed = 0
+          AND mr.is_viewed = 1
+      `,
+      [cacheId],
+    )
 
-    const result = stmt.run(cacheId)
-    return { synced: result.changes }
+    return { synced: result.affectedRows ?? 0 }
   },
 
-  migrateFromCache: (cacheId: number) => {
-    ensureInitialized()
-    const cache = db.prepare('SELECT * FROM scan_cache WHERE id = ?').get(cacheId) as any
+  migrateFromCache: async (cacheId: number) => {
+    await ensureMySqlInitialized()
+    const cache = await queryMySqlOne<any>('SELECT * FROM scan_cache WHERE id = ?', [cacheId])
     if (!cache || !cache.files_data) {
       return { success: false, message: '缓存数据不存在或为空' }
     }
@@ -258,11 +452,11 @@ export const scanFiles = {
       return { success: false, message: '文件数据为空' }
     }
 
-    const beforeStats = scanFiles.getStats(cacheId)
-    scanFiles.deleteByCache(cacheId)
-    const result = scanFiles.batchInsert(cacheId, files)
-    const syncResult = scanFiles.syncViewedFromRatings(cacheId)
-    const afterStats = scanFiles.getStats(cacheId)
+    const beforeStats = await scanFiles.getStats(cacheId)
+    await scanFiles.deleteByCache(cacheId)
+    const result = await scanFiles.batchInsert(cacheId, files)
+    const syncResult = await scanFiles.syncViewedFromRatings(cacheId)
+    const afterStats = await scanFiles.getStats(cacheId)
 
     return {
       success: true,
@@ -274,14 +468,17 @@ export const scanFiles = {
     }
   },
 
-  migrateAllFromCache: () => {
-    ensureInitialized()
-    const caches = db.prepare('SELECT id, path FROM scan_cache').all() as any[]
-    const details = caches.map((cache) => ({
-      cacheId: cache.id,
-      path: cache.path,
-      ...scanFiles.migrateFromCache(cache.id),
-    }))
+  migrateAllFromCache: async () => {
+    await ensureMySqlInitialized()
+    const caches = await queryMySqlRows<any[]>('SELECT id, path FROM scan_cache')
+    const details = []
+    for (const cache of caches) {
+      details.push({
+        cacheId: cache.id,
+        path: cache.path,
+        ...(await scanFiles.migrateFromCache(cache.id)),
+      })
+    }
 
     const totalMigrated = details.filter((item) => item.success).reduce((sum, item) => sum + (item.count || 0), 0)
     return {
@@ -291,7 +488,7 @@ export const scanFiles = {
     }
   },
 
-  getRandomGroupMultiple: (cacheIds: number[], options?: {
+  getRandomGroupMultiple: async (cacheIds: number[], options?: {
     fileType?: 'image' | 'video'
     isViewed?: boolean
     excludeParentPath?: string
@@ -305,7 +502,8 @@ export const scanFiles = {
     evaluationEmptyFilter?: boolean
     categoryEmptyFilter?: boolean
   }) => {
-    ensureInitialized()
+    await ensureMySqlInitialized()
+    await ensureScanFilesRandomKeySchema()
     if (cacheIds.length === 0) return { files: [], parentPath: null, totalGroups: 0 }
 
     const {
@@ -323,182 +521,128 @@ export const scanFiles = {
       categoryEmptyFilter,
     } = options || {}
 
-    const placeholders = cacheIds.map(() => '?').join(',')
-    const needsRatingJoin = ratings?.length || evaluations?.length || categories?.length
+    const needsRatingJoin = Boolean(
+      ratings?.length || evaluations?.length || categories?.length
       || (reasonFilter && reasonFilter !== 'all')
-      || ratingEmptyFilter !== undefined || evaluationEmptyFilter !== undefined || categoryEmptyFilter !== undefined
+      || ratingEmptyFilter !== undefined || evaluationEmptyFilter !== undefined || categoryEmptyFilter !== undefined,
+    )
 
-    const buildWhereClause = (includeParentPath?: string) => {
-      let whereClause = needsRatingJoin ? `sf.cache_id IN (${placeholders})` : `cache_id IN (${placeholders})`
-      const params: any[] = [...cacheIds]
-      const prefix = 'sf.'
+    const placeholders = cacheIds.map(() => '?').join(',')
+    const where: string[] = [`sf.cache_id IN (${placeholders})`]
+    const params: any[] = [...cacheIds]
 
-      if (includeParentPath) {
-        whereClause += ` AND ${prefix}parent_path = ?`
-        params.push(includeParentPath)
-      }
-      if (fileType) {
-        whereClause += ` AND ${prefix}file_type = ?`
-        params.push(fileType)
-      }
-      if (isViewed !== undefined) {
-        whereClause += ` AND ${prefix}is_viewed = ?`
-        params.push(isViewed ? 1 : 0)
-      }
-      if (excludeParentPath) {
-        whereClause += ` AND ${prefix}parent_path != ?`
-        params.push(excludeParentPath)
-      }
-      if (maxFileSize !== undefined && maxFileSize > 0) {
-        whereClause += ` AND ${prefix}file_size <= ?`
-        params.push(maxFileSize)
-      }
-
-      if (needsRatingJoin) {
-        if (ratings && ratings.length > 0) {
-          const ratingPlaceholders = ratings.map(() => '?').join(',')
-          if (ratingEmptyFilter === true) {
-            whereClause += ` AND (mr.rating IN (${ratingPlaceholders}) OR mr.rating IS NULL)`
-            params.push(...ratings)
-          } else if (ratingEmptyFilter === false) {
-            whereClause += ` AND (mr.rating IN (${ratingPlaceholders}) OR (mr.rating IS NOT NULL AND mr.rating NOT IN (${ratingPlaceholders})))`
-            params.push(...ratings, ...ratings)
-          } else {
-            whereClause += ` AND mr.rating IN (${ratingPlaceholders})`
-            params.push(...ratings)
-          }
-        } else if (ratingEmptyFilter === true) {
-          whereClause += ` AND mr.rating IS NULL`
-        } else if (ratingEmptyFilter === false) {
-          whereClause += ` AND mr.rating IS NOT NULL`
-        }
-
-        if (evaluations && evaluations.length > 0) {
-          const evalConditions = evaluations.map(() => `(mr.custom_evaluation LIKE ? OR mr.custom_evaluation = ?)`).join(' OR ')
-          if (evaluationEmptyFilter === true) {
-            whereClause += ` AND ((${evalConditions}) OR mr.custom_evaluation IS NULL OR mr.custom_evaluation = '')`
-          } else if (evaluationEmptyFilter === false) {
-            whereClause += ` AND ((${evalConditions}) OR (mr.custom_evaluation IS NOT NULL AND mr.custom_evaluation != ''))`
-          } else {
-            whereClause += ` AND (${evalConditions})`
-          }
-          evaluations.forEach((evaluation) => {
-            params.push(`%"${evaluation}"%`)
-            params.push(evaluation)
-          })
-        } else if (evaluationEmptyFilter === true) {
-          whereClause += ` AND (mr.custom_evaluation IS NULL OR mr.custom_evaluation = '')`
-        } else if (evaluationEmptyFilter === false) {
-          whereClause += ` AND (mr.custom_evaluation IS NOT NULL AND mr.custom_evaluation != '')`
-        }
-
-        if (categories && categories.length > 0) {
-          const catConditions = categories.map(() => `(mr.category LIKE ? OR mr.category = ?)`).join(' OR ')
-          if (categoryEmptyFilter === true) {
-            whereClause += ` AND ((${catConditions}) OR mr.category IS NULL OR mr.category = '')`
-          } else if (categoryEmptyFilter === false) {
-            whereClause += ` AND ((${catConditions}) OR (mr.category IS NOT NULL AND mr.category != ''))`
-          } else {
-            whereClause += ` AND (${catConditions})`
-          }
-          categories.forEach((category) => {
-            params.push(`%"${category}"%`)
-            params.push(category)
-          })
-        } else if (categoryEmptyFilter === true) {
-          whereClause += ` AND (mr.category IS NULL OR mr.category = '')`
-        } else if (categoryEmptyFilter === false) {
-          whereClause += ` AND (mr.category IS NOT NULL AND mr.category != '')`
-        }
-
-        if (reasonFilter === 'empty') {
-          whereClause += ` AND (mr.recommendation_reason IS NULL OR mr.recommendation_reason = '')`
-        } else if (reasonFilter === 'nonempty') {
-          whereClause += ` AND mr.recommendation_reason IS NOT NULL AND mr.recommendation_reason != ''`
-        } else if (reasonFilter === 'keyword' && reasonKeyword) {
-          whereClause += ` AND mr.recommendation_reason LIKE ?`
-          params.push(`%${reasonKeyword}%`)
-        }
-      }
-
-      return { whereClause, params }
+    if (fileType) {
+      where.push('sf.file_type = ?')
+      params.push(fileType)
+    }
+    if (isViewed !== undefined) {
+      where.push('sf.is_viewed = ?')
+      params.push(isViewed ? 1 : 0)
+    }
+    if (excludeParentPath) {
+      where.push('sf.parent_path <> ?')
+      params.push(excludeParentPath)
+    }
+    if (maxFileSize !== undefined && maxFileSize > 0) {
+      where.push('sf.file_size <= ?')
+      params.push(maxFileSize)
+    }
+    if (needsRatingJoin) {
+      buildAdvancedFiltersClause({
+        ratings,
+        evaluations,
+        categories,
+        reasonFilter,
+        reasonKeyword,
+        ratingEmptyFilter,
+        evaluationEmptyFilter,
+        categoryEmptyFilter,
+      }, where, params)
     }
 
-    const { whereClause, params } = buildWhereClause()
+    const fromSql = needsRatingJoin
+      ? 'FROM scan_files sf LEFT JOIN media_ratings mr ON sf.filename = mr.file_path'
+      : 'FROM scan_files sf'
+    const whereSql = where.join(' AND ')
 
-    const groupsSql = needsRatingJoin
-      ? `
-          SELECT sf.parent_path, COUNT(*) as file_count
-          FROM scan_files sf
-          INNER JOIN media_ratings mr ON sf.filename = mr.file_path
-          WHERE ${whereClause}
+    const totalGroupsRow = await queryMySqlOne<{ total: number }>(
+      `
+        SELECT COUNT(*) AS total
+        FROM (
+          SELECT sf.parent_path
+          ${fromSql}
+          WHERE ${whereSql}
           GROUP BY sf.parent_path
-          HAVING file_count > 0
-        `
-      : `
-          SELECT parent_path, COUNT(*) as file_count
-          FROM scan_files
-          WHERE ${whereClause}
-          GROUP BY parent_path
-          HAVING file_count > 0
-        `
+        ) grouped_paths
+      `,
+      params,
+    )
 
-    const groups = db.prepare(groupsSql).all(...params) as Array<{ parent_path: string; file_count: number }>
-    if (groups.length === 0) {
+    const totalGroups = totalGroupsRow?.total || 0
+    if (totalGroups === 0) {
       return { files: [], parentPath: null, totalGroups: 0 }
     }
 
-    const randomGroup = groups[Math.floor(Math.random() * groups.length)]
-    const selectedParentPath = randomGroup.parent_path
+    const buildRandomGroupQuery = (seekKey: number, comparator: '>=' | '<') => ({
+      sql: `
+        SELECT
+          sf.parent_path,
+          MIN(sf.parent_random_key) AS parent_random_key
+        ${fromSql}
+        WHERE ${whereSql}
+          AND sf.parent_random_key ${comparator} ?
+        GROUP BY sf.parent_path
+        ORDER BY parent_random_key ASC, sf.parent_path ASC
+        LIMIT 1
+      `,
+      params: [...params, seekKey],
+    })
 
-    const { whereClause: fileWhereClause, params: filesParams } = buildWhereClause(selectedParentPath)
-    let filesSql = needsRatingJoin
-      ? `
-          SELECT
-            sf.*,
-            sfc.creator_id AS creator_id,
-            c.id AS creator_linked_id,
-            c.primary_name AS creator_primary_name,
-            c.other_names AS creator_other_names,
-            c.appearance_rating AS creator_appearance_rating,
-            c.body_rating AS creator_body_rating,
-            c.bio AS creator_bio,
-            c.avatar_path AS creator_avatar_path
-          FROM scan_files sf
-          INNER JOIN media_ratings mr ON sf.filename = mr.file_path
-          LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
-          LEFT JOIN creators c ON c.id = sfc.creator_id
-          WHERE ${fileWhereClause}
-        `
-      : `
-          SELECT
-            sf.*,
-            sfc.creator_id AS creator_id,
-            c.id AS creator_linked_id,
-            c.primary_name AS creator_primary_name,
-            c.other_names AS creator_other_names,
-            c.appearance_rating AS creator_appearance_rating,
-            c.body_rating AS creator_body_rating,
-            c.bio AS creator_bio,
-            c.avatar_path AS creator_avatar_path
-          FROM scan_files sf
-          LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
-          LEFT JOIN creators c ON c.id = sfc.creator_id
-          WHERE ${fileWhereClause}
-        `
+    const groupSeekKey = createRandomSeekKey()
+    const primaryGroupQuery = buildRandomGroupQuery(groupSeekKey, '>=')
+    let randomGroup = await queryMySqlOne<{ parent_path: string }>(primaryGroupQuery.sql, primaryGroupQuery.params)
 
-    filesSql += ' ORDER BY sf.basename'
-    const files = db.prepare(filesSql).all(...filesParams)
-    const sortedFiles = files.sort((a: any, b: any) => a.basename.localeCompare(b.basename, undefined, { numeric: true, sensitivity: 'base' }))
+    if (!randomGroup?.parent_path) {
+      const fallbackGroupQuery = buildRandomGroupQuery(groupSeekKey, '<')
+      randomGroup = await queryMySqlOne<{ parent_path: string }>(fallbackGroupQuery.sql, fallbackGroupQuery.params)
+    }
+
+    if (!randomGroup?.parent_path) {
+      return { files: [], parentPath: null, totalGroups: 0 }
+    }
+
+    const fileWhere = [...where, 'sf.parent_path = ?']
+    const fileParams = [...params, randomGroup.parent_path]
+
+    const fileRows = await queryMySqlRows<any[]>(
+      `
+        SELECT
+          sf.*,
+          sfc.creator_id AS creator_id,
+          c.id AS creator_linked_id,
+          c.primary_name AS creator_primary_name,
+          c.other_names AS creator_other_names,
+          c.appearance_rating AS creator_appearance_rating,
+          c.body_rating AS creator_body_rating,
+          c.bio AS creator_bio,
+          c.avatar_path AS creator_avatar_path
+        FROM scan_files sf
+        LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
+        LEFT JOIN creators c ON c.id = sfc.creator_id
+        WHERE ${fileWhere.join(' AND ')}
+        ORDER BY sf.basename ASC
+      `,
+      fileParams,
+    )
 
     return {
-      files: sortedFiles.map((row: any) => attachCreatorInfoToScanFileRow(row)),
-      parentPath: selectedParentPath,
-      totalGroups: groups.length,
+      files: sortFilesByBasename(fileRows).map((row) => attachCreatorInfoToScanFileRow(row)),
+      parentPath: randomGroup.parent_path,
+      totalGroups,
     }
   },
 
-  getRandomBatchMultiple: (cacheIds: number[], count: number, options?: {
+  getRandomBatchMultiple: async (cacheIds: number[], count: number, options?: {
     fileType?: 'image' | 'video'
     isViewed?: boolean
     excludeFilenames?: string[]
@@ -515,7 +659,8 @@ export const scanFiles = {
     evaluationEmptyFilter?: boolean
     categoryEmptyFilter?: boolean
   }) => {
-    ensureInitialized()
+    await ensureMySqlInitialized()
+    await ensureScanFilesRandomKeySchema()
     if (cacheIds.length === 0) return []
 
     const {
@@ -536,273 +681,161 @@ export const scanFiles = {
       categoryEmptyFilter,
     } = options || {}
 
-    const placeholders = cacheIds.map(() => '?').join(',')
-    const excludeSet = new Set(excludeFilenames)
-    const needsRatingJoin = ratings?.length || evaluations?.length || categories?.length
+    const needsRatingJoin = Boolean(
+      ratings?.length || evaluations?.length || categories?.length
       || (reasonFilter && reasonFilter !== 'all')
-      || ratingEmptyFilter !== undefined || evaluationEmptyFilter !== undefined || categoryEmptyFilter !== undefined
+      || ratingEmptyFilter !== undefined || evaluationEmptyFilter !== undefined || categoryEmptyFilter !== undefined,
+    )
 
-    const buildWhereClause = (includeParentPath?: string, excludeParentPath?: string) => {
-      let where = needsRatingJoin ? `sf.cache_id IN (${placeholders})` : `cache_id IN (${placeholders})`
-      const params: any[] = [...cacheIds]
-      const prefix = needsRatingJoin ? 'sf.' : ''
+    const excludeSet = new Set(excludeFilenames)
 
-      if (includeParentPath) {
-        where += ` AND ${prefix}parent_path = ?`
-        params.push(includeParentPath)
-      }
-      if (excludeParentPath) {
-        where += ` AND ${prefix}parent_path != ?`
-        params.push(excludeParentPath)
-      }
-      if (fileType) {
-        where += ` AND ${prefix}file_type = ?`
-        params.push(fileType)
-      }
-      if (isViewed !== undefined) {
-        where += ` AND ${prefix}is_viewed = ?`
-        params.push(isViewed ? 1 : 0)
-      }
-      if (minFileSize !== undefined && minFileSize > 0) {
-        where += ` AND ${prefix}file_size >= ?`
-        params.push(minFileSize)
-      }
-      if (maxFileSize !== undefined && maxFileSize > 0) {
-        where += ` AND ${prefix}file_size <= ?`
-        params.push(maxFileSize)
-      }
+    const loadFilesByIds = async (ids: number[]) => {
+      if (ids.length === 0) return []
 
-      if (needsRatingJoin) {
-        if (ratings && ratings.length > 0) {
-          const ratingPlaceholders = ratings.map(() => '?').join(',')
-          if (ratingEmptyFilter === true) {
-            where += ` AND (mr.rating IN (${ratingPlaceholders}) OR mr.rating IS NULL)`
-            params.push(...ratings)
-          } else if (ratingEmptyFilter === false) {
-            where += ` AND (mr.rating IN (${ratingPlaceholders}) OR (mr.rating IS NOT NULL AND mr.rating NOT IN (${ratingPlaceholders})))`
-            params.push(...ratings, ...ratings)
-          } else {
-            where += ` AND mr.rating IN (${ratingPlaceholders})`
-            params.push(...ratings)
-          }
-        } else if (ratingEmptyFilter === true) {
-          where += ` AND mr.rating IS NULL`
-        } else if (ratingEmptyFilter === false) {
-          where += ` AND mr.rating IS NOT NULL`
-        }
-
-        if (evaluations && evaluations.length > 0) {
-          const evalConditions = evaluations.map(() => `(mr.custom_evaluation LIKE ? OR mr.custom_evaluation = ?)`).join(' OR ')
-          if (evaluationEmptyFilter === true) {
-            where += ` AND ((${evalConditions}) OR mr.custom_evaluation IS NULL OR mr.custom_evaluation = '')`
-          } else if (evaluationEmptyFilter === false) {
-            where += ` AND ((${evalConditions}) OR (mr.custom_evaluation IS NOT NULL AND mr.custom_evaluation != ''))`
-          } else {
-            where += ` AND (${evalConditions})`
-          }
-          evaluations.forEach((evaluation) => {
-            params.push(`%"${evaluation}"%`)
-            params.push(evaluation)
-          })
-        } else if (evaluationEmptyFilter === true) {
-          where += ` AND (mr.custom_evaluation IS NULL OR mr.custom_evaluation = '')`
-        } else if (evaluationEmptyFilter === false) {
-          where += ` AND (mr.custom_evaluation IS NOT NULL AND mr.custom_evaluation != '')`
-        }
-
-        if (categories && categories.length > 0) {
-          const catConditions = categories.map(() => `(mr.category LIKE ? OR mr.category = ?)`).join(' OR ')
-          if (categoryEmptyFilter === true) {
-            where += ` AND ((${catConditions}) OR mr.category IS NULL OR mr.category = '')`
-          } else if (categoryEmptyFilter === false) {
-            where += ` AND ((${catConditions}) OR (mr.category IS NOT NULL AND mr.category != ''))`
-          } else {
-            where += ` AND (${catConditions})`
-          }
-          categories.forEach((category) => {
-            params.push(`%"${category}"%`)
-            params.push(category)
-          })
-        } else if (categoryEmptyFilter === true) {
-          where += ` AND (mr.category IS NULL OR mr.category = '')`
-        } else if (categoryEmptyFilter === false) {
-          where += ` AND (mr.category IS NOT NULL AND mr.category != '')`
-        }
-
-        if (reasonFilter === 'empty') {
-          where += ` AND (mr.recommendation_reason IS NULL OR mr.recommendation_reason = '')`
-        } else if (reasonFilter === 'nonempty') {
-          where += ` AND mr.recommendation_reason IS NOT NULL AND mr.recommendation_reason != ''`
-        } else if (reasonFilter === 'keyword' && reasonKeyword) {
-          where += ` AND mr.recommendation_reason LIKE ?`
-          params.push(`%${reasonKeyword}%`)
-        }
-      }
-
-      return { where, params }
-    }
-
-    const buildSelectSql = (whereClause: string, orderBy: string = 'RANDOM()', limit?: number) => {
-      let sql = needsRatingJoin
-        ? `
-            SELECT
-              sf.*,
-              sfc.creator_id AS creator_id,
-              c.id AS creator_linked_id,
-              c.primary_name AS creator_primary_name,
-              c.other_names AS creator_other_names,
-              c.appearance_rating AS creator_appearance_rating,
-              c.body_rating AS creator_body_rating,
-              c.bio AS creator_bio,
-              c.avatar_path AS creator_avatar_path
-            FROM scan_files sf
-            INNER JOIN media_ratings mr ON sf.filename = mr.file_path
-            LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
-            LEFT JOIN creators c ON c.id = sfc.creator_id
-            WHERE ${whereClause}
-            ORDER BY ${orderBy}
-          `
-        : `
-            SELECT
-              sf.*,
-              sfc.creator_id AS creator_id,
-              c.id AS creator_linked_id,
-              c.primary_name AS creator_primary_name,
-              c.other_names AS creator_other_names,
-              c.appearance_rating AS creator_appearance_rating,
-              c.body_rating AS creator_body_rating,
-              c.bio AS creator_bio,
-              c.avatar_path AS creator_avatar_path
-            FROM scan_files sf
-            LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
-            LEFT JOIN creators c ON c.id = sfc.creator_id
-            WHERE ${whereClause}
-            ORDER BY ${orderBy}
-          `
-      if (limit) sql += ` LIMIT ${limit}`
-      return sql
-    }
-
-    const buildCountSql = (whereClause: string) => needsRatingJoin
-      ? `
-          SELECT COUNT(*) as count
-          FROM scan_files sf
-          INNER JOIN media_ratings mr ON sf.filename = mr.file_path
-          WHERE ${whereClause}
+      const placeholders = ids.map(() => '?').join(',')
+      const rows = await queryMySqlRows<any[]>(
         `
-      : `SELECT COUNT(*) as count FROM scan_files sf WHERE ${whereClause}`
+          SELECT
+            sf.*,
+            sfc.creator_id AS creator_id,
+            c.id AS creator_linked_id,
+            c.primary_name AS creator_primary_name,
+            c.other_names AS creator_other_names,
+            c.appearance_rating AS creator_appearance_rating,
+            c.body_rating AS creator_body_rating,
+            c.bio AS creator_bio,
+            c.avatar_path AS creator_avatar_path
+          FROM scan_files sf
+          LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
+          LEFT JOIN creators c ON c.id = sfc.creator_id
+          WHERE sf.id IN (${placeholders})
+        `,
+        ids,
+      )
 
-    const getRandomFile = (whereClause: string, params: any[], totalCount: number, bucketCount: number): any => {
-      if (totalCount < 100000) {
-        const sql = buildSelectSql(whereClause, 'RANDOM()', 1)
-        const file = db.prepare(sql).get(...params) as any
-        if (file && !excludeSet.has(file.filename)) {
-          return attachCreatorInfoToScanFileRow(file)
+      const fileMap = new Map<number, any>()
+      rows.forEach((row) => {
+        fileMap.set(Number(row.id), attachCreatorInfoToScanFileRow(row))
+      })
+
+      return ids
+        .map((id) => fileMap.get(id))
+        .filter(Boolean)
+    }
+
+    const queryRandomFiles = async (requestedCount: number, includeParentPath?: string, excludeParentPath?: string) => {
+      if (requestedCount <= 0) return []
+
+      const fromSql = needsRatingJoin
+        ? 'FROM scan_files sf LEFT JOIN media_ratings mr ON sf.filename = mr.file_path'
+        : 'FROM scan_files sf'
+
+      const buildCandidateQuery = (seekKey: number, comparator: '>=' | '<', limit: number) => {
+        const placeholders = cacheIds.map(() => '?').join(',')
+        const where: string[] = [`sf.cache_id IN (${placeholders})`]
+        const params: any[] = [...cacheIds]
+
+        if (includeParentPath) {
+          where.push('sf.parent_path = ?')
+          params.push(includeParentPath)
         }
-        return null
+        if (excludeParentPath) {
+          where.push('sf.parent_path <> ?')
+          params.push(excludeParentPath)
+        }
+        if (fileType) {
+          where.push('sf.file_type = ?')
+          params.push(fileType)
+        }
+        if (isViewed !== undefined) {
+          where.push('sf.is_viewed = ?')
+          params.push(isViewed ? 1 : 0)
+        }
+        if (minFileSize !== undefined && minFileSize > 0) {
+          where.push('sf.file_size >= ?')
+          params.push(minFileSize)
+        }
+        if (maxFileSize !== undefined && maxFileSize > 0) {
+          where.push('sf.file_size <= ?')
+          params.push(maxFileSize)
+        }
+        if (excludeSet.size > 0) {
+          const excludePlaceholders = Array.from(excludeSet).map(() => '?').join(',')
+          where.push(`sf.filename NOT IN (${excludePlaceholders})`)
+          params.push(...Array.from(excludeSet))
+        }
+        if (needsRatingJoin) {
+          buildAdvancedFiltersClause({
+            ratings,
+            evaluations,
+            categories,
+            reasonFilter,
+            reasonKeyword,
+            ratingEmptyFilter,
+            evaluationEmptyFilter,
+            categoryEmptyFilter,
+          }, where, params)
+        }
+
+        where.push(`sf.random_key ${comparator} ?`)
+        params.push(seekKey)
+
+        return {
+          sql: `
+            SELECT sf.id, sf.filename
+            ${fromSql}
+            WHERE ${where.join(' AND ')}
+            ORDER BY sf.random_key ASC, sf.id ASC
+            LIMIT ${limit}
+          `,
+          params,
+        }
       }
 
-      for (let i = 0; i < 5; i++) {
-        const randomBucket = Math.floor(Math.random() * bucketCount)
-        const bucketWhere = `(sf.id % ${bucketCount}) = ? AND ${whereClause}`
-        const sql = buildSelectSql(bucketWhere, 'RANDOM()', 1)
-        const file = db.prepare(sql).get(randomBucket, ...params) as any
-        if (file && !excludeSet.has(file.filename)) {
-          return attachCreatorInfoToScanFileRow(file)
-        }
+      const seekKey = createRandomSeekKey()
+      const selectedIds: number[] = []
+      const selectedIdSet = new Set<number>()
+
+      const appendCandidateRows = (rows: Array<{ id: number; filename: string }>) => {
+        rows.forEach((row) => {
+          const numericId = Number(row.id)
+          if (selectedIdSet.has(numericId)) {
+            return
+          }
+
+          selectedIdSet.add(numericId)
+          selectedIds.push(numericId)
+          excludeSet.add(row.filename)
+        })
       }
 
-      const bucketSql = needsRatingJoin
-        ? `SELECT DISTINCT (sf.id % ${bucketCount}) as bucket FROM scan_files sf INNER JOIN media_ratings mr ON sf.filename = mr.file_path WHERE ${whereClause}`
-        : `SELECT DISTINCT (sf.id % ${bucketCount}) as bucket FROM scan_files sf WHERE ${whereClause}`
-      const buckets = db.prepare(bucketSql).all(...params) as Array<{ bucket: number }>
-      if (buckets.length === 0) return null
+      const firstQuery = buildCandidateQuery(seekKey, '>=', requestedCount)
+      appendCandidateRows(await queryMySqlRows<Array<{ id: number; filename: string }>>(firstQuery.sql, firstQuery.params))
 
-      const shuffledBuckets = [...buckets].sort(() => Math.random() - 0.5)
-      const tryCount = Math.min(10, shuffledBuckets.length)
-      for (let i = 0; i < tryCount; i++) {
-        const randomBucket = shuffledBuckets[i].bucket
-        const bucketWhere = `(sf.id % ${bucketCount}) = ? AND ${whereClause}`
-        const sql = buildSelectSql(bucketWhere, 'RANDOM()', 1)
-        const file = db.prepare(sql).get(randomBucket, ...params) as any
-        if (file && !excludeSet.has(file.filename)) {
-          return attachCreatorInfoToScanFileRow(file)
-        }
+      if (selectedIds.length < requestedCount) {
+        const secondQuery = buildCandidateQuery(seekKey, '<', requestedCount - selectedIds.length)
+        appendCandidateRows(await queryMySqlRows<Array<{ id: number; filename: string }>>(secondQuery.sql, secondQuery.params))
       }
 
-      return null
+      return loadFilesByIds(selectedIds.slice(0, requestedCount))
     }
 
     const results: any[] = []
     if (currentParentPath && randomness < 1) {
       const samePathCount = Math.round(count * (1 - randomness))
       if (samePathCount > 0) {
-        const { where, params } = buildWhereClause(currentParentPath)
-        const countSql = buildCountSql(where)
-        const { count: totalCount } = db.prepare(countSql).get(...params) as { count: number }
-        if (totalCount > 0) {
-          let bucketCount = 1024
-          if (totalCount >= 1000000) bucketCount = 4096
-          if (totalCount >= 10000000) bucketCount = 16384
-          for (let i = 0; i < samePathCount && results.length < count; i++) {
-            const file = getRandomFile(where, params, totalCount, bucketCount)
-            if (file) {
-              results.push(file)
-              excludeSet.add(file.filename)
-            }
-          }
-        }
+        results.push(...await queryRandomFiles(samePathCount, currentParentPath))
       }
 
       const remainingCount = count - results.length
       if (remainingCount > 0) {
-        const { where, params } = buildWhereClause(undefined, currentParentPath)
-        const countSql = buildCountSql(where)
-        const { count: totalCount } = db.prepare(countSql).get(...params) as { count: number }
-        if (totalCount > 0) {
-          let bucketCount = 1024
-          if (totalCount >= 1000000) bucketCount = 4096
-          if (totalCount >= 10000000) bucketCount = 16384
-          for (let i = 0; i < remainingCount; i++) {
-            const file = getRandomFile(where, params, totalCount, bucketCount)
-            if (file) {
-              results.push(file)
-              excludeSet.add(file.filename)
-            }
-          }
-        }
+        results.push(...await queryRandomFiles(remainingCount, undefined, currentParentPath))
       }
 
-      return results
+      return results.slice(0, count)
     }
 
-    const { where, params } = buildWhereClause()
-    const countSql = buildCountSql(where)
-    const { count: totalCount } = db.prepare(countSql).get(...params) as { count: number }
-    if (totalCount === 0) return []
-
-    let bucketCount = 1024
-    if (totalCount >= 1000000) bucketCount = 4096
-    if (totalCount >= 10000000) bucketCount = 16384
-
-    if (totalCount <= count * 2) {
-      const fetchCount = Math.min(totalCount, count + excludeSet.size)
-      const sql = buildSelectSql(where, 'RANDOM()', fetchCount)
-      const allFiles = (db.prepare(sql).all(...params) as any[]).map((row) => attachCreatorInfoToScanFileRow(row))
-      return allFiles.filter((file) => !excludeSet.has(file.filename)).slice(0, count)
-    }
-
-    const maxAttempts = count * 3
-    let attempts = 0
-    while (results.length < count && attempts < maxAttempts) {
-      attempts++
-      const file = getRandomFile(where, params, totalCount, bucketCount)
-      if (file) {
-        results.push(file)
-        excludeSet.add(file.filename)
-      }
-    }
-
-    return results
+    results.push(...await queryRandomFiles(count))
+    return results.slice(0, count)
   },
 }

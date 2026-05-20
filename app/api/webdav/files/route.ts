@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
     const uncachedPaths: string[] = []
     
     for (const path of mediaPaths) {
-      const cached = scanCache.get(url, username, path) as any
+      const cached = await scanCache.get(url, username, path) as any
       if (cached) {
         console.log(`从缓存加载路径: ${path}`)
         const filesData = cached.files_data ? JSON.parse(cached.files_data) : []

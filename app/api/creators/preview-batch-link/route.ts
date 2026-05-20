@@ -14,7 +14,7 @@ export async function POST(request: NextRequest) {
       )
     }
     
-    const preview = creators.previewBatchLink(namePattern)
+    const preview = await creators.previewBatchLink(namePattern)
     
     return NextResponse.json({ 
       success: true, 

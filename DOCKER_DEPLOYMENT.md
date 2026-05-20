@@ -18,7 +18,7 @@ git clone https://github.com/maclanelf/webdavImagePreview.git
 cd webdavImagePreview
 ```
 
-### 2. 配置环境变量（可选）
+### 2. 配置挂载目录与配置文件
 
 复制环境变量模板文件：
 
@@ -26,9 +26,12 @@ cd webdavImagePreview
 cp docker.env.example .env
 ```
 
-编辑 `.env` 文件，填入您的 WebDAV 配置：
+编辑 `.env` 文件，至少指定 MySQL 配置文件路径：
 
 ```env
+# MySQL 配置文件路径（容器内）
+MYSQL_CONFIG_FILE=/app/data/mysql-config.json
+
 # WebDAV 配置
 WEBDAV_URL=https://your-webdav-server.com
 WEBDAV_USERNAME=your-username
@@ -42,7 +45,7 @@ HOSTNAME=0.0.0.0
 TZ=Asia/Shanghai
 ```
 
-> **注意**：如果不设置环境变量，您可以在应用启动后通过 Web 界面进行配置。
+> **注意**：现在推荐通过挂载文件保存 MySQL 配置。首次启动后可直接在配置页填写 MySQL 信息，系统会自动写入宿主机挂载的 [`/app/data/mysql-config.json`](docker-compose.yml:27)，后续重启仍会生效。
 
 ### 3. 启动应用
 
@@ -68,6 +71,7 @@ docker run -d \
   --name webdav-image-preview \
   -p 3000:3000 \
   -e TZ=Asia/Shanghai \
+  -e MYSQL_CONFIG_FILE=/app/data/mysql-config.json \
   -v webdav_data:/app/data \
   -v webdav_logs:/app/logs \
   --restart unless-stopped \
@@ -102,6 +106,7 @@ TZ=America/New_York
 
 | 变量名 | 说明 | 默认值 | 必需 |
 |--------|------|--------|------|
+| `MYSQL_CONFIG_FILE` | MySQL 配置文件路径 | `/app/data/mysql-config.json` | 否 |
 | `WEBDAV_URL` | WebDAV 服务器地址 | - | 否 |
 | `WEBDAV_USERNAME` | WebDAV 用户名 | - | 否 |
 | `WEBDAV_PASSWORD` | WebDAV 密码 | - | 否 |
@@ -113,16 +118,22 @@ TZ=America/New_York
 
 ### 数据持久化
 
-应用使用 Docker 卷来持久化存储：
+应用容器中的卷用于持久化本地缓存、日志以及 MySQL 配置文件：
 
 - `webdav_data` 卷：
-  - SQLite 数据库文件
-  - 媒体评分数据
-  - 应用配置缓存
+  - `mysql-config.json` 配置文件
+  - 应用运行数据缓存
+  - 本地临时运行文件
 
 - `webdav_logs` 卷：
   - 扫描日志文件
   - 应用运行日志
+
+补充说明：
+
+- 如果 MySQL 部署在其他服务器，MySQL 的真实数据文件保存在那台服务器上，与 `/app/data` 无关。
+- 即使把容器内 `/app/data` 映射到宿主机，也不能“映射出”外部 MySQL 服务器上的数据库文件。
+- 这个挂载目录保存的是当前应用自己的 MySQL 连接配置文件，而不是 MySQL 服务器的数据文件。
 
 ### 端口映射
 
@@ -133,7 +144,21 @@ ports:
   - "8080:3000"  # 将容器端口 3000 映射到主机端口 8080
 ```
 
-## 🛠️ 管理命令
+## 🐬 关于 MySQL Docker 配置是否还有必要
+
+如果您的 MySQL 已经部署在其他服务器：
+
+1. **不需要** 在当前项目的 `docker-compose.yml` 中再额外启动一个 MySQL 容器。
+2. **建议** 保留 `MYSQL_CONFIG_FILE`，让应用从挂载文件读取数据库连接配置。
+3. `/app/data` 负责当前应用自己的缓存、日志和 `mysql-config.json`，不负责外部 MySQL 的物理数据落盘。
+
+因此，当前最合理的做法是：
+
+- 继续保留应用容器的 `MYSQL_CONFIG_FILE` 挂载配置；
+- 不再添加或维护本地 MySQL 服务容器；
+- 不把 `/app/data` 当作数据库数据目录使用。
+
+## ️ 管理命令
 
 ### 查看日志
 

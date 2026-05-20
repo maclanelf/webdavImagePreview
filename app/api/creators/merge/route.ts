@@ -37,8 +37,8 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const result = creators.merge(targetId, sourceIds)
-    const creator = creators.get(targetId)
+    const result = await creators.merge(targetId, sourceIds)
+    const creator = await creators.get(targetId)
 
     return NextResponse.json({
       success: true,

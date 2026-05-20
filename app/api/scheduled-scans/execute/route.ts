@@ -1,19 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+
 import { scheduledScans } from '@/lib/database'
 import { scanQueueManager } from '@/lib/scanQueueManager'
-
-interface ScheduledTask {
-  id: number
-  webdav_url: string
-  webdav_username: string
-  webdav_password: string
-  media_paths: string
-  scan_settings: string
-  cron_expression: string
-  is_active: number
-  last_run?: string
-  next_run?: string
-}
 
 // 手动执行定时扫描任务（只负责将任务加入队列）
 export async function POST(request: NextRequest) {
@@ -28,9 +16,8 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // 获取任务信息
-    const tasks = scheduledScans.getAll()
-    const task = (tasks as ScheduledTask[]).find(t => t.id === taskId)
+    const tasks = await scheduledScans.getAll()
+    const task = (tasks as any[]).find((item) => item.id === taskId)
     
     if (!task) {
       return NextResponse.json(
@@ -42,11 +29,10 @@ export async function POST(request: NextRequest) {
     const mediaPaths = task.media_paths ? JSON.parse(task.media_paths) : []
     const scanSettings = task.scan_settings ? JSON.parse(task.scan_settings) : {}
     
-    // 将所有路径加入扫描队列
     const addedTasks: { path: string; taskId: string; position: number; isRunning: boolean }[] = []
     
     for (const path of mediaPaths) {
-      const result = scanQueueManager.addTask({
+      const result = await scanQueueManager.addTask({
         webdavUrl: task.webdav_url,
         webdavUsername: task.webdav_username,
         webdavPassword: task.webdav_password,
@@ -65,10 +51,8 @@ export async function POST(request: NextRequest) {
       console.log(`[定时扫描] 路径 ${path} 已加入队列，位置: ${result.position}`)
     }
 
-    // 更新任务最后运行时间
-    scheduledScans.updateLastRun(taskId)
+    await scheduledScans.updateLastRun(taskId)
 
-    // 获取队列状态
     const queueStatus = scanQueueManager.getQueueStatus()
 
     return NextResponse.json({

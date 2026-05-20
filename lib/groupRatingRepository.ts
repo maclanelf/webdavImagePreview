@@ -1,5 +1,4 @@
-import db from './databaseCore'
-import { ensureInitialized } from './databaseInitialization'
+import { ensureMySqlInitialized, executeMySqlStatement, queryMySqlOne, queryMySqlRows } from './database'
 
 export interface GroupRatingRecordPayload {
   groupPath: string
@@ -21,104 +20,108 @@ function toStoredJsonValue(value?: string | string[]) {
   return Array.isArray(value) ? JSON.stringify(value) : value
 }
 
-function upsertScanFileCreator(filePath: string, parentPath: string, creatorId: number | null) {
-  const existing = db.prepare('SELECT file_path FROM scan_file_creators WHERE file_path = ?').get(filePath) as { file_path: string } | undefined
-
-  if (existing) {
-    db.prepare(`
-      UPDATE scan_file_creators
-      SET parent_path = ?, creator_id = ?, updated_at = datetime('now', 'localtime')
-      WHERE file_path = ?
-    `).run(parentPath, creatorId, filePath)
-    return
+function normalizeResult(result: any) {
+  return {
+    ...result,
+    insertId: result?.insertId ?? 0,
+    changes: result?.affectedRows ?? 0,
   }
-
-  db.prepare(`
-    INSERT INTO scan_file_creators (file_path, parent_path, creator_id)
-    VALUES (?, ?, ?)
-  `).run(filePath, parentPath, creatorId)
 }
 
-function setCreatorForGroupFiles(groupPath: string, creatorId: number | null) {
-  const files = db.prepare(`
-    SELECT filename, parent_path
-    FROM scan_files
-    WHERE parent_path = ?
-  `).all(groupPath) as Array<{ filename: string; parent_path: string }>
+async function upsertScanFileCreator(filePath: string, parentPath: string, creatorId: number | null) {
+  await executeMySqlStatement(
+    `
+      INSERT INTO scan_file_creators (file_path, parent_path, creator_id)
+      VALUES (?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        parent_path = VALUES(parent_path),
+        creator_id = VALUES(creator_id)
+    `,
+    [filePath, parentPath, creatorId],
+  )
+}
 
-  const transaction = db.transaction((rows: Array<{ filename: string; parent_path: string }>) => {
-    rows.forEach((row) => {
-      upsertScanFileCreator(row.filename, row.parent_path, creatorId)
-    })
-  })
+async function setCreatorForGroupFiles(groupPath: string, creatorId: number | null) {
+  const files = await queryMySqlRows<Array<{ filename: string; parent_path: string }>>(
+    `
+      SELECT filename, parent_path
+      FROM scan_files
+      WHERE parent_path = ?
+    `,
+    [groupPath],
+  )
 
-  transaction(files)
+  for (const row of files) {
+    await upsertScanFileCreator(row.filename, row.parent_path, creatorId)
+  }
 }
 
 export const groupRatings = {
-  get: (groupPath: string) => {
-    ensureInitialized()
-    const stmt = db.prepare('SELECT * FROM group_ratings WHERE group_path = ?')
-    return stmt.get(groupPath)
+  get: async (groupPath: string) => {
+    await ensureMySqlInitialized()
+    return queryMySqlOne('SELECT * FROM group_ratings WHERE group_path = ?', [groupPath])
   },
 
-  getAll: () => {
-    ensureInitialized()
-    const stmt = db.prepare('SELECT * FROM group_ratings ORDER BY updated_at DESC')
-    return stmt.all()
+  getAll: async () => {
+    await ensureMySqlInitialized()
+    return queryMySqlRows('SELECT * FROM group_ratings ORDER BY updated_at DESC')
   },
 
-  save: (data: GroupRatingRecordPayload) => {
-    ensureInitialized()
+  save: async (data: GroupRatingRecordPayload) => {
+    await ensureMySqlInitialized()
 
-    const existing = groupRatings.get(data.groupPath) as any
+    const existing = await groupRatings.get(data.groupPath) as any
     const customEvaluationStr = toStoredJsonValue(data.customEvaluation)
     const categoryStr = toStoredJsonValue(data.category)
 
     let result: any
     if (existing) {
-      const stmt = db.prepare(`
-        UPDATE group_ratings
-        SET rating = ?, recommendation_reason = ?, custom_evaluation = ?,
-            category = ?, is_viewed = ?, updated_at = datetime('now', 'localtime')
-        WHERE group_path = ?
-      `)
-      result = stmt.run(
-        data.rating || null,
-        data.recommendationReason || null,
-        customEvaluationStr,
-        categoryStr,
-        data.isViewed ? 1 : 0,
-        data.groupPath,
+      result = await executeMySqlStatement(
+        `
+          UPDATE group_ratings
+          SET rating = ?, recommendation_reason = ?, custom_evaluation = ?,
+              category = ?, is_viewed = ?
+          WHERE group_path = ?
+        `,
+        [
+          data.rating || null,
+          data.recommendationReason || null,
+          customEvaluationStr,
+          categoryStr,
+          data.isViewed ? 1 : 0,
+          data.groupPath,
+        ],
       )
     } else {
-      const stmt = db.prepare(`
-        INSERT INTO group_ratings
-        (group_path, group_name, file_count, rating, recommendation_reason, custom_evaluation, category, is_viewed)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `)
-      result = stmt.run(
-        data.groupPath,
-        data.groupName,
-        data.fileCount,
-        data.rating || null,
-        data.recommendationReason || null,
-        customEvaluationStr,
-        categoryStr,
-        data.isViewed ? 1 : 0,
+      result = await executeMySqlStatement(
+        `
+          INSERT INTO group_ratings
+          (group_path, group_name, file_count, rating, recommendation_reason, custom_evaluation, category, is_viewed)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          data.groupPath,
+          data.groupName,
+          data.fileCount,
+          data.rating || null,
+          data.recommendationReason || null,
+          customEvaluationStr,
+          categoryStr,
+          data.isViewed ? 1 : 0,
+        ],
       )
     }
 
     if (data.creatorId !== undefined) {
-      setCreatorForGroupFiles(data.groupPath, data.creatorId ?? null)
+      await setCreatorForGroupFiles(data.groupPath, data.creatorId ?? null)
     }
 
-    return result
+    return normalizeResult(result)
   },
 
-  delete: (groupPath: string) => {
-    ensureInitialized()
-    const stmt = db.prepare('DELETE FROM group_ratings WHERE group_path = ?')
-    return stmt.run(groupPath)
+  delete: async (groupPath: string) => {
+    await ensureMySqlInitialized()
+    const result = await executeMySqlStatement('DELETE FROM group_ratings WHERE group_path = ?', [groupPath])
+    return normalizeResult(result)
   },
 }

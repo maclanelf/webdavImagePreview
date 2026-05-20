@@ -1,12 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { ensureInitialized } from '@/lib/databaseInitialization'
 import { customEvaluations } from '@/lib/ratingMetadataRepository'
 
 export async function GET() {
   try {
-    // 确保数据库已初始化
-    ensureInitialized()
-    const evaluations = customEvaluations.getAll()
+    const evaluations = await customEvaluations.getAll()
     return NextResponse.json({ evaluations })
   } catch (error: any) {
     console.error('获取评价标签失败:', error)
@@ -19,8 +16,6 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    // 确保数据库已初始化
-    ensureInitialized()
     const body = await request.json()
     const { label } = body
 
@@ -31,11 +26,11 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const result = customEvaluations.add(label.trim())
+    const result = await customEvaluations.add(label.trim())
     return NextResponse.json({ 
       success: true, 
-      id: result.lastInsertRowid,
-      changes: result.changes 
+      id: result.insertId,
+      changes: result.affectedRows 
     })
   } catch (error: any) {
     console.error('添加评价标签失败:', error)
@@ -48,8 +43,6 @@ export async function POST(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
-    // 确保数据库已初始化
-    ensureInitialized()
     const { searchParams } = new URL(request.url)
     const label = searchParams.get('label')
 
@@ -60,10 +53,10 @@ export async function DELETE(request: NextRequest) {
       )
     }
 
-    const result = customEvaluations.delete(label)
+    const result = await customEvaluations.delete(label)
     return NextResponse.json({ 
       success: true, 
-      changes: result.changes 
+      changes: result.affectedRows 
     })
   } catch (error: any) {
     console.error('删除评价标签失败:', error)

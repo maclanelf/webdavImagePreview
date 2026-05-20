@@ -11,7 +11,8 @@ echo "Waiting for Next.js to start..."
 sleep 5
 
 # 检查 Next.js 是否启动成功
-until wget --spider -q http://localhost:3000/api/test-db 2>/dev/null; do
+# 这里仅探测应用进程就绪，不把 MySQL 初始化耦合到容器启动链路里，避免数据库短暂不可用时卡死启动
+until wget --spider -q http://localhost:3000/api/scheduler/status 2>/dev/null; do
     echo "Waiting for Next.js to be ready..."
     sleep 2
 done

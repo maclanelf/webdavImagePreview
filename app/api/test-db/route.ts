@@ -1,14 +1,15 @@
 import { NextResponse } from 'next/server'
-import { ensureInitialized } from '@/lib/database'
+
+import { ensureMySqlInitialized, testMySqlConnection } from '@/lib/database'
 
 export async function GET() {
   try {
-    // 确保数据库已初始化
-    ensureInitialized()
-    
+    await ensureMySqlInitialized()
+    await testMySqlConnection()
+
     return NextResponse.json({ 
       success: true, 
-      message: '数据库连接正常',
+      message: 'MySQL 连接正常',
       timestamp: new Date().toISOString()
     })
   } catch (error: any) {

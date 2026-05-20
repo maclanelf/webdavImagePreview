@@ -20,14 +20,14 @@ export async function POST(request: NextRequest) {
       }, { status: 400 })
     }
     
-    const fileCreator = scanFileCreators.get(filePath) as any
+    const fileCreator = await scanFileCreators.get(filePath) as any
     if (fileCreator) {
       if (fileCreator.creator_id === UNKNOWN_CREATOR_ID) {
         return NextResponse.json({ success: true, identified: false, creator: null })
       }
 
       if (fileCreator.creator_id) {
-        const creator = creators.get(fileCreator.creator_id)
+        const creator = await creators.get(fileCreator.creator_id)
         if (creator) {
           return NextResponse.json({
             success: true,
@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const fallbackCreator = creators.findCreatorByPath(filePath)
+    const fallbackCreator = await creators.findCreatorByPath(filePath)
     if (fallbackCreator) {
       return NextResponse.json({
         success: true,

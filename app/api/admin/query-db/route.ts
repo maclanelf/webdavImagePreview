@@ -1,79 +1,74 @@
 import { NextRequest, NextResponse } from 'next/server'
-import Database from 'better-sqlite3'
-import path from 'path'
 
-// 数据库路径
-const dbPath = path.join(process.cwd(), 'data', 'media_ratings.db')
+import { executeMySqlStatement, ensureMySqlInitialized, getMySqlConnection, queryMySqlRows } from '@/lib/database'
+
+function getSqlType(sql: string) {
+  return sql.trim().split(/\s+/)[0]?.toUpperCase() || ''
+}
+
+function isReadQuery(sqlType: string) {
+  return ['SELECT', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN'].includes(sqlType)
+}
+
+function isWriteQuery(sqlType: string) {
+  return ['INSERT', 'UPDATE', 'DELETE', 'REPLACE', 'CREATE', 'ALTER', 'DROP', 'TRUNCATE'].includes(sqlType)
+}
 
 // POST: 执行 SQL 查询（管理员功能）
 export async function POST(request: NextRequest) {
   try {
+    await ensureMySqlInitialized()
+
     const body = await request.json()
     const { sql, params = [] } = body
-    
+
     if (!sql) {
       return NextResponse.json(
         { error: '请提供 SQL 语句' },
         { status: 400 }
       )
     }
-    
-    // 连接数据库
-    const db = new Database(dbPath)
-    
-    try {
-      // 🔧 执行 checkpoint，确保读取最新数据
-      const checkpointResult = db.pragma('wal_checkpoint(FULL)')
-      console.log('Checkpoint 结果:', checkpointResult)
-      
-      // 执行查询
-      const startTime = Date.now()
-      let result
-      let resultType = 'unknown'
-      
-      const sqlUpper = sql.trim().toUpperCase()
-      
-      if (sqlUpper.startsWith('SELECT')) {
-        // SELECT 查询
-        result = db.prepare(sql).all(...params)
-        resultType = 'select'
-      } else if (sqlUpper.startsWith('INSERT') || sqlUpper.startsWith('UPDATE') || sqlUpper.startsWith('DELETE')) {
-        // 写操作
-        result = db.prepare(sql).run(...params)
-        resultType = 'write'
-      } else if (sqlUpper.startsWith('PRAGMA')) {
-        // PRAGMA 命令
-        result = db.pragma(sql.replace(/^PRAGMA\s+/i, ''))
-        resultType = 'pragma'
-      } else {
-        return NextResponse.json(
-          { error: '不支持的 SQL 类型' },
-          { status: 400 }
-        )
-      }
-      
-      const duration = Date.now() - startTime
-      
+
+    const startTime = Date.now()
+    const sqlType = getSqlType(sql)
+
+    if (isReadQuery(sqlType)) {
+      const result = await queryMySqlRows(sql, params)
       return NextResponse.json({
         success: true,
-        resultType,
-        duration,
-        rowCount: Array.isArray(result) ? result.length : (result as any).changes || 0,
+        resultType: 'read',
+        duration: Date.now() - startTime,
+        rowCount: Array.isArray(result) ? result.length : 0,
         data: result,
-        checkpoint: checkpointResult
       })
-      
-    } finally {
-      db.close()
     }
-    
+
+    if (isWriteQuery(sqlType)) {
+      const result = await executeMySqlStatement(sql, params)
+      return NextResponse.json({
+        success: true,
+        resultType: 'write',
+        duration: Date.now() - startTime,
+        rowCount: result.affectedRows || 0,
+        data: {
+          affectedRows: result.affectedRows,
+          insertId: result.insertId,
+          warningStatus: result.warningStatus,
+          changedRows: (result as any).changedRows ?? undefined,
+        },
+      })
+    }
+
+    return NextResponse.json(
+      { error: '不支持的 SQL 类型' },
+      { status: 400 }
+    )
   } catch (error: any) {
     console.error('查询失败:', error)
     return NextResponse.json(
-      { 
+      {
         success: false,
         error: error.message,
-        stack: error.stack
       },
       { status: 500 }
     )
@@ -81,49 +76,50 @@ export async function POST(request: NextRequest) {
 }
 
 // GET: 获取数据库状态信息
-export async function GET(request: NextRequest) {
+export async function GET(_request: NextRequest) {
+  let connection: Awaited<ReturnType<typeof getMySqlConnection>> | null = null
+
   try {
-    const db = new Database(dbPath)
-    
-    try {
-      // 获取数据库信息
-      const journalMode = db.pragma('journal_mode', { simple: true })
-      const walCheckpoint = db.pragma('wal_checkpoint')
-      const pageCount = db.pragma('page_count', { simple: true })
-      const pageSize = db.pragma('page_size', { simple: true })
-      const dbSize = (pageCount as number) * (pageSize as number)
-      
-      // 获取表信息
-      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()
-      
-      // 获取各表的记录数
-      const tableCounts: Record<string, number> = {}
-      for (const table of tables as any[]) {
-        const result = db.prepare(`SELECT COUNT(*) as count FROM ${table.name}`).get() as { count: number }
-        tableCounts[table.name] = result.count
-      }
-      
-      return NextResponse.json({
-        success: true,
-        dbPath,
-        journalMode,
-        walCheckpoint,
-        dbSize: `${(dbSize / 1024 / 1024).toFixed(2)} MB`,
-        tables: tableCounts
-      })
-      
-    } finally {
-      db.close()
+    await ensureMySqlInitialized()
+    connection = await getMySqlConnection()
+
+    const [dbInfoRows] = await connection.query<any[]>('SELECT DATABASE() AS dbName, VERSION() AS version')
+    const dbInfo = dbInfoRows[0] || { dbName: null, version: null }
+    const databaseName = dbInfo.dbName || process.env.MYSQL_DATABASE || null
+
+    const [tableRows] = await connection.query<any[]>(
+      `
+        SELECT TABLE_NAME AS tableName
+        FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA = ?
+        ORDER BY TABLE_NAME ASC
+      `,
+      [databaseName]
+    )
+
+    const tableCounts: Record<string, number> = {}
+    for (const table of tableRows) {
+      const tableName = String(table.tableName)
+      const [countRows] = await connection.query<any[]>(`SELECT COUNT(*) AS count FROM ${connection.escapeId(tableName)}`)
+      tableCounts[tableName] = Number(countRows[0]?.count || 0)
     }
-    
+
+    return NextResponse.json({
+      success: true,
+      database: databaseName,
+      version: dbInfo.version,
+      tables: tableCounts,
+    })
   } catch (error: any) {
     console.error('获取数据库信息失败:', error)
     return NextResponse.json(
-      { 
+      {
         success: false,
-        error: error.message
+        error: error.message,
       },
       { status: 500 }
     )
+  } finally {
+    connection?.release()
   }
 }

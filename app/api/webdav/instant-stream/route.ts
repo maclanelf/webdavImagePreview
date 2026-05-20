@@ -108,7 +108,7 @@ export async function GET(request: NextRequest) {
     
     // 从数据库获取配置，检查是否启用直链播放
     try {
-      const config = webdavConfigs.get(url, username)
+      const config = await webdavConfigs.get(url, username)
       
       // 如果启用了直链播放且配置了直链源，并且没有强制使用 WebDAV
       if (config?.enableDirectLink && config?.directLinkUrl && !forceWebDAV) {

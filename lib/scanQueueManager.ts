@@ -80,7 +80,7 @@ class ScanQueueManager {
   // 从数据库恢复未完成的任务
   private async recoverFromDatabase() {
     try {
-      const activeTasks = recursiveScanTasks.getActive() as any[]
+      const activeTasks = await recursiveScanTasks.getActive() as any[]
       
       // 首先检查是否有任何任务处于风控状态
       // 即使没有活跃任务，也要恢复风控状态
@@ -94,7 +94,7 @@ class ScanQueueManager {
           // 将 running 状态的任务重置为 pending（因为服务重启了，之前的执行已中断）
           if (task.status === 'running') {
             console.log(`⚠️ [扫描队列] 任务 ${task.root_path} 状态为 running，重置为 pending`)
-            recursiveScanTasks.updateStatus(task.task_id, 'pending', {
+            await recursiveScanTasks.updateStatus(task.task_id, 'pending', {
               errorMessage: '服务重启，任务重新排队'
             })
           }
@@ -165,14 +165,14 @@ class ScanQueueManager {
   }
 
   // 添加任务到队列
-  addTask(params: {
+  async addTask(params: {
     webdavUrl: string
     webdavUsername: string
     webdavPassword: string
     path: string
     concurrency?: number
     forceRescan?: boolean
-  }): { taskId: string; position: number; isRunning: boolean; delayUntil?: Date } {
+  }): Promise<{ taskId: string; position: number; isRunning: boolean; delayUntil?: Date }> {
     // 检查是否已有相同路径的任务在队列中或正在执行
     const existingTask = this.findExistingTask(
       params.webdavUrl,
@@ -212,7 +212,7 @@ class ScanQueueManager {
 
     // 保存到数据库
     try {
-      recursiveScanTasks.create({
+      await recursiveScanTasks.create({
         taskId,
         webdavUrl: params.webdavUrl,
         webdavUsername: params.webdavUsername,
@@ -410,7 +410,7 @@ class ScanQueueManager {
     console.log(`🚨 [扫描队列] 触发风控！任务 ${task.path} 将在 ${Math.ceil(backoffTime / 60000)} 分钟后重试（第 ${this.rateLimitRetryIndex} 次退避）`)
     
     // 更新当前任务状态到数据库
-    recursiveScanTasks.updateStatus(task.taskId, 'rate_limited', {
+    void recursiveScanTasks.updateStatus(task.taskId, 'rate_limited', {
       rateLimitedUntil: this.rateLimitedUntil.toISOString(),
       retryCount: task.retryCount,
       errorMessage: task.error
@@ -418,7 +418,7 @@ class ScanQueueManager {
     
     // 更新队列中所有任务的风控状态
     for (const queueTask of this.queue) {
-      recursiveScanTasks.updateStatus(queueTask.taskId, 'rate_limited', {
+      void recursiveScanTasks.updateStatus(queueTask.taskId, 'rate_limited', {
         rateLimitedUntil: this.rateLimitedUntil.toISOString()
       })
     }
@@ -440,7 +440,7 @@ class ScanQueueManager {
         const delaySeconds = Math.ceil((delay % 60000) / 1000)
         
         // 更新数据库
-        recursiveScanTasks.updateStatus(nextTask.taskId, 'waiting', {
+        void recursiveScanTasks.updateStatus(nextTask.taskId, 'waiting', {
           delayUntil: nextTask.delayUntil.toISOString()
         })
         
@@ -454,7 +454,7 @@ class ScanQueueManager {
     const { webdavUrl, webdavUsername, webdavPassword, path, concurrency, forceRescan, taskId } = task
 
     // 更新数据库状态为 running
-    recursiveScanTasks.updateStatus(taskId, 'running', {
+    await recursiveScanTasks.updateStatus(taskId, 'running', {
       currentPath: path
     })
 
@@ -522,7 +522,7 @@ class ScanQueueManager {
 
       // 如果强制重新扫描，清除旧缓存
       if (forceRescan) {
-        scanCache.delete(webdavUrl, webdavUsername, path)
+        await scanCache.delete(webdavUrl, webdavUsername, path)
       }
 
       // 保存到缓存
@@ -534,7 +534,7 @@ class ScanQueueManager {
         lastmod: file.lastmod,
       }))
 
-      scanCache.save({
+      await scanCache.save({
         webdavUrl,
         webdavUsername,
         path,
@@ -547,18 +547,18 @@ class ScanQueueManager {
       console.log(`✅ [扫描队列] scan_cache 写入完成: ${path}, ${result.totalFiles} 个文件`)
 
       // 写入 scan_files 表
-      const savedCache = scanCache.get(webdavUrl, webdavUsername, path) as any
+      const savedCache = await scanCache.get(webdavUrl, webdavUsername, path) as any
       let scanFilesLog = ''
       if (savedCache && savedCache.id) {
-        const beforeStats = scanFiles.getStats(savedCache.id)
+        const beforeStats = await scanFiles.getStats(savedCache.id)
         const beforeTotal = beforeStats.total
         const beforeViewed = beforeStats.viewed
         
-        scanFiles.deleteByCache(savedCache.id)
-        scanFiles.batchInsert(savedCache.id, filesData)
-        const syncResult = scanFiles.syncViewedFromRatings(savedCache.id)
+        await scanFiles.deleteByCache(savedCache.id)
+        await scanFiles.batchInsert(savedCache.id, filesData)
+        const syncResult = await scanFiles.syncViewedFromRatings(savedCache.id)
         
-        const afterStats = scanFiles.getStats(savedCache.id)
+        const afterStats = await scanFiles.getStats(savedCache.id)
         const afterTotal = afterStats.total
         const afterViewed = afterStats.viewed
         
@@ -567,7 +567,7 @@ class ScanQueueManager {
       }
 
       // 更新数据库状态为 completed
-      recursiveScanTasks.updateStatus(taskId, 'completed', {
+      await recursiveScanTasks.updateStatus(taskId, 'completed', {
         scannedDirectories: batchCount,
         foundFiles: result.totalFiles
       })
@@ -598,7 +598,7 @@ class ScanQueueManager {
       const duration = Date.now() - startTime
 
       // 更新数据库状态为 failed
-      recursiveScanTasks.updateStatus(taskId, 'failed', {
+      await recursiveScanTasks.updateStatus(taskId, 'failed', {
         errorMessage: error.message,
         retryCount: task.retryCount + 1
       })
@@ -675,7 +675,7 @@ class ScanQueueManager {
     if (this.currentTask) {
       this.currentTask.status = 'pending'
       this.currentTask.retryCount = 0
-      recursiveScanTasks.updateStatus(this.currentTask.taskId, 'pending', {
+      void recursiveScanTasks.updateStatus(this.currentTask.taskId, 'pending', {
         rateLimitedUntil: undefined,
         retryCount: 0
       })
@@ -683,9 +683,9 @@ class ScanQueueManager {
     
     // 恢复队列中的任务状态
     for (const task of this.queue) {
-      recursiveScanTasks.updateStatus(task.taskId, 'pending', {
-        rateLimitedUntil: undefined
-      })
+        void recursiveScanTasks.updateStatus(task.taskId, 'pending', {
+          rateLimitedUntil: undefined
+        })
     }
     
     console.log(`🔄 [扫描队列] 手动重置风控状态`)

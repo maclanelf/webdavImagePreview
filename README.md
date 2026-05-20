@@ -18,6 +18,7 @@
 - 💾 **本地存储** - 配置信息和偏好自动保存
 - 🔄 **递归扫描** - 自动扫描指定目录及子目录
 - ♻️ **向后兼容** - 自动迁移旧版本配置
+- 🐬 **MySQL 基础设施** - 内置 MySQL 初始化脚本，支持通过宿主机挂载配置文件连接外部 MySQL 服务
 
 ## 🚀 快速开始
 
@@ -123,11 +124,29 @@ webdavImagePreview/
 
 ## 🔧 配置选项
 
-### 环境变量（可选）
+### MySQL 配置文件
 
-如果不想使用浏览器配置，可以通过环境变量预设 WebDAV 连接：
+当前版本支持通过配置文件持久化 MySQL 连接信息，默认推荐路径如下：
 
-创建 `.env.local` 文件：
+```json
+{
+  "host": "127.0.0.1",
+  "port": 3306,
+  "user": "root",
+  "password": "your-password",
+  "database": "webdav_image_preview",
+  "charset": "utf8mb4",
+  "timezone": "+08:00",
+  "connectionLimit": 10
+}
+```
+
+默认读取路径：
+
+- 本地开发：[`MYSQL_CONFIG_FILE`](env.example:16) 指向的 [`./data/mysql-config.json`](data/mysql-config.json)
+- Docker 部署：[`MYSQL_CONFIG_FILE`](docker.env.example:12) 指向的 [`/app/data/mysql-config.json`](docker.env.example:12)
+
+如果不想使用浏览器配置，也可以同时通过环境变量预设 WebDAV 连接：
 
 ```env
 WEBDAV_URL=https://your-webdav-server.com
@@ -135,6 +154,12 @@ WEBDAV_USERNAME=your-username
 WEBDAV_PASSWORD=your-password
 WEBDAV_MEDIA_PATH=/photos
 ```
+
+说明：
+
+- MySQL 连接优先读取配置文件；如果配置文件不存在，才回退到 `MYSQL_*` 环境变量。
+- 当你在配置页修改并保存 MySQL 配置后，会写入宿主机挂载的配置文件，应用重启后仍会自动读取。
+- 当前 Docker 方案未内置 MySQL 容器；如果您的 MySQL 已部署在其他服务器，保留外部连接配置即可。
 
 ## 🌐 部署
 

@@ -4,7 +4,7 @@ import { creators } from '@/lib/creatorRepository'
 // GET /api/creators - 获取所有博主
 export async function GET() {
   try {
-    const allCreators = creators.getAll()
+    const allCreators = await creators.getAll()
     return NextResponse.json({ success: true, data: allCreators })
   } catch (error: any) {
     return NextResponse.json(
@@ -27,7 +27,7 @@ export async function POST(request: NextRequest) {
       )
     }
     
-    const result = creators.save({
+    const result = await creators.save({
       id,
       primaryName,
       otherNames: otherNames || [],
@@ -38,8 +38,8 @@ export async function POST(request: NextRequest) {
     })
     
     // 获取保存后的完整博主信息
-    const creatorId = id || (result as any).existingId || result.lastInsertRowid
-    const creator = creators.get(creatorId as number)
+    const creatorId = id || (result as any).existingId || result.insertId
+    const creator = await creators.get(creatorId as number)
     
     return NextResponse.json({ 
       success: true, 

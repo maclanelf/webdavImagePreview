@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
+
 import { scheduledScans } from '@/lib/database'
 
 // 获取所有定时扫描任务
 export async function GET() {
   try {
-    const tasks = scheduledScans.getAll()
+    const tasks = await scheduledScans.getAll()
     return NextResponse.json({ tasks })
   } catch (error: any) {
     console.error('获取定时扫描任务失败:', error)
@@ -36,7 +37,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const result = scheduledScans.create({
+    const result = await scheduledScans.create({
       webdavUrl,
       webdavUsername,
       webdavPassword,
@@ -47,11 +48,11 @@ export async function POST(request: NextRequest) {
         timeout: 60000
       },
       cronExpression,
-      isActive: isActive !== false // 默认为true
+      isActive: isActive !== false
     })
 
     return NextResponse.json({
-      id: result.lastInsertRowid,
+      id: result.insertId,
       message: '定时扫描任务创建成功'
     })
   } catch (error: any) {

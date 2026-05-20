@@ -1,8 +1,11 @@
 import scheduler from './scheduler'
+import { ensureMySqlInitialized } from './database'
 
 // 初始化应用
 export async function initializeApp() {
   console.log('初始化WebDAV媒体预览器...')
+
+  await ensureMySqlInitialized()
   
   // 启动内置调度器
   scheduler.start()

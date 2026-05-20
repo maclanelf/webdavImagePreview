@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
+
 import { webdavConfigs } from '@/lib/database'
 
 // 获取默认 WebDAV 配置
 export async function GET() {
   try {
-    const config = webdavConfigs.getDefault()
+    const config = await webdavConfigs.getDefault()
     if (!config) {
       return NextResponse.json(
         { error: '未找到默认配置' },
@@ -12,7 +13,6 @@ export async function GET() {
       )
     }
     
-    // 返回格式化的配置，包含所有必要字段
     return NextResponse.json({
       url: config.url,
       username: config.username,
@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    webdavConfigs.setDefault(url, username)
+    await webdavConfigs.setDefault(url, username)
     return NextResponse.json({ message: '默认配置设置成功' })
   } catch (error: any) {
     console.error('设置默认配置失败:', error)

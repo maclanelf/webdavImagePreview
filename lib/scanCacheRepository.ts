@@ -1,36 +1,32 @@
-import db from './databaseCore'
-import { ensureInitialized } from './databaseInitialization'
+import { ensureMySqlInitialized, executeMySqlStatement, queryMySqlOne, queryMySqlRows } from './database'
 
 export const scanCache = {
-  get: (webdavUrl: string, webdavUsername: string, path: string) => {
-    ensureInitialized()
-    const stmt = db.prepare('SELECT * FROM scan_cache WHERE webdav_url = ? AND webdav_username = ? AND path = ?')
-    return stmt.get(webdavUrl, webdavUsername, path)
+  get: async (webdavUrl: string, webdavUsername: string, path: string) => {
+    await ensureMySqlInitialized()
+    return queryMySqlOne('SELECT * FROM scan_cache WHERE webdav_url = ? AND webdav_username = ? AND path = ?', [webdavUrl, webdavUsername, path])
   },
 
-  count: () => {
-    ensureInitialized()
-    const result = db.prepare('SELECT COUNT(*) as count FROM scan_cache').get() as { count: number }
-    return result.count
+  count: async () => {
+    await ensureMySqlInitialized()
+    const result = await queryMySqlOne<{ count: number }>('SELECT COUNT(*) as count FROM scan_cache')
+    return result?.count || 0
   },
 
-  getMultiple: (webdavUrl: string, webdavUsername: string, paths: string[]) => {
-    ensureInitialized()
+  getMultiple: async (webdavUrl: string, webdavUsername: string, paths: string[]) => {
+    await ensureMySqlInitialized()
     if (paths.length === 0) return []
 
     const placeholders = paths.map(() => '?').join(',')
     const sql = `SELECT id, path FROM scan_cache WHERE webdav_url = ? AND webdav_username = ? AND path IN (${placeholders})`
-    const stmt = db.prepare(sql)
-    return stmt.all(webdavUrl, webdavUsername, ...paths)
+    return queryMySqlRows(sql, [webdavUrl, webdavUsername, ...paths])
   },
 
-  getAll: () => {
-    ensureInitialized()
-    const stmt = db.prepare('SELECT * FROM scan_cache ORDER BY last_scan DESC')
-    return stmt.all()
+  getAll: async () => {
+    await ensureMySqlInitialized()
+    return queryMySqlRows('SELECT * FROM scan_cache ORDER BY last_scan DESC')
   },
 
-  save: (data: {
+  save: async (data: {
     webdavUrl: string
     webdavUsername: string
     path: string
@@ -40,33 +36,40 @@ export const scanCache = {
     videoCount: number
     scanSettings: string
   }) => {
-    ensureInitialized()
-    const stmt = db.prepare(`
-      INSERT OR REPLACE INTO scan_cache
-      (webdav_url, webdav_username, path, files_data, total_files, image_count, video_count, scan_settings, last_scan)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
-    `)
-    return stmt.run(
-      data.webdavUrl,
-      data.webdavUsername,
-      data.path,
-      data.filesData,
-      data.totalFiles,
-      data.imageCount,
-      data.videoCount,
-      data.scanSettings,
+    await ensureMySqlInitialized()
+    return executeMySqlStatement(
+      `
+        INSERT INTO scan_cache
+        (webdav_url, webdav_username, path, files_data, total_files, image_count, video_count, scan_settings, last_scan)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON DUPLICATE KEY UPDATE
+          files_data = VALUES(files_data),
+          total_files = VALUES(total_files),
+          image_count = VALUES(image_count),
+          video_count = VALUES(video_count),
+          scan_settings = VALUES(scan_settings),
+          last_scan = CURRENT_TIMESTAMP
+      `,
+      [
+        data.webdavUrl,
+        data.webdavUsername,
+        data.path,
+        data.filesData,
+        data.totalFiles,
+        data.imageCount,
+        data.videoCount,
+        data.scanSettings,
+      ],
     )
   },
 
-  delete: (webdavUrl: string, webdavUsername: string, path: string) => {
-    ensureInitialized()
-    const stmt = db.prepare('DELETE FROM scan_cache WHERE webdav_url = ? AND webdav_username = ? AND path = ?')
-    return stmt.run(webdavUrl, webdavUsername, path)
+  delete: async (webdavUrl: string, webdavUsername: string, path: string) => {
+    await ensureMySqlInitialized()
+    return executeMySqlStatement('DELETE FROM scan_cache WHERE webdav_url = ? AND webdav_username = ? AND path = ?', [webdavUrl, webdavUsername, path])
   },
 
-  getByWebDAVConfig: (webdavUrl: string, webdavUsername: string) => {
-    ensureInitialized()
-    const stmt = db.prepare('SELECT * FROM scan_cache WHERE webdav_url = ? AND webdav_username = ? ORDER BY last_scan DESC')
-    return stmt.all(webdavUrl, webdavUsername)
+  getByWebDAVConfig: async (webdavUrl: string, webdavUsername: string) => {
+    await ensureMySqlInitialized()
+    return queryMySqlRows('SELECT * FROM scan_cache WHERE webdav_url = ? AND webdav_username = ? ORDER BY last_scan DESC', [webdavUrl, webdavUsername])
   },
 }

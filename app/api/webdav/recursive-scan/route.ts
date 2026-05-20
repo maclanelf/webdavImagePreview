@@ -21,7 +21,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 使用队列管理器添加任务
-    const result = scanQueueManager.addTask({
+    const result = await scanQueueManager.addTask({
       webdavUrl: url,
       webdavUsername: username,
       webdavPassword: password,
@@ -90,7 +90,7 @@ export async function GET(request: NextRequest) {
     let currentTaskProgress = null
     if (status.currentTask) {
       const { recursiveScanTasks } = await import('@/lib/database')
-      const dbTask = recursiveScanTasks.get(status.currentTask.taskId) as any
+      const dbTask = await recursiveScanTasks.get(status.currentTask.taskId) as any
       if (dbTask) {
         currentTaskProgress = {
           scannedDirectories: dbTask.scanned_directories || 0,

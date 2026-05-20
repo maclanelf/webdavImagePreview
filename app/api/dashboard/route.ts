@@ -1,10 +1,9 @@
 import { NextResponse } from 'next/server'
-import Database from 'better-sqlite3'
-import path from 'path'
+
+import { ensureMySqlInitialized, queryMySqlOne, queryMySqlRows } from '@/lib/database'
 
 export const dynamic = 'force-dynamic'
 
-const dbPath = path.join(process.cwd(), 'data', 'media_ratings.db')
 const ACTIVE_WINDOW_DAYS = 30
 const YEAR_MONTHS = 12
 
@@ -134,79 +133,76 @@ function buildCurrentMonthWeeks() {
 }
 
 export async function GET() {
-  let db: Database.Database | null = null
-
   try {
-    db = new Database(dbPath, { readonly: true })
-    db.pragma('query_only = 1')
+    await ensureMySqlInitialized()
 
-    const totalViewed = (db.prepare(`
+    const totalViewed = (await queryMySqlOne<CountRow>(`
       SELECT COUNT(*) AS count
       FROM media_ratings
       WHERE is_viewed = 1
-    `).get() as CountRow).count ?? 0
+    `))?.count ?? 0
 
-    const imagesViewed = (db.prepare(`
+    const imagesViewed = (await queryMySqlOne<CountRow>(`
       SELECT COUNT(*) AS count
       FROM media_ratings
       WHERE is_viewed = 1 AND file_type = 'image'
-    `).get() as CountRow).count ?? 0
+    `))?.count ?? 0
 
-    const videosViewed = (db.prepare(`
+    const videosViewed = (await queryMySqlOne<CountRow>(`
       SELECT COUNT(*) AS count
       FROM media_ratings
       WHERE is_viewed = 1 AND file_type = 'video'
-    `).get() as CountRow).count ?? 0
+    `))?.count ?? 0
 
-    const groupsViewed = (db.prepare(`
+    const groupsViewed = (await queryMySqlOne<CountRow>(`
       SELECT COUNT(*) AS count
       FROM group_ratings
       WHERE is_viewed = 1
-    `).get() as CountRow).count ?? 0
+    `))?.count ?? 0
 
-    const ratedCount = (db.prepare(`
+    const ratedCount = (await queryMySqlOne<CountRow>(`
       SELECT COUNT(*) AS count
       FROM media_ratings
       WHERE is_viewed = 1 AND rating IS NOT NULL
-    `).get() as CountRow).count ?? 0
+    `))?.count ?? 0
 
-    const avgRating = Number((db.prepare(`
+    const avgRating = Number((await queryMySqlOne<CountRow>(`
       SELECT ROUND(AVG(rating), 2) AS count
       FROM media_ratings
       WHERE is_viewed = 1 AND rating IS NOT NULL
-    `).get() as CountRow).count ?? 0)
+    `))?.count ?? 0)
 
-    const activeDays30 = (db.prepare(`
-      SELECT COUNT(DISTINCT substr(updated_at, 1, 10)) AS count
+    const activeDays30 = (await queryMySqlOne<CountRow>(`
+      SELECT COUNT(DISTINCT DATE(updated_at)) AS count
       FROM media_ratings
       WHERE is_viewed = 1
-        AND updated_at >= datetime('now', 'localtime', '-${ACTIVE_WINDOW_DAYS - 1} days')
-    `).get() as CountRow).count ?? 0
+        AND updated_at >= DATE_SUB(NOW(), INTERVAL ${ACTIVE_WINDOW_DAYS - 1} DAY)
+    `))?.count ?? 0
 
-    const recent30Total = (db.prepare(`
+    const recent30Total = (await queryMySqlOne<CountRow>(`
       SELECT COUNT(*) AS count
       FROM media_ratings
       WHERE is_viewed = 1
-        AND updated_at >= datetime('now', 'localtime', '-${ACTIVE_WINDOW_DAYS - 1} days')
-    `).get() as CountRow).count ?? 0
+        AND updated_at >= DATE_SUB(NOW(), INTERVAL ${ACTIVE_WINDOW_DAYS - 1} DAY)
+    `))?.count ?? 0
 
     const calendarWeeks = buildCurrentMonthWeeks()
     const queryStart = calendarWeeks[0]?.start
     const queryEnd = calendarWeeks[calendarWeeks.length - 1]?.end
 
-    const currentMonthDailyRows = db.prepare(`
+    const currentMonthDailyRows = await queryMySqlRows<DailyRow[]>(`
       SELECT
-        substr(updated_at, 1, 10) AS day,
+        DATE_FORMAT(updated_at, '%Y-%m-%d') AS day,
         COUNT(*) AS total,
         SUM(CASE WHEN file_type = 'image' THEN 1 ELSE 0 END) AS images,
         SUM(CASE WHEN file_type = 'video' THEN 1 ELSE 0 END) AS videos
       FROM media_ratings
       WHERE is_viewed = 1
-        AND substr(updated_at, 1, 10) >= ?
-        AND substr(updated_at, 1, 10) <= ?
-      GROUP BY substr(updated_at, 1, 10)
+        AND DATE(updated_at) >= ?
+        AND DATE(updated_at) <= ?
+      GROUP BY DATE(updated_at)
       ORDER BY day ASC
-    `).all(queryStart, queryEnd) as DailyRow[]
+    `, [queryStart, queryEnd])
 
     const currentMonthMap = new Map(currentMonthDailyRows.map((row) => [row.day, row]))
     const weeklyTrend = calendarWeeks
@@ -230,18 +226,18 @@ export async function GET() {
 
     const currentWeekKey = weeklyTrend.find((week) => week.isCurrent)?.key ?? weeklyTrend[weeklyTrend.length - 1]?.key ?? ''
 
-    const monthlyRows = db.prepare(`
+    const monthlyRows = await queryMySqlRows<MonthlyRow[]>(`
       SELECT
-        substr(updated_at, 1, 7) AS month,
+        DATE_FORMAT(updated_at, '%Y-%m') AS month,
         COUNT(*) AS total,
         SUM(CASE WHEN file_type = 'image' THEN 1 ELSE 0 END) AS images,
         SUM(CASE WHEN file_type = 'video' THEN 1 ELSE 0 END) AS videos
       FROM media_ratings
       WHERE is_viewed = 1
-        AND updated_at >= datetime('now', 'localtime', '-${YEAR_MONTHS - 1} months', 'start of month')
-      GROUP BY substr(updated_at, 1, 7)
+        AND updated_at >= DATE_SUB(DATE_FORMAT(NOW(), '%Y-%m-01'), INTERVAL ${YEAR_MONTHS - 1} MONTH)
+      GROUP BY DATE_FORMAT(updated_at, '%Y-%m')
       ORDER BY month ASC
-    `).all() as MonthlyRow[]
+    `)
 
     const monthlyMap = new Map(monthlyRows.map((row) => [row.month, row]))
     const monthlyTrend = buildRecentMonths(YEAR_MONTHS).map((month) => {
@@ -254,18 +250,18 @@ export async function GET() {
       }
     })
 
-    const ratingDistribution = (db.prepare(`
+    const ratingDistribution = (await queryMySqlRows<RatingRow[]>(`
       SELECT rating, COUNT(*) AS count
       FROM media_ratings
       WHERE is_viewed = 1 AND rating IS NOT NULL
       GROUP BY rating
       ORDER BY rating ASC
-    `).all() as RatingRow[]).map((row) => ({
+    `)).map((row) => ({
       rating: row.rating ?? 0,
       count: row.count,
     }))
 
-    const topCreators = (db.prepare(`
+    const topCreators = (await queryMySqlRows<CreatorRow[]>(`
       SELECT
         sfc.creator_id AS creatorId,
         c.primary_name AS creatorName,
@@ -280,14 +276,14 @@ export async function GET() {
       GROUP BY sfc.creator_id, c.primary_name
       ORDER BY count DESC, avgRating DESC
       LIMIT 10
-    `).all() as CreatorRow[]).map((row) => ({
+    `)).map((row) => ({
       creatorId: row.creatorId,
       creatorName: row.creatorName || `ID ${row.creatorId ?? '-'}`,
       count: row.count,
       avgRating: row.avgRating ?? 0,
     }))
 
-    const favoriteCreators = (db.prepare(`
+    const favoriteCreators = (await queryMySqlRows<CreatorRow[]>(`
       SELECT
         sfc.creator_id AS creatorId,
         c.primary_name AS creatorName,
@@ -304,35 +300,35 @@ export async function GET() {
       HAVING COUNT(*) >= 3
       ORDER BY avgRating DESC, count DESC
       LIMIT 10
-    `).all() as CreatorRow[]).map((row) => ({
+    `)).map((row) => ({
       creatorId: row.creatorId,
       creatorName: row.creatorName || `ID ${row.creatorId ?? '-'}`,
       count: row.count,
       avgRating: row.avgRating ?? 0,
     }))
 
-    const hourlyActivity = (db.prepare(`
+    const hourlyActivity = (await queryMySqlRows<HourRow[]>(`
       SELECT
-        strftime('%H', updated_at) AS hour,
+        DATE_FORMAT(updated_at, '%H') AS hour,
         COUNT(*) AS count
       FROM media_ratings
       WHERE is_viewed = 1
-      GROUP BY strftime('%H', updated_at)
+      GROUP BY DATE_FORMAT(updated_at, '%H')
       ORDER BY hour ASC
-    `).all() as HourRow[]).map((row) => ({
+    `)).map((row) => ({
       hour: row.hour,
       count: row.count,
     }))
 
-    const jsonFieldRows = db.prepare(`
+    const jsonFieldRows = await queryMySqlRows<JsonFieldRow[]>(`
       SELECT custom_evaluation, category
       FROM media_ratings
       WHERE is_viewed = 1
         AND (
-          (custom_evaluation IS NOT NULL AND trim(custom_evaluation) != '')
-          OR (category IS NOT NULL AND trim(category) != '')
+          (custom_evaluation IS NOT NULL AND TRIM(custom_evaluation) != '')
+          OR (category IS NOT NULL AND TRIM(category) != '')
         )
-    `).all() as JsonFieldRow[]
+    `)
 
     const evaluationCounter = new Map<string, number>()
     const categoryCounter = new Map<string, number>()
@@ -358,21 +354,21 @@ export async function GET() {
       }
     })
 
-    const creatorLinkedCount = (db.prepare(`
+    const creatorLinkedCount = (await queryMySqlOne<CountRow>(`
       SELECT COUNT(*) AS count
       FROM media_ratings mr
       INNER JOIN scan_file_creators sfc ON sfc.file_path = mr.file_path
       WHERE mr.is_viewed = 1
         AND sfc.creator_id IS NOT NULL
         AND sfc.creator_id != -1
-    `).get() as CountRow).count ?? 0
+    `))?.count ?? 0
 
-    const highScoreCount = (db.prepare(`
+    const highScoreCount = (await queryMySqlOne<CountRow>(`
       SELECT COUNT(*) AS count
       FROM media_ratings
       WHERE is_viewed = 1
         AND rating >= 4
-    `).get() as CountRow).count ?? 0
+    `))?.count ?? 0
 
     const maxWeeklyDayViews = weeklyTrend.reduce(
       (max, week) => Math.max(max, ...week.items.map((item) => item.total), 0),
@@ -456,7 +452,5 @@ export async function GET() {
       { error: error.message || 'Failed to load dashboard data' },
       { status: 500 }
     )
-  } finally {
-    db?.close()
   }
 }

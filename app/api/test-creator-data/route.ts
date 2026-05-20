@@ -7,11 +7,11 @@ import { groupRatings } from '@/lib/groupRatingRepository'
 export async function GET() {
   try {
     // 获取所有评分记录
-    const allMediaRatings = mediaRatings.getAll()
-    const allGroupRatings = groupRatings.getAll()
-    const allCreators = creators.getAll()
+    const allMediaRatings = await mediaRatings.getAll()
+    const allGroupRatings = await groupRatings.getAll()
+    const allCreators = await creators.getAll()
     
-    const allFileCreatorLinks = scanFileCreators.getAll() as any[]
+    const allFileCreatorLinks = await scanFileCreators.getAll() as any[]
     const mediaWithCreator = allFileCreatorLinks.filter((r: any) => r.creator_id !== null)
     const groupWithCreator = new Set(
       allFileCreatorLinks
@@ -62,7 +62,7 @@ export async function POST() {
     let created = 0
     for (const path of testPaths) {
       try {
-        mediaRatings.save({
+        await mediaRatings.save({
           filePath: path,
           fileName: path.split('/').pop() || 'unknown',
           fileType: path.endsWith('.mp4') ? 'video' : 'image',

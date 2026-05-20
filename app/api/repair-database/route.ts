@@ -6,7 +6,7 @@ export async function POST(request: NextRequest) {
     console.log('开始修复数据库...')
     
     // 执行数据库修复
-    repairDatabase()
+    await repairDatabase()
     
     return NextResponse.json({
       success: true,

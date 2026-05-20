@@ -1,12 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { ensureInitialized } from '@/lib/databaseInitialization'
 import { categories } from '@/lib/ratingMetadataRepository'
 
 export async function GET() {
   try {
-    // 确保数据库已初始化
-    ensureInitialized()
-    const categoriesList = categories.getAll()
+    const categoriesList = await categories.getAll()
     return NextResponse.json({ categories: categoriesList })
   } catch (error: any) {
     console.error('获取分类失败:', error)
@@ -19,8 +16,6 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    // 确保数据库已初始化
-    ensureInitialized()
     const body = await request.json()
     const { name } = body
 
@@ -31,11 +26,11 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const result = categories.add(name.trim())
+    const result = await categories.add(name.trim())
     return NextResponse.json({ 
       success: true, 
-      id: result.lastInsertRowid,
-      changes: result.changes 
+      id: result.insertId,
+      changes: result.affectedRows 
     })
   } catch (error: any) {
     console.error('添加分类失败:', error)
@@ -48,8 +43,6 @@ export async function POST(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
-    // 确保数据库已初始化
-    ensureInitialized()
     const { searchParams } = new URL(request.url)
     const name = searchParams.get('name')
 
@@ -60,10 +53,10 @@ export async function DELETE(request: NextRequest) {
       )
     }
 
-    const result = categories.delete(name)
+    const result = await categories.delete(name)
     return NextResponse.json({ 
       success: true, 
-      changes: result.changes 
+      changes: result.affectedRows 
     })
   } catch (error: any) {
     console.error('删除分类失败:', error)

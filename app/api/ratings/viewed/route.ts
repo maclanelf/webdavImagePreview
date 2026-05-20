@@ -1,11 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { mediaRatings } from '@/lib/mediaRatingRepository'
-import { ensureInitialized } from '@/lib/databaseInitialization'
 
 export async function GET(request: NextRequest) {
   try {
-    // 确保数据库已初始化
-    ensureInitialized()
     const { searchParams } = new URL(request.url)
     const viewed = searchParams.get('viewed') // 'true' | 'false' | null (全部)
     const countOnly = searchParams.get('countOnly') // 'true' 时只返回数量
@@ -14,7 +11,7 @@ export async function GET(request: NextRequest) {
 
     // 优化：支持只返回数量，避免传输大量路径数据
     if (countOnly === 'true') {
-      const result = mediaRatings.getViewedCount(
+      const result = await mediaRatings.getViewedCount(
         viewed === 'true' ? true : viewed === 'false' ? false : undefined,
       )
       
@@ -26,7 +23,7 @@ export async function GET(request: NextRequest) {
     }
 
     // 原有逻辑：返回完整路径列表
-    const filePaths = mediaRatings.getViewedFilePaths(
+    const filePaths = await mediaRatings.getViewedFilePaths(
       viewed === 'true' ? true : viewed === 'false' ? false : undefined,
     )
     
@@ -47,8 +44,6 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    // 确保数据库已初始化
-    ensureInitialized()
     const body = await request.json()
     const { filePath, isViewed } = body
 
@@ -62,7 +57,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 检查文件是否已有评分记录
-    const result = mediaRatings.saveViewedState(filePath, isViewed)
+    const result = await mediaRatings.saveViewedState(filePath, isViewed)
 
     if (result.scanChanges > 0) {
       console.log(`✅ [API POST] 同步更新 scan_files 已看过状态成功: ${filePath}, 影响 ${result.scanChanges} 行`)

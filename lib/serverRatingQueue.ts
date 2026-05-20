@@ -8,7 +8,7 @@
  * 4. 记录失败任务，方便排查
  */
 
-import { mediaRatings, customEvaluations, categories, ensureInitialized } from './database'
+import { mediaRatings, customEvaluations, categories } from './database'
 
 interface RatingTask {
   taskId: string
@@ -157,9 +157,7 @@ class ServerRatingQueue {
     try {
       console.log(`🚀 [评分队列] 开始处理: ${task.fileName}`)
 
-      ensureInitialized()
-
-      mediaRatings.save({
+      await mediaRatings.save({
         filePath: task.filePath,
         fileName: task.fileName,
         fileType: task.fileType,
@@ -175,11 +173,11 @@ class ServerRatingQueue {
           ? task.customEvaluation
           : [task.customEvaluation]
 
-        evaluations.forEach((evaluation) => {
+        for (const evaluation of evaluations) {
           if (typeof evaluation === 'string' && evaluation.trim()) {
-            customEvaluations.add(evaluation.trim())
+            await customEvaluations.add(evaluation.trim())
           }
-        })
+        }
       }
 
       if (task.category) {
@@ -187,11 +185,11 @@ class ServerRatingQueue {
           ? task.category
           : [task.category]
 
-        categoriesList.forEach((category) => {
+        for (const category of categoriesList) {
           if (typeof category === 'string' && category.trim()) {
-            categories.add(category.trim())
+            await categories.add(category.trim())
           }
-        })
+        }
       }
 
       return true

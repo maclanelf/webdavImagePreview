@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-import db from '@/lib/databaseCore'
-import { ensureInitialized } from '@/lib/databaseInitialization'
+import { queryMySqlOne, queryMySqlRows, webdavConfigs } from '@/lib/database'
 import { creators } from '@/lib/creatorRepository'
-import { webdavConfigs } from '@/lib/database'
 import { QUICK_RATING_CONFIG } from '@/types'
 
 /** 默认分页大小 */
@@ -262,8 +260,8 @@ function mapMediaRow(row: any, creatorId: number, defaultConfig: any) {
  * 目前仅用于图组分页里构造 `previewSeed`：
  * 当封面图存在时，把它补全成前端可直接预览的媒体对象。
  */
-function queryMediaByFilePath(filePath: string, creatorId: number, defaultConfig: any) {
-  const row = db.prepare(`
+async function queryMediaByFilePath(filePath: string, creatorId: number, defaultConfig: any) {
+  const row = await queryMySqlOne<any>(`
     SELECT
       sf.filename AS filePath,
       sf.basename AS fileName,
@@ -282,9 +280,118 @@ function queryMediaByFilePath(filePath: string, creatorId: number, defaultConfig
     LEFT JOIN media_ratings mr ON mr.file_path = sf.filename
     WHERE sf.filename = ?
     LIMIT 1
-  `).get(creatorId, filePath) as any
+  `, [creatorId, filePath])
 
   return row ? mapMediaRow(row, creatorId, defaultConfig) : null
+}
+
+/**
+ * 批量按文件路径查询媒体，用于减少图组列表里的 N+1 预览查询。
+ */
+async function queryMediaByFilePaths(filePaths: string[], creatorId: number, defaultConfig: any) {
+  const normalizedFilePaths = Array.from(new Set(filePaths.filter(Boolean)))
+  if (normalizedFilePaths.length === 0) {
+    return new Map<string, any>()
+  }
+
+  const placeholders = normalizedFilePaths.map(() => '?').join(',')
+  const rows = await queryMySqlRows<Array<any>>(`
+    SELECT
+      sf.filename AS filePath,
+      sf.basename AS fileName,
+      sf.file_type AS fileType,
+      sf.parent_path AS groupPath,
+      sf.lastmod,
+      sf.file_size AS fileSize,
+      mr.rating,
+      mr.recommendation_reason AS recommendationReason,
+      mr.custom_evaluation AS customEvaluation,
+      mr.category,
+      COALESCE(mr.is_viewed, sf.is_viewed, 0) AS isViewed,
+      COALESCE(sfc.creator_id, ?) AS creatorId
+    FROM scan_files sf
+    LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
+    LEFT JOIN media_ratings mr ON mr.file_path = sf.filename
+    WHERE sf.filename IN (${placeholders})
+  `, [creatorId, ...normalizedFilePaths])
+
+  const mediaMap = new Map<string, any>()
+  rows.forEach((row) => {
+    mediaMap.set(row.filePath, mapMediaRow(row, creatorId, defaultConfig))
+  })
+
+  return mediaMap
+}
+
+/**
+ * 批量查询多个图组各自的首个媒体项，避免逐图组分页造成的 N+1 查询。
+ */
+async function queryFirstMediaByGroupPaths(options: {
+  creatorId: number
+  defaultConfig: any
+  groupPaths: string[]
+  viewed?: boolean
+}) {
+  const { creatorId, defaultConfig, groupPaths, viewed } = options
+  const normalizedGroupPaths = Array.from(new Set(groupPaths.filter(Boolean)))
+  if (normalizedGroupPaths.length === 0) {
+    return new Map<string, any>()
+  }
+
+  const whereParts = [`sf.parent_path IN (${normalizedGroupPaths.map(() => '?').join(',')})`]
+  const params: any[] = [...normalizedGroupPaths]
+
+  if (typeof viewed === 'boolean') {
+    whereParts.push('COALESCE(mr.is_viewed, sf.is_viewed, 0) = ?')
+    params.push(viewed ? 1 : 0)
+  }
+
+  const rows = await queryMySqlRows<Array<any>>(`
+    SELECT
+      ranked_media.filePath,
+      ranked_media.fileName,
+      ranked_media.fileType,
+      ranked_media.groupPath,
+      ranked_media.lastmod,
+      ranked_media.fileSize,
+      ranked_media.rating,
+      ranked_media.recommendationReason,
+      ranked_media.customEvaluation,
+      ranked_media.category,
+      ranked_media.isViewed,
+      ranked_media.creatorId
+    FROM (
+      SELECT
+        sf.filename AS filePath,
+        sf.basename AS fileName,
+        sf.file_type AS fileType,
+        sf.parent_path AS groupPath,
+        sf.lastmod,
+        sf.file_size AS fileSize,
+        mr.rating,
+        mr.recommendation_reason AS recommendationReason,
+        mr.custom_evaluation AS customEvaluation,
+        mr.category,
+        COALESCE(mr.is_viewed, sf.is_viewed, 0) AS isViewed,
+        COALESCE(sfc.creator_id, ?) AS creatorId,
+        ROW_NUMBER() OVER (
+          PARTITION BY sf.parent_path
+          ORDER BY COALESCE(mr.rating, 0) DESC, sf.basename ASC, sf.id ASC
+        ) AS row_number
+      FROM scan_files sf
+      LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
+      LEFT JOIN media_ratings mr ON mr.file_path = sf.filename
+      WHERE ${whereParts.join(' AND ')}
+    ) ranked_media
+    WHERE ranked_media.row_number = 1
+  `, [creatorId, ...params])
+
+  const mediaMap = new Map<string, any>()
+  rows.forEach((row) => {
+    mediaMap.set(row.groupPath, mapMediaRow(row, creatorId, defaultConfig))
+  })
+
+  return mediaMap
 }
 
 /**
@@ -295,7 +402,7 @@ function queryMediaByFilePath(filePath: string, creatorId: number, defaultConfig
  * - 再关联 [`scan_files`](lib/database.ts:610) 和 [`media_ratings`](lib/database.ts:358)；
  * - 避免从 `scan_files` 全表出发造成无效扫描。
  */
-function queryMediaPage(options: {
+async function queryMediaPage(options: {
   creatorId: number
   defaultConfig: any
   page: number
@@ -305,7 +412,7 @@ function queryMediaPage(options: {
   ratings?: number[]
   tags?: string[]
   groupPath?: string
-}): QueryPageResult<any> {
+}): Promise<QueryPageResult<any>> {
   const {
     creatorId,
     defaultConfig,
@@ -347,18 +454,18 @@ function queryMediaPage(options: {
 
   const whereSql = whereParts.join(' AND ')
 
-  const countRow = db.prepare(`
+  const countRow = await queryMySqlOne<{ total: number }>(`
     SELECT COUNT(*) AS total
     FROM scan_file_creators sfc
     INNER JOIN scan_files sf ON sf.filename = sfc.file_path
     LEFT JOIN media_ratings mr ON mr.file_path = sfc.file_path
     WHERE ${whereSql}
-  `).get(...params) as { total: number }
+  `, params)
 
   const total = countRow?.total || 0
   const offset = (page - 1) * pageSize
 
-  const rows = db.prepare(`
+  const rows = await queryMySqlRows<Array<any>>(`
     SELECT
       sf.filename AS filePath,
       sf.basename AS fileName,
@@ -376,9 +483,9 @@ function queryMediaPage(options: {
     INNER JOIN scan_files sf ON sf.filename = sfc.file_path
     LEFT JOIN media_ratings mr ON mr.file_path = sfc.file_path
     WHERE ${whereSql}
-    ORDER BY COALESCE(mr.rating, 0) DESC, sf.parent_path ASC, sf.basename COLLATE NOCASE ASC
+    ORDER BY COALESCE(mr.rating, 0) DESC, sf.parent_path ASC, sf.basename ASC
     LIMIT ? OFFSET ?
-  `).all(...params, pageSize, offset) as Array<any>
+  `, [...params, pageSize, offset])
 
   return {
     items: rows.map((row) => mapMediaRow(row, creatorId, defaultConfig)),
@@ -392,14 +499,14 @@ function queryMediaPage(options: {
 /**
  * 查询某个图组内的媒体分页。
  */
-function queryGroupMediaPage(options: {
+async function queryGroupMediaPage(options: {
   creatorId: number
   defaultConfig: any
   groupPath: string
   page: number
   pageSize: number
   viewed?: boolean
-}): QueryPageResult<any> {
+}): Promise<QueryPageResult<any>> {
   const { creatorId, defaultConfig, groupPath, page, pageSize, viewed } = options
   const creatorGroupPathsSubquery = buildCreatorGroupPathsSubquery()
   const whereParts = ['sf.parent_path = ?']
@@ -412,7 +519,7 @@ function queryGroupMediaPage(options: {
 
   const whereSql = whereParts.join(' AND ')
 
-  const countRow = db.prepare(`
+  const countRow = await queryMySqlOne<{ total: number }>(`
     SELECT COUNT(*) AS total
     FROM scan_files sf
     INNER JOIN (
@@ -420,12 +527,12 @@ function queryGroupMediaPage(options: {
     ) creator_groups ON creator_groups.parent_path = sf.parent_path
     LEFT JOIN media_ratings mr ON mr.file_path = sf.filename
     WHERE ${whereSql}
-  `).get(creatorId, ...params) as { total: number }
+  `, [creatorId, ...params])
 
   const total = countRow?.total || 0
   const offset = (page - 1) * pageSize
 
-  const rows = db.prepare(`
+  const rows = await queryMySqlRows<Array<any>>(`
     SELECT
       sf.filename AS filePath,
       sf.basename AS fileName,
@@ -446,9 +553,9 @@ function queryGroupMediaPage(options: {
     LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
     LEFT JOIN media_ratings mr ON mr.file_path = sf.filename
     WHERE ${whereSql}
-    ORDER BY COALESCE(mr.rating, 0) DESC, sf.basename COLLATE NOCASE ASC
+    ORDER BY COALESCE(mr.rating, 0) DESC, sf.basename ASC
     LIMIT ? OFFSET ?
-  `).all(creatorId, creatorId, ...params, pageSize, offset) as Array<any>
+  `, [creatorId, creatorId, ...params, pageSize, offset])
 
   return {
     items: rows.map((row) => mapMediaRow(row, creatorId, defaultConfig)),
@@ -466,7 +573,7 @@ function queryGroupMediaPage(options: {
  * - `coverPreviewUrl`: 图组封面预览
  * - `previewSeed`: 图组预览时的初始媒体
  */
-function queryGroupsPage(options: {
+async function queryGroupsPage(options: {
   creatorId: number
   defaultConfig: any
   page: number
@@ -474,7 +581,7 @@ function queryGroupsPage(options: {
   viewedFilter?: GroupViewedFilter
   ratings?: number[]
   tags?: string[]
-}): QueryPageResult<any> {
+}): Promise<QueryPageResult<any>> {
   const {
     creatorId,
     defaultConfig,
@@ -514,7 +621,7 @@ function queryGroupsPage(options: {
         FROM scan_files sfi
         WHERE sfi.parent_path = cg.parent_path
           AND sfi.file_type = 'image'
-        ORDER BY RANDOM()
+        ORDER BY sfi.basename ASC, sfi.id ASC
         LIMIT 1
       ) AS coverFilePath,
       COALESCE(gr.is_viewed, (
@@ -558,18 +665,18 @@ function queryGroupsPage(options: {
 
   const whereSql = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : ''
 
-  const totalRow = db.prepare(`
+  const totalRow = await queryMySqlOne<{ total: number }>(`
     SELECT COUNT(*) AS total
     FROM (
       ${groupBaseSql}
     ) group_rows
     ${whereSql}
-  `).get(creatorId, ...params) as { total: number }
+  `, [creatorId, ...params])
 
   const total = totalRow?.total || 0
   const offset = (page - 1) * pageSize
 
-  const rows = db.prepare(`
+  const rows = await queryMySqlRows<Array<any>>(`
     SELECT *
     FROM (
       ${groupBaseSql}
@@ -577,25 +684,38 @@ function queryGroupsPage(options: {
     ${whereSql}
     ORDER BY COALESCE(group_rows.isViewed, 0) DESC, COALESCE(group_rows.rating, 0) DESC, group_rows.groupPath ASC
     LIMIT ? OFFSET ?
-  `).all(creatorId, ...params, pageSize, offset) as Array<any>
+  `, [creatorId, ...params, pageSize, offset])
 
-  const items = rows.map((row) => {
+  const coverFilePaths = viewedFilter === 'all'
+    ? rows
+      .map((row) => row.coverFilePath)
+      .filter((filePath): filePath is string => typeof filePath === 'string' && filePath.length > 0)
+    : []
+
+  const coverPreviewSeedMap = await queryMediaByFilePaths(coverFilePaths, creatorId, defaultConfig)
+  const fallbackGroupPaths = rows
+    .filter((row) => viewedFilter !== 'all' || !row.coverFilePath)
+    .map((row) => row.groupPath)
+    .filter((groupPath): groupPath is string => typeof groupPath === 'string' && groupPath.length > 0)
+
+  const fallbackPreviewSeedMap = await queryFirstMediaByGroupPaths({
+    creatorId,
+    defaultConfig,
+    groupPaths: fallbackGroupPaths,
+    viewed: viewedFilter === 'all' ? undefined : viewedFilter === 'viewed',
+  })
+
+  const items = []
+  for (const row of rows) {
     const coverUrls = row.coverFilePath
       ? getPreviewUrls(row.coverFilePath, defaultConfig)
       : { previewUrl: null, streamUrl: null, transcodeUrl: null, directUrl: null }
 
-    const previewSeed = viewedFilter === 'all' && row.coverFilePath
-      ? queryMediaByFilePath(row.coverFilePath, creatorId, defaultConfig)
-      : (queryMediaPage({
-        creatorId,
-        defaultConfig,
-        groupPath: row.groupPath,
-        viewed: viewedFilter === 'all' ? undefined : viewedFilter === 'viewed',
-        page: 1,
-        pageSize: 1,
-      }).items[0] || null)
+    const previewSeed = row.coverFilePath
+      ? (coverPreviewSeedMap.get(row.coverFilePath) ?? fallbackPreviewSeedMap.get(row.groupPath) ?? null)
+      : (fallbackPreviewSeedMap.get(row.groupPath) ?? null)
 
-    return {
+    items.push({
       id: row.groupPath,
       groupPath: row.groupPath,
       groupName: row.groupName || getGroupNameFromPath(row.groupPath),
@@ -611,8 +731,8 @@ function queryGroupsPage(options: {
       category: parseJsonArray(row.category),
       isViewed: row.isViewed === 1,
       creatorId,
-    }
-  })
+    })
+  }
 
   return {
     items,
@@ -629,13 +749,13 @@ function queryGroupsPage(options: {
  * - 图组总数
  * - 已使用标签集合
  */
-function querySummaryAndTags(options: {
+async function querySummaryAndTags(options: {
   creatorId: number
 }) {
   const { creatorId } = options
   const creatorGroupPathsSubquery = buildCreatorGroupPathsSubquery()
 
-  const mediaSummary = db.prepare(`
+  const mediaSummary = await queryMySqlOne<{ total?: number; viewed?: number; unviewed?: number }>(`
     SELECT
       COUNT(*) AS total,
       SUM(CASE WHEN COALESCE(mr.is_viewed, sf.is_viewed, 0) = 1 THEN 1 ELSE 0 END) AS viewed,
@@ -644,31 +764,31 @@ function querySummaryAndTags(options: {
     INNER JOIN scan_files sf ON sf.filename = sfc.file_path
     LEFT JOIN media_ratings mr ON mr.file_path = sfc.file_path
     WHERE sfc.creator_id = ?
-  `).get(creatorId) as { total?: number; viewed?: number; unviewed?: number }
+  `, [creatorId])
 
-  const groupSummary = db.prepare(`
+  const groupSummary = await queryMySqlOne<{ total?: number }>(`
     SELECT COUNT(*) AS total
     FROM (
       ${creatorGroupPathsSubquery}
     ) grouped
-  `).get(creatorId) as { total?: number }
+  `, [creatorId])
 
-  const mediaTagRows = db.prepare(`
+  const mediaTagRows = await queryMySqlRows<Array<{ customEvaluation?: string | null; category?: string | null }>>(`
     SELECT mr.custom_evaluation AS customEvaluation, mr.category AS category
     FROM scan_file_creators sfc
     INNER JOIN media_ratings mr ON mr.file_path = sfc.file_path
     WHERE sfc.creator_id = ?
       AND (mr.custom_evaluation IS NOT NULL OR mr.category IS NOT NULL)
-  `).all(creatorId) as Array<{ customEvaluation?: string | null; category?: string | null }>
+  `, [creatorId])
 
-  const groupTagRows = db.prepare(`
+  const groupTagRows = await queryMySqlRows<Array<{ customEvaluation?: string | null; category?: string | null }>>(`
     SELECT gr.custom_evaluation AS customEvaluation, gr.category AS category
     FROM (
       ${creatorGroupPathsSubquery}
     ) creator_groups
     INNER JOIN group_ratings gr ON gr.group_path = creator_groups.parent_path
     WHERE gr.custom_evaluation IS NOT NULL OR gr.category IS NOT NULL
-  `).all(creatorId) as Array<{ customEvaluation?: string | null; category?: string | null }>
+  `, [creatorId])
 
   const tagSet = new Set<string>()
   mediaTagRows.forEach((row) => {
@@ -704,7 +824,6 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    ensureInitialized()
     const { id: idStr } = await params
     const creatorId = parseInt(idStr, 10)
 
@@ -712,7 +831,7 @@ export async function GET(
       return NextResponse.json({ success: false, error: '无效的博主 ID' }, { status: 400 })
     }
 
-    const creator = creators.get(creatorId)
+    const creator = await creators.get(creatorId)
     if (!creator) {
       return NextResponse.json({ success: false, error: '博主不存在' }, { status: 404 })
     }
@@ -728,14 +847,14 @@ export async function GET(
     const tab = (searchParams.get('tab') || 'viewed') as CreatorTab
     const groupPath = searchParams.get('groupPath') || undefined
 
-    const defaultConfig = webdavConfigs.getDefault()
+    const defaultConfig = await webdavConfigs.getDefault()
 
     if (mode === 'group-media') {
       if (!groupPath) {
         return NextResponse.json({ success: false, error: '缺少 groupPath 参数' }, { status: 400 })
       }
 
-      const pageResult = queryGroupMediaPage({
+      const pageResult = await queryGroupMediaPage({
         creatorId,
         defaultConfig,
         groupPath,
@@ -761,7 +880,7 @@ export async function GET(
 
     if (mode === 'tab') {
       if (tab === 'groups') {
-        const pageResult = queryGroupsPage({
+         const pageResult = await queryGroupsPage({
           creatorId,
           defaultConfig,
           page,
@@ -782,7 +901,7 @@ export async function GET(
         })
       }
 
-      const pageResult = queryMediaPage({
+      const pageResult = await queryMediaPage({
         creatorId,
         defaultConfig,
         page,
@@ -804,7 +923,7 @@ export async function GET(
       })
     }
 
-    const { summary, availableTags } = querySummaryAndTags({ creatorId })
+    const { summary, availableTags } = await querySummaryAndTags({ creatorId })
 
     return NextResponse.json({
       success: true,

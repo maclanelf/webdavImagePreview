@@ -9,7 +9,7 @@ export async function GET(
   try {
     const { id: idStr } = await params
     const id = parseInt(idStr)
-    const creator = creators.get(id)
+    const creator = await creators.get(id)
     
     if (!creator) {
       return NextResponse.json(
@@ -19,7 +19,7 @@ export async function GET(
     }
     
     // 获取统计信息
-    const stats = creators.getStats(id)
+    const stats = await creators.getStats(id)
     
     return NextResponse.json({ 
       success: true, 
@@ -51,8 +51,8 @@ export async function PUT(
         )
       }
 
-      creators.changePrimaryName(id, body.newPrimaryName)
-      const creator = creators.get(id)
+      await creators.changePrimaryName(id, body.newPrimaryName)
+      const creator = await creators.get(id)
 
       return NextResponse.json({
         success: true,
@@ -61,7 +61,7 @@ export async function PUT(
       })
     }
 
-    const result = creators.save({
+    const result = await creators.save({
       id,
       ...body
     })
@@ -87,7 +87,7 @@ export async function DELETE(
   try {
     const { id: idStr } = await params
     const id = parseInt(idStr)
-    const result = creators.delete(id)
+    const result = await creators.delete(id)
     
     return NextResponse.json({ 
       success: true, 

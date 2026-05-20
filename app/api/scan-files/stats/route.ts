@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
     const pathList = paths.split(',').filter(p => p.trim())
 
     // 优化：使用批量查询获取所有 cacheIds（一次查询代替 N 次循环查询）
-    const caches = scanCache.getMultiple(webdavUrl, webdavUsername, pathList) as any[]
+    const caches = await scanCache.getMultiple(webdavUrl, webdavUsername, pathList) as any[]
     const cacheIds = caches.map(c => c.id)
     
     console.log(`⏱️ [stats] 批量获取 cacheIds: ${Date.now() - startTime}ms, 找到 ${cacheIds.length} 个`)
@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
     // 优化：直接获取统计信息，跳过 hasDataMultiple 检查
     // getStatsMultiple 返回 total=0 即表示无数据
     const statsStartTime = Date.now()
-    const stats = scanFiles.getStatsMultiple(cacheIds)
+    const stats = await scanFiles.getStatsMultiple(cacheIds)
     console.log(`⏱️ [stats] getStatsMultiple: ${Date.now() - statsStartTime}ms`)
 
     const hasData = stats.total > 0

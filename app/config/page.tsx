@@ -31,6 +31,8 @@ import {
   MenuItem,
   Switch,
   FormControlLabel,
+  Tabs,
+  Tab,
 } from '@mui/material'
 import {
   Save as SaveIcon,
@@ -70,6 +72,17 @@ interface WebDAVConfig {
   }
 }
 
+interface MysqlConfig {
+  host: string
+  port: number | string
+  user: string
+  password: string
+  database: string
+  charset: string
+  timezone: string
+  connectionLimit: number | string
+}
+
 interface Directory {
   filename: string
   basename: string
@@ -84,6 +97,8 @@ interface PathStats {
   videos: number
   lastScan?: string
 }
+
+const FIXED_MYSQL_DATABASE = 'webdav_image_preview'
 
 export default function ConfigPage() {
   const router = useRouter()
@@ -105,6 +120,7 @@ export default function ConfigPage() {
   const [saving, setSaving] = useState(false)
   const [testResult, setTestResult] = useState<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
   const [saveResult, setSaveResult] = useState<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
+  const [webdavLoadError, setWebdavLoadError] = useState<string | null>(null)
   
   // 目录浏览相关
   const [browseDialogOpen, setBrowseDialogOpen] = useState(false)
@@ -143,6 +159,20 @@ export default function ConfigPage() {
   const [configListDialogOpen, setConfigListDialogOpen] = useState(false)
   const [editingConfigId, setEditingConfigId] = useState<number | null>(null)
   const [isNewConfig, setIsNewConfig] = useState(false)
+  const [mysqlConfig, setMysqlConfig] = useState<MysqlConfig>({
+    host: '',
+    port: 3306,
+    user: '',
+    password: '',
+    database: FIXED_MYSQL_DATABASE,
+    charset: 'utf8mb4',
+    timezone: '+08:00',
+    connectionLimit: 10,
+  })
+  const [loadingMysqlConfig, setLoadingMysqlConfig] = useState(false)
+  const [mysqlConfigFilePath, setMysqlConfigFilePath] = useState('')
+  const [mysqlConfigSource, setMysqlConfigSource] = useState<'file' | 'env' | 'none'>('none')
+  const [activeTab, setActiveTab] = useState<'mysql' | 'webdav' | 'scheduled' | 'directories'>('mysql')
 
   // 安全解析JSON的辅助函数
   const safeJsonParse = (jsonString: string | null | undefined, fallback: any = null) => {
@@ -171,6 +201,35 @@ export default function ConfigPage() {
       console.error('❌ 加载所有配置失败:', error)
     } finally {
       setLoadingConfigs(false)
+    }
+  }
+
+  const loadMysqlConfig = async () => {
+    setLoadingMysqlConfig(true)
+    try {
+      const response = await fetch('/api/mysql-config')
+      if (response.ok) {
+        const data = await response.json()
+        const mysql = data.config || {}
+        setMysqlConfig({
+          host: mysql.host || '',
+          port: mysql.port ?? 3306,
+          user: mysql.user || '',
+          password: mysql.password || '',
+          database: FIXED_MYSQL_DATABASE,
+          charset: mysql.charset || 'utf8mb4',
+          timezone: mysql.timezone || '+08:00',
+          connectionLimit: mysql.connectionLimit ?? 10,
+        })
+        setMysqlConfigFilePath(data.filePath || '')
+        setMysqlConfigSource(data.source || 'none')
+      } else {
+        console.error('❌ 加载 MySQL 配置失败: HTTP', response.status)
+      }
+    } catch (error) {
+      console.error('❌ 加载 MySQL 配置失败:', error)
+    } finally {
+      setLoadingMysqlConfig(false)
     }
   }
 
@@ -313,11 +372,13 @@ export default function ConfigPage() {
                 preloadCount: 10
               }
             })
+            setWebdavLoadError(null)
             return
           }
         }
       } catch (error) {
         console.error('从数据库加载配置失败:', error)
+        setWebdavLoadError(error instanceof Error ? error.message : '从数据库加载 WebDAV 配置失败')
       }
       
       // 如果数据库中没有配置，尝试从 localStorage 加载（向后兼容）
@@ -331,6 +392,7 @@ export default function ConfigPage() {
           }
           setConfig(parsed)
           setSelectedPaths(new Set(parsed.mediaPaths || []))
+          setWebdavLoadError(null)
           
           // 加载扫描缓存数据
           loadScanCache(parsed)
@@ -361,6 +423,7 @@ export default function ConfigPage() {
           }
         } catch (e) {
           console.error('加载配置失败:', e)
+          setWebdavLoadError(e instanceof Error ? e.message : '加载 WebDAV 配置失败')
         }
       }
     }
@@ -369,6 +432,7 @@ export default function ConfigPage() {
     
     // 加载所有配置
     loadAllConfigs()
+    loadMysqlConfig()
     
     // 加载定时扫描任务
     loadScheduledScans()
@@ -407,6 +471,13 @@ export default function ConfigPage() {
   ) => {
     setConfig({ ...config, [field]: event.target.value })
     setTestResult(null)
+    setSaveResult(null)
+  }
+
+  const handleMysqlChange = (field: keyof MysqlConfig) => (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    setMysqlConfig({ ...mysqlConfig, [field]: event.target.value })
     setSaveResult(null)
   }
 
@@ -452,20 +523,66 @@ export default function ConfigPage() {
     }
   }
 
-  const saveConfig = async () => {
+  const saveMysqlConfig = async () => {
+    if (!mysqlConfig.host || !mysqlConfig.user || !mysqlConfig.password || !mysqlConfig.database) {
+      setSaveResult({
+        type: 'error',
+        message: '请填写完整的 MySQL 配置信息',
+      })
+      setActiveTab('mysql')
+      return
+    }
+
+    setSaving(true)
+    setSaveResult(null)
+
+    try {
+      const mysqlConfigToSave = {
+        host: mysqlConfig.host.trim(),
+        port: Number(mysqlConfig.port) || 3306,
+        user: mysqlConfig.user.trim(),
+        password: mysqlConfig.password,
+        database: FIXED_MYSQL_DATABASE,
+        charset: (mysqlConfig.charset || 'utf8mb4').trim() || 'utf8mb4',
+        timezone: (mysqlConfig.timezone || '+08:00').trim() || '+08:00',
+        connectionLimit: Number(mysqlConfig.connectionLimit) || 10,
+      }
+
+      const mysqlResponse = await fetch('/api/mysql-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(mysqlConfigToSave)
+      })
+
+      if (!mysqlResponse.ok) {
+        const errorData = await mysqlResponse.json()
+        throw new Error(errorData.error || '保存 MySQL 配置文件失败')
+      }
+
+      const mysqlData = await mysqlResponse.json()
+      setMysqlConfigFilePath(mysqlData.filePath || '')
+      setMysqlConfigSource('file')
+      setSaveResult({
+        type: 'success',
+        message: 'MySQL 配置文件已保存，后续重启会自动读取。',
+      })
+    } catch (error: any) {
+      setSaveResult({
+        type: 'error',
+        message: `保存 MySQL 配置失败: ${error.message}`,
+      })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const saveConfig = async (successMessage = 'WebDAV 配置已保存！如需扫描媒体文件，请前往管理页面手动触发扫描。') => {
     if (!config.url || !config.username || !config.password) {
       setSaveResult({
         type: 'error',
         message: '请填写完整的连接信息',
       })
-      return
-    }
-
-    if (selectedPaths.size === 0) {
-      setSaveResult({
-        type: 'error',
-        message: '请至少选择一个媒体目录',
-      })
+      setActiveTab('webdav')
       return
     }
 
@@ -483,7 +600,7 @@ export default function ConfigPage() {
           ? (config.enableDirectLink !== false) 
           : (config.enableDirectLink || false),
       }
-      
+
       // 同时保存到数据库和 localStorage（向后兼容）
       try {
         // 保存到数据库
@@ -524,7 +641,7 @@ export default function ConfigPage() {
         // 保存成功提示（不再自动触发扫描）
         setSaveResult({
           type: 'success',
-          message: '配置已保存！如需扫描媒体文件，请前往管理页面手动触发扫描。',
+          message: successMessage,
         })
       } catch (dbError: any) {
         console.error('保存到数据库失败:', dbError)
@@ -950,9 +1067,13 @@ export default function ConfigPage() {
 
       if (response.ok) {
         const result = await response.json()
+        const queuedPaths = Array.isArray(result.tasks) ? result.tasks.length : 0
+        const queueLength = result.queueStatus?.queueLength ?? 0
+        const isProcessing = Boolean(result.queueStatus?.isProcessing)
+
         setSaveResult({
           type: 'success',
-          message: `扫描执行成功！扫描了 ${result.result?.scannedPaths || 0} 个路径，找到 ${result.result?.totalFiles || 0} 个文件`
+          message: `扫描任务已加入队列：本次加入 ${queuedPaths} 个路径，当前队列长度 ${queueLength}${isProcessing ? '，队列正在处理中。' : '。'}`
         })
       } else {
         const error = await response.json()
@@ -1202,11 +1323,143 @@ export default function ConfigPage() {
       </Box>
 
       <Paper elevation={3} sx={{ p: 4, borderRadius: 3 }}>
+        <Tabs
+          value={activeTab}
+          onChange={(_, value) => setActiveTab(value)}
+          sx={{ mb: 3 }}
+        >
+          <Tab label="MySQL 配置" value="mysql" />
+          <Tab label="WebDAV 配置" value="webdav" />
+          <Tab label="定时扫描配置" value="scheduled" />
+          <Tab label="扫描目录配置" value="directories" />
+        </Tabs>
+
+        {activeTab === 'mysql' && (
+          <>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                <SettingsIcon color="primary" sx={{ fontSize: 32 }} />
+                <Box>
+                  <Typography variant="h6">MySQL 配置</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    单独保存数据库连接配置，供应用启动与重启后自动读取
+                  </Typography>
+                </Box>
+              </Box>
+            </Box>
+
+            <Divider sx={{ mb: 3 }} />
+
+            <Box sx={{ mt: 1 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+                <Box>
+                  <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                    当前来源: {mysqlConfigSource === 'file' ? '配置文件' : mysqlConfigSource === 'env' ? '环境变量' : '未配置'}
+                  </Typography>
+                  {mysqlConfigFilePath && (
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      配置文件: {mysqlConfigFilePath}
+                    </Typography>
+                  )}
+                </Box>
+                {loadingMysqlConfig && <CircularProgress size={20} />}
+              </Box>
+
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <Box sx={{ display: 'flex', gap: 2, flexDirection: { xs: 'column', md: 'row' } }}>
+                  <TextField
+                    label="MySQL 主机"
+                    placeholder="127.0.0.1"
+                    fullWidth
+                    value={mysqlConfig.host}
+                    onChange={handleMysqlChange('host')}
+                    helperText="外部 MySQL 服务器主机名或 IP"
+                    required
+                  />
+                  <TextField
+                    label="MySQL 端口"
+                    type="number"
+                    fullWidth
+                    value={mysqlConfig.port}
+                    onChange={handleMysqlChange('port')}
+                    inputProps={{ min: 1, max: 65535 }}
+                    helperText="默认 3306"
+                    required
+                  />
+                </Box>
+
+                <Box sx={{ display: 'flex', gap: 2, flexDirection: { xs: 'column', md: 'row' } }}>
+                  <TextField
+                    label="MySQL 用户名"
+                    fullWidth
+                    value={mysqlConfig.user}
+                    onChange={handleMysqlChange('user')}
+                    required
+                  />
+                  <TextField
+                    label="MySQL 密码"
+                    type="password"
+                    fullWidth
+                    value={mysqlConfig.password}
+                    onChange={handleMysqlChange('password')}
+                    required
+                  />
+                </Box>
+
+                <Box sx={{ display: 'flex', gap: 2, flexDirection: { xs: 'column', md: 'row' } }}>
+                  <TextField
+                    label="数据库名"
+                    fullWidth
+                    value={FIXED_MYSQL_DATABASE}
+                    InputProps={{ readOnly: true }}
+                    disabled
+                    required
+                    helperText="当前版本固定使用该数据库名，不支持修改"
+                  />
+                  <TextField
+                    label="连接池大小"
+                    type="number"
+                    fullWidth
+                    value={mysqlConfig.connectionLimit}
+                    onChange={handleMysqlChange('connectionLimit')}
+                    inputProps={{ min: 1, max: 100 }}
+                    helperText="默认 10"
+                  />
+                </Box>
+
+                <Box sx={{ display: 'flex', gap: 2, flexDirection: { xs: 'column', md: 'row' } }}>
+                  <TextField
+                    label="字符集"
+                    fullWidth
+                    value={mysqlConfig.charset}
+                    onChange={handleMysqlChange('charset')}
+                  />
+                  <TextField
+                    label="时区"
+                    fullWidth
+                    value={mysqlConfig.timezone}
+                    onChange={handleMysqlChange('timezone')}
+                    helperText="例如 +08:00"
+                  />
+                </Box>
+              </Box>
+            </Box>
+          </>
+        )}
+
+        {activeTab !== 'mysql' && webdavLoadError && (
+          <Alert severity="warning" sx={{ mb: 3 }}>
+            WebDAV 配置暂未成功从数据库加载：{webdavLoadError}。你仍然可以先切到 MySQL Tab 单独保存数据库配置。
+          </Alert>
+        )}
+
+        {activeTab === 'webdav' && (
+          <>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
             <SettingsIcon color="primary" sx={{ fontSize: 32 }} />
             <Box>
-              <Typography variant="h6">连接设置</Typography>
+              <Typography variant="h6">WebDAV 连接设置</Typography>
               <Typography variant="body2" color="text.secondary">
                 配置您的 WebDAV 服务器连接信息
               </Typography>
@@ -1324,319 +1577,322 @@ export default function ConfigPage() {
               }
             />
           </Box>
+
         </Box>
+        </>
+        )}
 
-        <Divider sx={{ my: 3 }} />
-
-        {/* 扫描设置 */}
-        <Box sx={{ mb: 3 }}>
-          <Typography variant="h6" sx={{ mb: 2 }}>
-            扫描设置
-          </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            递归扫描将扫描所有子目录，无深度和文件数量限制
-          </Typography>
-          
-          {/* 并发数设置 */}
-          <Box sx={{ display: 'flex', gap: 2, flexDirection: { xs: 'column', md: 'row' } }}>
-            <TextField
-              label="并发数"
-              type="number"
-              value={config.scanSettings?.concurrency ?? 10}
-              onChange={(e) => {
-                const value = e.target.value
-                setConfig({
-                  ...config,
-                  scanSettings: {
-                    ...config.scanSettings,
-                    concurrency: value
-                  }
-                })
-              }}
-              onBlur={(e) => {
-                const value = e.target.value
-                const numValue = parseInt(value)
-                if (value === '' || isNaN(numValue) || numValue < 5) {
-                  setConfig({
-                    ...config,
-                    scanSettings: {
-                      ...config.scanSettings,
-                      concurrency: 10
-                    }
-                  })
-                } else {
-                  setConfig({
-                    ...config,
-                    scanSettings: {
-                      ...config.scanSettings,
-                      concurrency: numValue
-                    }
-                  })
-                }
-              }}
-              helperText="同时发起的请求数量，影响扫描速度"
-              inputProps={{ min: 5, max: 50 }}
-              sx={{ flex: 1 }}
-            />
-            <TextField
-              label="预加载数量"
-              type="number"
-              value={config.scanSettings?.preloadCount ?? 10}
-              onChange={(e) => {
-                const value = e.target.value
-                setConfig({
-                  ...config,
-                  scanSettings: {
-                    ...config.scanSettings,
-                    preloadCount: value
-                  }
-                })
-              }}
-              onBlur={(e) => {
-                const value = e.target.value
-                const numValue = parseInt(value)
-                if (value === '' || isNaN(numValue) || numValue < 5) {
-                  setConfig({
-                    ...config,
-                    scanSettings: {
-                      ...config.scanSettings,
-                      preloadCount: 10
-                    }
-                  })
-                } else {
-                  setConfig({
-                    ...config,
-                    scanSettings: {
-                      ...config.scanSettings,
-                      preloadCount: numValue
-                    }
-                  })
-                }
-              }}
-              helperText="预加载缓存的文件数量，影响浏览流畅度"
-              inputProps={{ min: 5, max: 30 }}
-              sx={{ flex: 1 }}
-            />
-          </Box>
-        </Box>
-
-        <Divider sx={{ my: 3 }} />
-
-        {/* 定时扫描设置 */}
-        <Box sx={{ mb: 3 }}>
-          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-            <Typography variant="h6">
-              定时扫描设置
-            </Typography>
-            <Button
-              variant="outlined"
-              startIcon={<AddIcon />}
-              onClick={() => {
-                setEditingScan(null)
-                setScheduledScanDialogOpen(true)
-              }}
-            >
-              添加定时扫描
-            </Button>
-          </Box>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            设置定时扫描任务，通过cron表达式配置执行频率，系统将自动执行扫描并更新缓存
-          </Typography>
-          
-          <Alert severity="success" sx={{ mb: 2 }}>
-            <Typography variant="body2">
-              ✅ 内置调度器已启用，无需额外配置。系统会根据任务频率自动调整检查间隔，确保精确执行。
-            </Typography>
-            {schedulerStatus && (
-              <Typography variant="body2" sx={{ mt: 1 }}>
-                调度器状态: {schedulerStatus.status?.isRunning ? '运行中' : '已停止'} | 
-                检查间隔: {schedulerStatus.status?.checkIntervalMinutes || 5}分钟 | 
-                最后检查: {schedulerStatus.timestamp ? new Date(schedulerStatus.timestamp).toLocaleString('zh-CN') : '未知'}
-              </Typography>
-            )}
-          </Alert>
-          
-          {loadingScans ? (
-            <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
-              <CircularProgress size={24} />
-            </Box>
-          ) : scheduledScans.length === 0 ? (
-            <Alert severity="info">
-              暂无定时扫描任务，点击"添加定时扫描"创建第一个任务
-            </Alert>
-          ) : (
-            <Stack spacing={1}>
-              {scheduledScans.map((scan) => (
-                <Card key={scan.id} variant="outlined">
-                  <CardContent sx={{ py: 2, '&:last-child': { pb: 2 } }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <Box sx={{ flex: 1 }}>
-                        <Typography variant="body1" fontWeight="medium">
-                          {scan.webdav_url}
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          路径: {safeJsonParse(scan.media_paths, []).join(', ') || '未设置'}
-                        </Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          执行时间: {scan.cron_expression} | 
-                          状态: {scan.is_active ? '启用' : '禁用'} |
-                          下次运行: {scan.next_run ? new Date(scan.next_run).toLocaleString('zh-CN') : '未设置'}
-                        </Typography>
-                      </Box>
-                      <Box sx={{ display: 'flex', gap: 0.5 }}>
-                        <IconButton
-                          size="small"
-                          onClick={() => executeScheduledScan(scan.id)}
-                          color="primary"
-                          title="手动执行扫描"
-                        >
-                          <RefreshIcon />
-                        </IconButton>
-                        <IconButton
-                          size="small"
-                          onClick={() => {
-                            setEditingScan(scan)
-                            setScheduledScanDialogOpen(true)
-                          }}
-                        >
-                          <SettingsIcon />
-                        </IconButton>
-                        <IconButton
-                          size="small"
-                          onClick={() => deleteScheduledScan(scan.id)}
-                          color="error"
-                        >
-                          <DeleteIcon />
-                        </IconButton>
-                      </Box>
-                    </Box>
-                  </CardContent>
-                </Card>
-              ))}
-            </Stack>
-          )}
-        </Box>
-
-        <Divider sx={{ my: 3 }} />
-
-        {/* 已选择的目录 */}
-        <Box sx={{ mb: 3 }}>
-          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-            <Typography variant="h6">已选择的目录 ({selectedPaths.size})</Typography>
-            <Button
-              variant="outlined"
-              startIcon={<FolderOpenIcon />}
-              onClick={openBrowseDialog}
-              disabled={!config.url || !config.username || !config.password}
-            >
-              浏览并选择目录
-            </Button>
-          </Box>
-
-          {/* 风控状态提示 */}
-          {rateLimited && rateLimitedUntil && (
-            <Alert 
-              severity="warning" 
-              sx={{ mb: 2 }}
-              action={
-                <Button 
-                  color="inherit" 
-                  size="small"
-                  onClick={async () => {
-                    try {
-                      await fetch('/api/webdav/recursive-scan', { method: 'DELETE' })
-                      setRateLimited(false)
-                      setRateLimitedUntil(null)
-                      setTestResult({ type: 'success', message: '风控状态已重置' })
-                    } catch (error) {
-                      setTestResult({ type: 'error', message: '重置风控状态失败' })
-                    }
+        {activeTab === 'scheduled' && (
+          <>
+            <Box sx={{ mb: 3 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                <Typography variant="h6">
+                  定时扫描设置
+                </Typography>
+                <Button
+                  variant="outlined"
+                  startIcon={<AddIcon />}
+                  onClick={() => {
+                    setEditingScan(null)
+                    setScheduledScanDialogOpen(true)
                   }}
                 >
-                  手动恢复
+                  添加定时扫描
                 </Button>
-              }
-            >
-              ⚠️ 检测到风控限制！扫描任务暂停至 {new Date(rateLimitedUntil).toLocaleString()}
-              （连续多次扫描失败，系统自动退避等待）
-            </Alert>
-          )}
-
-          {/* 批量操作 */}
-          {selectedPaths.size > 0 && (
-            <Box sx={{ mb: 2, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-              <Button
-                size="small"
-                variant="outlined"
-                onClick={() => {
-                  Array.from(selectedPaths).forEach(path => {
-                    if (!pathStats.has(path)) {
-                      startRecursiveScan(path, true)
-                    }
-                  })
-                }}
-                disabled={Array.from(selectedPaths).some(path => scanning.has(path))}
-              >
-                扫描未缓存目录
-              </Button>
-              <Button
-                size="small"
-                variant="outlined"
-                color="warning"
-                onClick={() => {
-                  Array.from(selectedPaths).forEach(path => {
-                    startRecursiveScan(path, true) // 强制重新扫描
-                  })
-                }}
-                disabled={Array.from(selectedPaths).some(path => scanning.has(path))}
-              >
-                强制扫描全部
-              </Button>
-              <Button
-                size="small"
-                variant="outlined"
-                color="error"
-                onClick={() => {
-                  setSelectedPaths(new Set())
-                  setPathStats(new Map())
-                }}
-              >
-                清空所有
-              </Button>
+              </Box>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                设置定时扫描任务，通过cron表达式配置执行频率，系统将自动执行扫描并更新缓存
+              </Typography>
+              
+              <Alert severity="success" sx={{ mb: 2 }}>
+                <Typography variant="body2">
+                  ✅ 内置调度器已启用，无需额外配置。系统会根据任务频率自动调整检查间隔，确保精确执行。
+                </Typography>
+                {schedulerStatus && (
+                  <Typography variant="body2" sx={{ mt: 1 }}>
+                    调度器状态: {schedulerStatus.status?.isRunning ? '运行中' : '已停止'} | 
+                    检查间隔: {schedulerStatus.status?.checkIntervalMinutes || 5}分钟 | 
+                    最后检查: {schedulerStatus.timestamp ? new Date(schedulerStatus.timestamp).toLocaleString('zh-CN') : '未知'}
+                  </Typography>
+                )}
+              </Alert>
+              
+              {loadingScans ? (
+                <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
+                  <CircularProgress size={24} />
+                </Box>
+              ) : scheduledScans.length === 0 ? (
+                <Alert severity="info">
+                  暂无定时扫描任务，点击"添加定时扫描"创建第一个任务
+                </Alert>
+              ) : (
+                <Stack spacing={1}>
+                  {scheduledScans.map((scan) => (
+                    <Card key={scan.id} variant="outlined">
+                      <CardContent sx={{ py: 2, '&:last-child': { pb: 2 } }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <Box sx={{ flex: 1 }}>
+                            <Typography variant="body1" fontWeight="medium">
+                              {scan.webdav_url}
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              路径: {safeJsonParse(scan.media_paths, []).join(', ') || '未设置'}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              执行时间: {scan.cron_expression} | 
+                              状态: {scan.is_active ? '启用' : '禁用'} |
+                              下次运行: {scan.next_run ? new Date(scan.next_run).toLocaleString('zh-CN') : '未设置'}
+                            </Typography>
+                          </Box>
+                          <Box sx={{ display: 'flex', gap: 0.5 }}>
+                            <IconButton
+                              size="small"
+                              onClick={() => executeScheduledScan(scan.id)}
+                              color="primary"
+                              title="手动执行扫描"
+                            >
+                              <RefreshIcon />
+                            </IconButton>
+                            <IconButton
+                              size="small"
+                              onClick={() => {
+                                setEditingScan(scan)
+                                setScheduledScanDialogOpen(true)
+                              }}
+                            >
+                              <SettingsIcon />
+                            </IconButton>
+                            <IconButton
+                              size="small"
+                              onClick={() => deleteScheduledScan(scan.id)}
+                              color="error"
+                            >
+                              <DeleteIcon />
+                            </IconButton>
+                          </Box>
+                        </Box>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </Stack>
+              )}
             </Box>
-          )}
+          </>
+        )}
 
-          {selectedPaths.size === 0 ? (
-            <Alert severity="info">
-              尚未选择任何目录，请点击"浏览并选择目录"按钮来选择要挂载的媒体目录
-            </Alert>
-          ) : (
-            <Stack spacing={1}>
-              {Array.from(selectedPaths).map(path => {
-                const stats = pathStats.get(path)
-                const isScanning = scanning.has(path)
-                const progress = scanProgress.get(path)
-                
-                return (
-                  <DirectoryItem
-                    key={path}
-                    path={path}
-                    stats={stats}
-                    isScanning={isScanning}
-                    scanProgress={progress}
-                    webdavConfig={{
-                      url: config.url,
-                      username: config.username
+        {activeTab === 'directories' && (
+          <>
+            <Box sx={{ mb: 3 }}>
+              <Typography variant="h6" sx={{ mb: 2 }}>
+                扫描设置
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                递归扫描将扫描所有子目录，无深度和文件数量限制
+              </Typography>
+              
+              <Box sx={{ display: 'flex', gap: 2, flexDirection: { xs: 'column', md: 'row' } }}>
+                <TextField
+                  label="并发数"
+                  type="number"
+                  value={config.scanSettings?.concurrency ?? 10}
+                  onChange={(e) => {
+                    const value = e.target.value
+                    setConfig({
+                      ...config,
+                      scanSettings: {
+                        ...config.scanSettings,
+                        concurrency: value
+                      }
+                    })
+                  }}
+                  onBlur={(e) => {
+                    const value = e.target.value
+                    const numValue = parseInt(value)
+                    if (value === '' || isNaN(numValue) || numValue < 5) {
+                      setConfig({
+                        ...config,
+                        scanSettings: {
+                          ...config.scanSettings,
+                          concurrency: 10
+                        }
+                      })
+                    } else {
+                      setConfig({
+                        ...config,
+                        scanSettings: {
+                          ...config.scanSettings,
+                          concurrency: numValue
+                        }
+                      })
+                    }
+                  }}
+                  helperText="同时发起的请求数量，影响扫描速度"
+                  inputProps={{ min: 5, max: 50 }}
+                  sx={{ flex: 1 }}
+                />
+                <TextField
+                  label="预加载数量"
+                  type="number"
+                  value={config.scanSettings?.preloadCount ?? 10}
+                  onChange={(e) => {
+                    const value = e.target.value
+                    setConfig({
+                      ...config,
+                      scanSettings: {
+                        ...config.scanSettings,
+                        preloadCount: value
+                      }
+                    })
+                  }}
+                  onBlur={(e) => {
+                    const value = e.target.value
+                    const numValue = parseInt(value)
+                    if (value === '' || isNaN(numValue) || numValue < 5) {
+                      setConfig({
+                        ...config,
+                        scanSettings: {
+                          ...config.scanSettings,
+                          preloadCount: 10
+                        }
+                      })
+                    } else {
+                      setConfig({
+                        ...config,
+                        scanSettings: {
+                          ...config.scanSettings,
+                          preloadCount: numValue
+                        }
+                      })
+                    }
+                  }}
+                  helperText="预加载缓存的文件数量，影响浏览流畅度"
+                  inputProps={{ min: 5, max: 30 }}
+                  sx={{ flex: 1 }}
+                />
+              </Box>
+            </Box>
+
+            <Divider sx={{ my: 3 }} />
+
+            <Box sx={{ mb: 3 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                <Typography variant="h6">已选择的目录 ({selectedPaths.size})</Typography>
+                <Button
+                  variant="outlined"
+                  startIcon={<FolderOpenIcon />}
+                  onClick={openBrowseDialog}
+                  disabled={!config.url || !config.username || !config.password}
+                >
+                  浏览并选择目录
+                </Button>
+              </Box>
+
+              {rateLimited && rateLimitedUntil && (
+                <Alert 
+                  severity="warning" 
+                  sx={{ mb: 2 }}
+                  action={
+                    <Button 
+                      color="inherit" 
+                      size="small"
+                      onClick={async () => {
+                        try {
+                          await fetch('/api/webdav/recursive-scan', { method: 'DELETE' })
+                          setRateLimited(false)
+                          setRateLimitedUntil(null)
+                          setTestResult({ type: 'success', message: '风控状态已重置' })
+                        } catch (error) {
+                          setTestResult({ type: 'error', message: '重置风控状态失败' })
+                        }
+                      }}
+                    >
+                      手动恢复
+                    </Button>
+                  }
+                >
+                  ⚠️ 检测到风控限制！扫描任务暂停至 {new Date(rateLimitedUntil).toLocaleString()}
+                  （连续多次扫描失败，系统自动退避等待）
+                </Alert>
+              )}
+
+              {selectedPaths.size > 0 && (
+                <Box sx={{ mb: 2, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={() => {
+                      Array.from(selectedPaths).forEach(path => {
+                        if (!pathStats.has(path)) {
+                          startRecursiveScan(path, true)
+                        }
+                      })
                     }}
-                    onRecursiveScan={startRecursiveScan}
-                    onRemove={removeSelectedPath}
-                    onForceRemoveCache={forceRemovePathCache}
-                  />
-                )
-              })}
-            </Stack>
-          )}
-        </Box>
+                    disabled={Array.from(selectedPaths).some(path => scanning.has(path))}
+                  >
+                    扫描未缓存目录
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="warning"
+                    onClick={() => {
+                      Array.from(selectedPaths).forEach(path => {
+                        startRecursiveScan(path, true)
+                      })
+                    }}
+                    disabled={Array.from(selectedPaths).some(path => scanning.has(path))}
+                  >
+                    强制扫描全部
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="error"
+                    onClick={() => {
+                      setSelectedPaths(new Set())
+                      setPathStats(new Map())
+                    }}
+                  >
+                    清空所有
+                  </Button>
+                </Box>
+              )}
+
+              {selectedPaths.size === 0 ? (
+                <Alert severity="info">
+                  尚未选择任何目录，请点击"浏览并选择目录"按钮来选择要挂载的媒体目录
+                </Alert>
+              ) : (
+                <Stack spacing={1}>
+                  {Array.from(selectedPaths).map(path => {
+                    const stats = pathStats.get(path)
+                    const isScanning = scanning.has(path)
+                    const progress = scanProgress.get(path)
+                    
+                    return (
+                      <DirectoryItem
+                        key={path}
+                        path={path}
+                        stats={stats}
+                        isScanning={isScanning}
+                        scanProgress={progress}
+                        webdavConfig={{
+                          url: config.url,
+                          username: config.username
+                        }}
+                        onRecursiveScan={startRecursiveScan}
+                        onRemove={removeSelectedPath}
+                        onForceRemoveCache={forceRemovePathCache}
+                      />
+                    )
+                  })}
+                </Stack>
+              )}
+            </Box>
+          </>
+        )}
+
+        {(activeTab === 'webdav' || activeTab === 'mysql' || activeTab === 'directories') && <Divider sx={{ my: 3 }} />}
 
         <Divider sx={{ my: 3 }} />
 
@@ -1653,24 +1909,73 @@ export default function ConfigPage() {
         )}
 
         <Box sx={{ display: 'flex', gap: 2 }}>
-          <Button
-            variant="outlined"
-            fullWidth
-            onClick={testConnection}
-            disabled={testing || saving}
-            startIcon={testing ? <CircularProgress size={20} /> : <CheckCircleIcon />}
-          >
-            {testing ? '测试中...' : '测试连接'}
-          </Button>
-          <Button
-            variant="contained"
-            fullWidth
-            onClick={saveConfig}
-            disabled={testing || saving || selectedPaths.size === 0}
-            startIcon={saving ? <CircularProgress size={20} color="inherit" /> : <SaveIcon />}
-          >
-            {saving ? '保存中...' : '保存配置'}
-          </Button>
+          {activeTab === 'mysql' ? (
+            <Button
+              variant="contained"
+              fullWidth
+              onClick={saveMysqlConfig}
+              disabled={saving}
+              startIcon={saving ? <CircularProgress size={20} color="inherit" /> : <SaveIcon />}
+            >
+              {saving ? '保存中...' : '保存 MySQL 配置'}
+            </Button>
+          ) : activeTab === 'webdav' ? (
+            <>
+              <Button
+                variant="outlined"
+                fullWidth
+                onClick={testConnection}
+                disabled={testing || saving}
+                startIcon={testing ? <CircularProgress size={20} /> : <CheckCircleIcon />}
+              >
+                {testing ? '测试中...' : '测试连接'}
+              </Button>
+              <Button
+                variant="contained"
+                fullWidth
+                onClick={() => saveConfig('WebDAV 连接配置已保存！')}
+                disabled={testing || saving}
+                startIcon={saving ? <CircularProgress size={20} color="inherit" /> : <SaveIcon />}
+              >
+                {saving ? '保存中...' : '保存 WebDAV 配置'}
+              </Button>
+            </>
+          ) : activeTab === 'directories' ? (
+            <Button
+              variant="contained"
+              fullWidth
+              onClick={() => saveConfig('扫描目录与扫描设置已保存！')}
+              disabled={saving}
+              startIcon={saving ? <CircularProgress size={20} color="inherit" /> : <SaveIcon />}
+            >
+              {saving ? '保存中...' : '保存扫描目录配置'}
+            </Button>
+          ) : activeTab === 'scheduled' ? (
+            <Alert severity="info" sx={{ width: '100%' }}>
+              定时扫描配置通过当前 Tab 内的“添加定时扫描”或编辑按钮分别独立保存。
+            </Alert>
+          ) : (
+            <>
+              <Button
+                variant="outlined"
+                fullWidth
+                onClick={testConnection}
+                disabled={testing || saving}
+                startIcon={testing ? <CircularProgress size={20} /> : <CheckCircleIcon />}
+              >
+                {testing ? '测试中...' : '测试连接'}
+              </Button>
+              <Button
+                variant="contained"
+                fullWidth
+                onClick={() => saveConfig()}
+                disabled={testing || saving}
+                startIcon={saving ? <CircularProgress size={20} color="inherit" /> : <SaveIcon />}
+              >
+                {saving ? '保存中...' : '保存 WebDAV 配置'}
+              </Button>
+            </>
+          )}
         </Box>
 
         <Box sx={{ mt: 3, p: 2, backgroundColor: 'grey.100', borderRadius: 2 }}>

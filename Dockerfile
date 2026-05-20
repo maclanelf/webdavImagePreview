@@ -38,7 +38,6 @@ RUN adduser --system --uid 1001 nextjs
 # 复制构建产物
 COPY --from=base /app/.next/standalone ./
 COPY --from=base /app/.next/static ./.next/static
-COPY --from=base /app/dist-runtime ./dist-runtime
 
 # 复制 Nginx 配置
 COPY nginx.conf /etc/nginx/nginx.conf

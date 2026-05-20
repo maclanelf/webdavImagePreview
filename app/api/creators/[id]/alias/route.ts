@@ -23,11 +23,11 @@ export async function POST(
     
     // 如果需要批量更新，先预览影响范围
     if (batchUpdate) {
-      const preview = creators.previewBatchLink(aliasName)
+      const preview = await creators.previewBatchLink(aliasName)
       console.log(`📊 [API] 预览结果: 总计 ${preview.totalCount} 条记录`)
       
       // 执行添加别名并批量关联
-      const result = creators.addOtherNameAndLinkFiles(id, aliasName, true)
+      const result = await creators.addOtherNameAndLinkFiles(id, aliasName, true)
       console.log(`✅ [API] 执行结果: ${result.message}`)
       
       return NextResponse.json({ 
@@ -40,7 +40,7 @@ export async function POST(
       })
     } else {
       // 只添加别名
-      const result = creators.addOtherName(id, aliasName)
+      const result = await creators.addOtherName(id, aliasName)
       
       return NextResponse.json({ 
         success: result.success, 
@@ -74,7 +74,7 @@ export async function DELETE(
       )
     }
     
-    const result = creators.removeOtherName(id, aliasName)
+    const result = await creators.removeOtherName(id, aliasName)
     
     return NextResponse.json({ 
       success: true, 

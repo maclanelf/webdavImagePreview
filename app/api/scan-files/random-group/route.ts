@@ -50,7 +50,7 @@ export async function GET(request: NextRequest) {
     // 获取所有相关 cache 的 ID
     const cacheIds: number[] = []
     for (const path of pathList) {
-      const cache = scanCache.get(webdavUrl, webdavUsername, path) as any
+      const cache = await scanCache.get(webdavUrl, webdavUsername, path) as any
       if (cache) {
         cacheIds.push(cache.id)
       }
@@ -61,7 +61,7 @@ export async function GET(request: NextRequest) {
     }
 
     // 检查是否有迁移数据
-    if (!scanFiles.hasDataMultiple(cacheIds)) {
+    if (!await scanFiles.hasDataMultiple(cacheIds)) {
       return NextResponse.json({ 
         files: [], 
         parentPath: null,
@@ -71,7 +71,7 @@ export async function GET(request: NextRequest) {
     }
 
     // 使用新的跨缓存随机图组方法
-    const result = scanFiles.getRandomGroupMultiple(cacheIds, {
+    const result = await scanFiles.getRandomGroupMultiple(cacheIds, {
       fileType: fileType || undefined,
       isViewed: isViewed !== null ? isViewed === 'true' : undefined,
       excludeParentPath: excludeParentPath || undefined,

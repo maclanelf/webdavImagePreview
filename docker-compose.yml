@@ -23,13 +23,15 @@ services:
       - PORT=3000
       - HOSTNAME=0.0.0.0
       - TZ=Asia/Shanghai
+      # MySQL 配置文件路径（推荐挂载到宿主机）
+      - MYSQL_CONFIG_FILE=${MYSQL_CONFIG_FILE:-/app/data/mysql-config.json}
       # WebDAV 配置 (可选，也可以通过应用界面配置)
       - WEBDAV_URL=${WEBDAV_URL:-}
       - WEBDAV_USERNAME=${WEBDAV_USERNAME:-}
       - WEBDAV_PASSWORD=${WEBDAV_PASSWORD:-}
       - WEBDAV_MEDIA_PATH=${WEBDAV_MEDIA_PATH:-}
     volumes:
-      # 数据持久化 - SQLite 数据库和评分数据（映射到宿主机）
+      # 数据持久化 - 保存 MySQL 配置文件、应用缓存与日志
       - /vol1/1000/webdavimagepreview/app-data:/app/data
       # 应用日志文件（映射到宿主机）
       - /vol1/1000/webdavimagepreview/app-logs:/app/logs
@@ -43,6 +45,7 @@ services:
       retries: 3
       start_period: 40s
 
+# 当前 Compose 未内置 MySQL 服务，推荐连接外部 MySQL，并通过挂载文件保存配置
 # 注释掉 volumes 定义，因为现在使用宿主机目录映射
 # volumes:
 #   webdav_data:

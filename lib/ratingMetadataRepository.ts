@@ -1,82 +1,55 @@
-import db from './databaseCore'
-import { ensureInitialized } from './databaseInitialization'
+import { ensureMySqlInitialized, executeMySqlStatement, queryMySqlOne, queryMySqlRows } from './database'
 
 export const customEvaluations = {
-  getAll: () => {
-    ensureInitialized()
-    const stmt = db.prepare('SELECT * FROM custom_evaluations ORDER BY usage_count DESC, label ASC')
-    return stmt.all()
+  getAll: async () => {
+    await ensureMySqlInitialized()
+    return queryMySqlRows('SELECT * FROM custom_evaluations ORDER BY usage_count DESC, label ASC')
   },
 
-  add: (label: string) => {
-    ensureInitialized()
-    const existing = db.prepare('SELECT * FROM custom_evaluations WHERE label = ?').get(label)
+  add: async (label: string) => {
+    await ensureMySqlInitialized()
+    const existing = await queryMySqlOne('SELECT * FROM custom_evaluations WHERE label = ?', [label])
 
     if (existing) {
-      const stmt = db.prepare('UPDATE custom_evaluations SET usage_count = usage_count + 1 WHERE label = ?')
-      return stmt.run(label)
+      return executeMySqlStatement('UPDATE custom_evaluations SET usage_count = usage_count + 1 WHERE label = ?', [label])
     }
 
-    const stmt = db.prepare('INSERT INTO custom_evaluations (label) VALUES (?)')
-    return stmt.run(label)
+    return executeMySqlStatement('INSERT INTO custom_evaluations (label) VALUES (?)', [label])
   },
 
-  delete: (label: string) => {
-    ensureInitialized()
-    try {
-      const stmt = db.prepare('DELETE FROM custom_evaluations WHERE label = ?')
-      return stmt.run(label)
-    } catch (error: any) {
-      if (error.code === 'SQLITE_BUSY') {
-        console.warn('数据库繁忙，等待后重试...')
-        const stmt = db.prepare('DELETE FROM custom_evaluations WHERE label = ?')
-        return stmt.run(label)
-      }
-      throw error
-    }
+  delete: async (label: string) => {
+    await ensureMySqlInitialized()
+    return executeMySqlStatement('DELETE FROM custom_evaluations WHERE label = ?', [label])
   },
 }
 
 export const categories = {
-  getAll: () => {
-    ensureInitialized()
-    const stmt = db.prepare('SELECT * FROM categories ORDER BY usage_count DESC, name ASC')
-    return stmt.all()
+  getAll: async () => {
+    await ensureMySqlInitialized()
+    return queryMySqlRows('SELECT * FROM categories ORDER BY usage_count DESC, name ASC')
   },
 
-  add: (name: string) => {
-    ensureInitialized()
-    const existing = db.prepare('SELECT * FROM categories WHERE name = ?').get(name)
+  add: async (name: string) => {
+    await ensureMySqlInitialized()
+    const existing = await queryMySqlOne('SELECT * FROM categories WHERE name = ?', [name])
 
     if (existing) {
-      const stmt = db.prepare('UPDATE categories SET usage_count = usage_count + 1 WHERE name = ?')
-      return stmt.run(name)
+      return executeMySqlStatement('UPDATE categories SET usage_count = usage_count + 1 WHERE name = ?', [name])
     }
 
-    const stmt = db.prepare('INSERT INTO categories (name) VALUES (?)')
-    return stmt.run(name)
+    return executeMySqlStatement('INSERT INTO categories (name) VALUES (?)', [name])
   },
 
-  delete: (name: string) => {
-    ensureInitialized()
-    try {
-      const stmt = db.prepare('DELETE FROM categories WHERE name = ?')
-      return stmt.run(name)
-    } catch (error: any) {
-      if (error.code === 'SQLITE_BUSY') {
-        console.warn('数据库繁忙，等待后重试...')
-        const stmt = db.prepare('DELETE FROM categories WHERE name = ?')
-        return stmt.run(name)
-      }
-      throw error
-    }
+  delete: async (name: string) => {
+    await ensureMySqlInitialized()
+    return executeMySqlStatement('DELETE FROM categories WHERE name = ?', [name])
   },
 }
 
 export const statistics = {
-  getMediaStats: () => {
-    ensureInitialized()
-    const stmt = db.prepare(`
+  getMediaStats: async () => {
+    await ensureMySqlInitialized()
+    return queryMySqlOne(`
       SELECT 
         COUNT(*) as total,
         COUNT(CASE WHEN rating IS NOT NULL THEN 1 END) as rated,
@@ -84,12 +57,11 @@ export const statistics = {
         AVG(rating) as avg_rating
       FROM media_ratings
     `)
-    return stmt.get()
   },
 
-  getGroupStats: () => {
-    ensureInitialized()
-    const stmt = db.prepare(`
+  getGroupStats: async () => {
+    await ensureMySqlInitialized()
+    return queryMySqlOne(`
       SELECT 
         COUNT(*) as total,
         COUNT(CASE WHEN rating IS NOT NULL THEN 1 END) as rated,
@@ -97,26 +69,23 @@ export const statistics = {
         AVG(rating) as avg_rating
       FROM group_ratings
     `)
-    return stmt.get()
   },
 
-  getTopEvaluations: (limit: number = 10) => {
-    ensureInitialized()
-    const stmt = db.prepare('SELECT * FROM custom_evaluations ORDER BY usage_count DESC LIMIT ?')
-    return stmt.all(limit)
+  getTopEvaluations: async (limit: number = 10) => {
+    await ensureMySqlInitialized()
+    return queryMySqlRows('SELECT * FROM custom_evaluations ORDER BY usage_count DESC LIMIT ?', [limit])
   },
 
-  getTopCategories: (limit: number = 10) => {
-    ensureInitialized()
-    const stmt = db.prepare('SELECT * FROM categories ORDER BY usage_count DESC LIMIT ?')
-    return stmt.all(limit)
+  getTopCategories: async (limit: number = 10) => {
+    await ensureMySqlInitialized()
+    return queryMySqlRows('SELECT * FROM categories ORDER BY usage_count DESC LIMIT ?', [limit])
   },
 }
 
-export function addCustomEvaluationLabel(label: string) {
+export async function addCustomEvaluationLabel(label: string) {
   return customEvaluations.add(label)
 }
 
-export function addCategoryLabel(name: string) {
+export async function addCategoryLabel(name: string) {
   return categories.add(name)
 }

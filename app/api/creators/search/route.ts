@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: true, data: [] })
     }
     
-    const results = creators.search(query.trim())
+    const results = await creators.search(query.trim())
     return NextResponse.json({ success: true, data: results })
   } catch (error: any) {
     return NextResponse.json(

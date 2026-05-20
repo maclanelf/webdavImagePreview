@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { groupRatings } from '@/lib/groupRatingRepository'
-import db, { performCheckpoint } from '@/lib/databaseCore'
-import { ensureInitialized } from '@/lib/databaseInitialization'
-import { UNKNOWN_CREATOR_ID } from '@/lib/constants'
+import { queryMySqlOne } from '@/lib/database'
 import { categories, customEvaluations } from '@/lib/ratingMetadataRepository'
 
 // 辅助函数：解析JSON字段
@@ -49,8 +47,8 @@ function getGroupNameFromPath(groupPath: string) {
   return parts[parts.length - 1] || '根目录'
 }
 
-function resolveGroupMetadata(groupPath: string) {
-  const existing = groupRatings.get(groupPath) as any
+async function resolveGroupMetadata(groupPath: string) {
+  const existing = await groupRatings.get(groupPath) as any
   if (existing) {
     return {
       groupName: existing.group_name || getGroupNameFromPath(groupPath),
@@ -58,11 +56,11 @@ function resolveGroupMetadata(groupPath: string) {
     }
   }
 
-  const countRow = db.prepare(`
+  const countRow = await queryMySqlOne<{ fileCount?: number }>(`
     SELECT COUNT(*) AS fileCount
     FROM scan_files
     WHERE parent_path = ?
-  `).get(groupPath) as { fileCount?: number } | undefined
+  `, [groupPath])
 
   return {
     groupName: getGroupNameFromPath(groupPath),
@@ -72,8 +70,6 @@ function resolveGroupMetadata(groupPath: string) {
 
 export async function GET(request: NextRequest) {
   try {
-    // 确保数据库已初始化
-    ensureInitialized()
     const { searchParams } = new URL(request.url)
     const groupPath = searchParams.get('groupPath')
 
@@ -82,13 +78,13 @@ export async function GET(request: NextRequest) {
       // 获取单个图组评分
       const groupName = getGroupNameFromPath(normalizedGroupPath)
       console.log(`🔍 [API GET] 获取图组评分: ${groupName}`)
-      const rating = groupRatings.get(normalizedGroupPath)
+      const rating = await groupRatings.get(normalizedGroupPath)
       console.log(`✅ [API GET] 图组评分获取完成: ${groupName}`)
       return NextResponse.json({ rating: parseRatingData(rating) })
     } else {
       // 获取所有图组评分
       console.log(`🔍 [API GET] 获取所有图组评分`)
-      const ratings = groupRatings.getAll()
+      const ratings = await groupRatings.getAll()
       const parsedRatings = ratings.map(parseRatingData)
       console.log(`✅ [API GET] 所有图组评分获取完成，共 ${parsedRatings.length} 条`)
       return NextResponse.json({ ratings: parsedRatings })
@@ -104,8 +100,6 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    // 确保数据库已初始化
-    ensureInitialized()
     const body = await request.json()
     const {
       groupPath,
@@ -129,14 +123,14 @@ export async function POST(request: NextRequest) {
 
     const normalizedGroupPath = normalizeGroupPath(groupPath)
     const resolvedMetadata = (!groupName || fileCount === undefined)
-      ? resolveGroupMetadata(normalizedGroupPath)
+      ? await resolveGroupMetadata(normalizedGroupPath)
       : null
     const resolvedGroupName = groupName || resolvedMetadata?.groupName || getGroupNameFromPath(normalizedGroupPath)
     const resolvedFileCount = fileCount ?? resolvedMetadata?.fileCount ?? 0
 
     console.log(`💾 [API POST] 保存图组评分: ${resolvedGroupName} (${rating}星, ${resolvedFileCount}个文件)`)
 
-    const result = groupRatings.save({
+    const result = await groupRatings.save({
       groupPath: normalizedGroupPath,
       groupName: resolvedGroupName,
       fileCount: resolvedFileCount,
@@ -147,39 +141,32 @@ export async function POST(request: NextRequest) {
       isViewed,
       creatorId
     })
-    
-    // 如果是标记"不认识"（creatorId = UNKNOWN_CREATOR_ID），立即执行 checkpoint 确保数据写入磁盘
-    if (creatorId === UNKNOWN_CREATOR_ID) {
-      const checkpointStartTime = Date.now()
-      performCheckpoint('PASSIVE')
-      console.log(`⏱️ [ratings/group POST] checkpoint完成: ${Date.now() - checkpointStartTime}ms`)
-    }
 
     // 更新自定义评价标签的使用计数
     if (customEvaluation) {
       const evaluations = Array.isArray(customEvaluation) ? customEvaluation : [customEvaluation]
-      evaluations.forEach(evaluation => {
+      for (const evaluation of evaluations) {
         if (typeof evaluation === 'string' && evaluation.trim()) {
-          customEvaluations.add(evaluation.trim())
+          await customEvaluations.add(evaluation.trim())
         }
-      })
+      }
     }
 
     // 更新分类的使用计数
     if (category) {
       const categoriesList = Array.isArray(category) ? category : [category]
-      categoriesList.forEach(cat => {
+      for (const cat of categoriesList) {
         if (typeof cat === 'string' && cat.trim()) {
-          categories.add(cat.trim())
+          await categories.add(cat.trim())
         }
-      })
+      }
     }
 
-    console.log(`✅ [API POST] 图组评分保存成功: ${groupName} (ID: ${result.lastInsertRowid})`)
+    console.log(`✅ [API POST] 图组评分保存成功: ${groupName} (ID: ${result.insertId})`)
 
     return NextResponse.json({ 
       success: true, 
-      id: result.lastInsertRowid,
+      id: result.insertId,
       changes: result.changes 
     })
   } catch (error: any) {
@@ -193,8 +180,6 @@ export async function POST(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
-    // 确保数据库已初始化
-    ensureInitialized()
     const { searchParams } = new URL(request.url)
     const groupPath = searchParams.get('groupPath')
 
@@ -205,7 +190,7 @@ export async function DELETE(request: NextRequest) {
       )
     }
 
-    const result = groupRatings.delete(normalizeGroupPath(groupPath))
+    const result = await groupRatings.delete(normalizeGroupPath(groupPath))
     return NextResponse.json({ 
       success: true, 
       changes: result.changes 

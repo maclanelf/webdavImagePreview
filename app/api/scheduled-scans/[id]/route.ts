@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+
 import { scheduledScans } from '@/lib/database'
 
 // 更新定时扫描任务
@@ -8,8 +9,8 @@ export async function PUT(
 ) {
   try {
     const { id: idParam } = await params
-    const id = parseInt(idParam)
-    if (isNaN(id)) {
+    const id = parseInt(idParam, 10)
+    if (Number.isNaN(id)) {
       return NextResponse.json(
         { error: '无效的任务ID' },
         { status: 400 }
@@ -36,9 +37,9 @@ export async function PUT(
     if (cronExpression !== undefined) updateData.cronExpression = cronExpression
     if (isActive !== undefined) updateData.isActive = isActive
 
-    const result = scheduledScans.update(id, updateData)
+    const result = await scheduledScans.update(id, updateData)
     
-    if (result.changes === 0) {
+    if (result.affectedRows === 0) {
       return NextResponse.json(
         { error: '任务不存在或没有更新' },
         { status: 404 }
@@ -59,22 +60,22 @@ export async function PUT(
 
 // 删除定时扫描任务
 export async function DELETE(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id: idParam } = await params
-    const id = parseInt(idParam)
-    if (isNaN(id)) {
+    const id = parseInt(idParam, 10)
+    if (Number.isNaN(id)) {
       return NextResponse.json(
         { error: '无效的任务ID' },
         { status: 400 }
       )
     }
 
-    const result = scheduledScans.delete(id)
+    const result = await scheduledScans.delete(id)
     
-    if (result.changes === 0) {
+    if (result.affectedRows === 0) {
       return NextResponse.json(
         { error: '任务不存在' },
         { status: 404 }
