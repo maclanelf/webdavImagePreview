@@ -14,6 +14,10 @@ RUN npm ci
 # 复制源代码
 COPY . .
 
+# 确保 Docker 构建使用干净的 TypeScript/Next.js 状态，避免复用宿主机的增量缓存导致
+# 旧的类型诊断（例如已删除的 workers 文件）污染构建结果
+RUN rm -f tsconfig.tsbuildinfo
+
 # 创建数据目录和日志目录
 RUN mkdir -p /app/data /app/logs
 
