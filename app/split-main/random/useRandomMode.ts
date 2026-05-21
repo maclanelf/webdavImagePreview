@@ -142,6 +142,8 @@ export function useRandomMode({
   const randomHistoryCache = useRef<Map<string, RandomHistoryCacheEntry>>(new Map())
   const smartPreloadTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const smartPreloadInProgressRef = useRef(false)
+  const smartPreloadRerunRequestedRef = useRef(false)
+  const smartPreloadLatestFileRef = useRef<MediaFile | null>(null)
   const resumableLatestFileRef = useRef<string | null>(null)
 
   /**
@@ -195,22 +197,19 @@ export function useRandomMode({
       console.log('[智能预加载] 清除旧定时器，重新设置')
     }
 
+    smartPreloadLatestFileRef.current = activeFile
+
     smartPreloadTimeoutRef.current = setTimeout(async () => {
       if (smartPreloadInProgressRef.current) {
-        console.log('[智能预加载] 已有预加载在进行，等待完成后再执行')
-        let waitCount = 0
-        while (smartPreloadInProgressRef.current && waitCount < 50) {
-          await new Promise(resolve => setTimeout(resolve, 100))
-          waitCount++
-        }
-        if (smartPreloadInProgressRef.current) {
-          console.warn('[智能预加载] 等待超时，强制执行')
-        }
+        smartPreloadRerunRequestedRef.current = true
+        console.log('[智能预加载] 已有预加载在进行，本次请求已合并，等待当前任务完成后按最新文件重算')
+        return
       }
 
       smartPreloadInProgressRef.current = true
 
       try {
+        const targetFile = smartPreloadLatestFileRef.current ?? activeFile
         const preloadCount = config.scanSettings?.preloadCount || 10
         const cacheStatus = databasePreloadManager.getCacheStatus()
         const currentCacheSize = cacheStatus.cacheSize
@@ -232,7 +231,7 @@ export function useRandomMode({
         await databasePreloadManager.smartPreload(
           config,
           [],
-          activeFile,
+          targetFile,
           preloadCount,
           viewedFilter,
           preloadRandomness,
@@ -246,6 +245,16 @@ export function useRandomMode({
         setPreloadStatus(databasePreloadManager.getCacheStatus())
       } finally {
         smartPreloadInProgressRef.current = false
+
+        if (smartPreloadRerunRequestedRef.current) {
+          smartPreloadRerunRequestedRef.current = false
+          const latestFile = smartPreloadLatestFileRef.current
+
+          if (latestFile) {
+            console.log('[智能预加载] 检测到期间有新的浏览请求，基于最新文件立即重算一次补仓')
+            void smartPreload(latestFile)
+          }
+        }
       }
     }, 200)
   }, [advancedFilters, config, mediaFilter, preloadEnabled, preloadRandomness, setPreloadStatus, viewedFilter, viewModeRef])
