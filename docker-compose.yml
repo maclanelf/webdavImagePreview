@@ -15,7 +15,7 @@ services:
       watchcow.service_port: "3001"   # 和前面的端口名对应
       watchcow.protocol: "http"
       watchcow.path: "/"
-      watchcow.icon: "/vol1/1000/project/webdavImagePreview/webdav.png"   # 这里替换成你自己的图标库
+      watchcow.icon: "/vol1/1000/project/webdavImagePreview/public/icons/webdav.png"   # 这里替换成你自己的图标库
       # watchcow.icon: "https://example.com/libretv.png"     # 这里也可以改成在线图标，把前面注释掉就行了
       watchcow.all_users: "false"          # 普通用户直接看不到图标,管理员可以看见
     environment:
