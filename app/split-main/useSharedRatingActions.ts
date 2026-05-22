@@ -344,7 +344,6 @@ export function useSharedRatingActions({
       ...normalizedRating,
     })
 
-    notify('已暂存，等待同步', 'info')
   }, [notify, patchMediaRatingSnapshot, resolveMediaRatingSnapshot, setCurrentRating])
 
   const enqueueGroupRating = useCallback(async (data: GroupRating) => {
@@ -368,7 +367,6 @@ export function useSharedRatingActions({
       ...normalizedRating,
     })
 
-    notify('图组评分已暂存，等待同步', 'info')
   }, [currentGroup, notify, patchGroupRatingSnapshot, resolveGroupRatingSnapshot, setCurrentRating])
 
   const saveRating = useCallback(async (data: MediaRating | GroupRating, file?: MediaFile, optimistic = false) => {

@@ -121,6 +121,7 @@ interface RandomModePageProps {
   setSnackbarSeverity: (severity: SnackbarSeverity) => void
   setSnackbarOpen: (open: boolean) => void
   creatorMetadataPatchRef?: MutableRefObject<(filePath: string, creator: CreatorSummary | null, creatorResolved: boolean) => void>
+  ratingMetadataPatchRef?: MutableRefObject<(filePath: string, rating: MediaFile['mediaRatingData']) => void>
 }
 
 /**
@@ -202,6 +203,7 @@ export default function RandomModePage({
   setSnackbarSeverity,
   setSnackbarOpen,
   creatorMetadataPatchRef,
+  ratingMetadataPatchRef,
 }: RandomModePageProps) {
   /**
    * 随机模式固定使用 random 视图类型，这里用 ref 提供给 [`useRandomMode()`](app/split-main/random/useRandomMode.ts:63)
@@ -262,6 +264,7 @@ export default function RandomModePage({
     handleRestartViewing,
     handleCancelRestart,
     updateRandomHistoryCreatorMetadata,
+    updateRandomHistoryRatingMetadata,
   } = useRandomMode({
     config,
     currentFile,
@@ -317,6 +320,18 @@ export default function RandomModePage({
       creatorMetadataPatchRef.current = () => {}
     }
   }, [creatorMetadataPatchRef, updateRandomHistoryCreatorMetadata])
+
+  useEffect(() => {
+    if (!ratingMetadataPatchRef) {
+      return
+    }
+
+    ratingMetadataPatchRef.current = updateRandomHistoryRatingMetadata
+
+    return () => {
+      ratingMetadataPatchRef.current = () => {}
+    }
+  }, [ratingMetadataPatchRef, updateRandomHistoryRatingMetadata])
 
   const {
     anchorEl: externalPlayerAnchor,

@@ -861,6 +861,24 @@ export function useRandomMode({
     }
   }, [])
 
+  const updateRandomHistoryRatingMetadata = useCallback((filepath: string, rating: MediaFile['mediaRatingData']) => {
+    setRandomHistory((prev) => prev.map((file) => (
+      file.filename === filepath
+        ? {
+            ...file,
+            mediaRatingData: rating,
+          }
+        : file
+    )))
+
+    const cached = randomHistoryCache.current.get(filepath)
+    if (cached) {
+      randomHistoryCache.current.set(filepath, {
+        ...cached,
+      })
+    }
+  }, [])
+
   /**
    * 统一暴露给随机模式页面的状态与动作集合。
    * 页面层不关心内部缓存细节，只消费这里的输出。
@@ -878,5 +896,6 @@ export function useRandomMode({
     handleRestartViewing,
     handleCancelRestart,
     updateRandomHistoryCreatorMetadata,
+    updateRandomHistoryRatingMetadata,
   }
 }

@@ -171,6 +171,7 @@ export default function HomePage() {
     advancedFilters: AdvancedFilters
   } | null>(null)
   const randomModeCreatorMetadataPatchRef = useRef<(filePath: string, creator: CreatorSummary | null, creatorResolved: boolean) => void>(() => {})
+  const randomModeRatingMetadataPatchRef = useRef<(filePath: string, rating: MediaFile['mediaRatingData']) => void>(() => {})
   const galleryModeCreatorMetadataPatchRef = useRef<(filePath: string, creator: CreatorSummary | null, creatorResolved: boolean) => void>(() => {})
   const initialPreloadTriggeredRef = useRef(false)
   const viewModeRef = useRef<ViewMode>(viewMode)
@@ -242,6 +243,7 @@ export default function HomePage() {
         : file
     )))
 
+    randomModeRatingMetadataPatchRef.current(filePath, rating)
     databasePreloadManager.patchFileRatingMetadata(filePath, rating)
   }, [])
 
@@ -808,7 +810,7 @@ export default function HomePage() {
 
   useEffect(() => {
     const syncRatingQueueStatus = () => {
-      setRatingQueueActiveCount(localRatingQueue.getStatus().active)
+      setRatingQueueActiveCount(localRatingQueue.getStatus().total)
 
       const nextSnapshot = new Map<string, { status: 'queued' | 'syncing' | 'synced' | 'failed'; updatedAt: number }>()
       const queueRecords = localRatingQueue.getAllRecords()
@@ -889,15 +891,21 @@ export default function HomePage() {
                 <DownloadIcon
                   sx={{
                     fontSize: 18,
-                    color: ratingQueueActiveCount > 0 ? '#ec4899' : 'rgba(0,0,0,0.22)',
                     transform: 'rotate(180deg)',
-                    animation: ratingQueueActiveCount > 0 ? 'upload 1.2s ease-in-out infinite' : 'none',
-                    '@keyframes upload': {
+                    animation: ratingQueueActiveCount > 0 ? 'download 1.5s ease-in-out infinite' : 'none',
+                    '@keyframes download': {
+                      '0%': { transform: 'translateY(0px)', opacity: 1 },
+                      '50%': { transform: 'translateY(4px)', opacity: 0.7 },
+                      '100%': { transform: 'translateY(0px)', opacity: 1 },
+                    },
+                    '@keyframes uploadDownloadMirror': {
                       '0%': { transform: 'translateY(0px) rotate(180deg)', opacity: 1 },
                       '50%': { transform: 'translateY(-4px) rotate(180deg)', opacity: 0.7 },
                       '100%': { transform: 'translateY(0px) rotate(180deg)', opacity: 1 },
                     },
+                    animationName: ratingQueueActiveCount > 0 ? 'uploadDownloadMirror' : 'none',
                   }}
+                  color="primary"
                 />
                 <Typography variant="body2" color="text.secondary" sx={{ minWidth: '20px', fontWeight: 'bold' }}>
                   {ratingQueueActiveCount}
@@ -1027,6 +1035,7 @@ export default function HomePage() {
             setSnackbarSeverity={setSnackbarSeverity}
             setSnackbarOpen={setSnackbarOpen}
             creatorMetadataPatchRef={randomModeCreatorMetadataPatchRef}
+            ratingMetadataPatchRef={randomModeRatingMetadataPatchRef}
           />
         ) : viewMode === 'gallery' ? (
           <GalleryModePage
