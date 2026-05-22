@@ -1,6 +1,7 @@
 import { useCallback, useState, type MutableRefObject } from 'react'
 
 import databasePreloadManager from '@/lib/databasePreloadManager'
+import { scheduleStreamRequest } from '@/lib/clientRequestScheduler'
 import type { AdvancedFilters, CreatorSummary, MediaFile, MediaType, ViewedFilter, WebDAVConfig } from '@/types'
 
 function patchMediaFileCreatorMetadata(
@@ -146,14 +147,14 @@ export function useGalleryMode({
           console.log(`[DEBUG] 图组模式预加载完成，使用缓存文件: ${file.basename}`)
         } else {
           console.log(`[DEBUG] 图组模式预加载等待超时，正常加载: ${file.basename}`)
-          const streamResponse = await fetch('/api/webdav/stream', {
+          const streamResponse = await scheduleStreamRequest(() => fetch('/api/webdav/stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               ...config,
               filepath: file.filename,
             }),
-          })
+          }))
 
           if (!streamResponse.ok) throw new Error('获取文件流失败')
           blob = await streamResponse.blob()
@@ -165,14 +166,14 @@ export function useGalleryMode({
 }
       } else {
         console.log(`[DEBUG] 图组模式文件不在预加载缓存中，正常加载: ${file.basename}`)
-        const streamResponse = await fetch('/api/webdav/stream', {
+        const streamResponse = await scheduleStreamRequest(() => fetch('/api/webdav/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             ...config,
             filepath: file.filename,
           }),
-        })
+        }))
 
         if (!streamResponse.ok) throw new Error('获取文件流失败')
         blob = await streamResponse.blob()

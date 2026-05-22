@@ -1,3 +1,4 @@
+import { scheduleStreamRequest } from '@/lib/clientRequestScheduler'
 import type { CreatorSummary, GroupRating, MediaRating } from '@/types'
 
 function getGroupPathFromFilepath(filepath: string): string {
@@ -274,7 +275,7 @@ class DatabasePreloadManager {
         
         this.queue.add(filepath)
 
-        const streamResponse = await fetch('/api/webdav/stream', {
+        const streamResponse = await scheduleStreamRequest(() => fetch('/api/webdav/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -282,7 +283,7 @@ class DatabasePreloadManager {
             filepath: file.filename,
           }),
           signal: this.getAbortSignal(),
-        })
+        }))
 
         // 检查是否已取消
         if (this.isPreloadCancelled()) {
@@ -386,7 +387,7 @@ class DatabasePreloadManager {
         
         this.queue.add(filepath)
         
-        const streamResponse = await fetch('/api/webdav/stream', {
+        const streamResponse = await scheduleStreamRequest(() => fetch('/api/webdav/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -394,7 +395,7 @@ class DatabasePreloadManager {
             filepath: file.filename,
           }),
           signal: this.getAbortSignal(),
-        })
+        }))
         
         // 检查是否已取消
         if (this.isPreloadCancelled()) {
@@ -504,7 +505,7 @@ class DatabasePreloadManager {
         
         this.queue.add(filepath)
         
-        const streamResponse = await fetch('/api/webdav/stream', {
+        const streamResponse = await scheduleStreamRequest(() => fetch('/api/webdav/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -512,7 +513,7 @@ class DatabasePreloadManager {
             filepath: file.filename,
           }),
           signal: this.getAbortSignal(),
-        })
+        }))
         
         // 检查是否已取消
         if (this.isPreloadCancelled()) {

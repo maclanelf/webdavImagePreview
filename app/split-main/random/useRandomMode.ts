@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState, type MutableRefObject, type SyntheticEvent } from 'react'
 
 import databasePreloadManager from '@/lib/databasePreloadManager'
+import { scheduleStreamRequest } from '@/lib/clientRequestScheduler'
 import type {
   AdvancedFilters,
   CreatorSummary,
@@ -503,14 +504,14 @@ export function useRandomMode({
         console.log(`使用预加载文件: ${fileToLoad.basename}`)
       } else {
         console.log('正在使用正常加载...')
-        const streamResponse = await fetch('/api/webdav/stream', {
+        const streamResponse = await scheduleStreamRequest(() => fetch('/api/webdav/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             ...config,
             filepath: fileToLoad.filepath || fileToLoad.filename,
           }),
-        })
+        }))
 
         if (!streamResponse.ok) throw new Error('获取文件流失败')
         blob = await streamResponse.blob()
