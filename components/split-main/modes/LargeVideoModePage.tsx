@@ -72,6 +72,7 @@ interface LargeVideoModePageProps {
   viewedFilter: ViewedFilter
   advancedFilters: AdvancedFilters
   preloadRandomness: number
+  ratingQueueActiveCount?: number
   currentRating: MediaRating | GroupRating | null
   creatorRefreshKey: number
   fullscreen: boolean
@@ -141,6 +142,7 @@ export default function LargeVideoModePage({
   viewedFilter,
   advancedFilters,
   preloadRandomness,
+  ratingQueueActiveCount = 0,
   currentRating,
   creatorRefreshKey,
   fullscreen,
@@ -646,6 +648,7 @@ export default function LargeVideoModePage({
                       loading={loading}
                       isSwitching={isSwitching}
                       detailDisabled={loading || isSwitching || !currentFile}
+                      ratingSyncCount={ratingQueueActiveCount}
                       zIndex={fullscreenActionOverlayZIndex}
                       variant="enhanced"
                     />

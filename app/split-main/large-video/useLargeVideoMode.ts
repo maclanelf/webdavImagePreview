@@ -169,6 +169,8 @@ export function useLargeVideoMode({
         size: dbFile.file_size || 0,
         type: 'file',
         lastmod: dbFile.lastmod || '',
+        mediaRatingData: dbFile.mediaRatingData ?? null,
+        groupRatingData: dbFile.groupRatingData ?? null,
         creator: dbFile.creator || null,
         creatorResolved: Boolean(dbFile.creatorResolved),
       }

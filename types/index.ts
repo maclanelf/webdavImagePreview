@@ -21,6 +21,10 @@ export interface MediaFile {
   type: string
   lastmod: string
   filepath?: string
+  /** 媒体评分主接口快照 */
+  mediaRatingData?: MediaRating | null
+  /** 图组评分主接口快照 */
+  groupRatingData?: GroupRating | null
   /** 关联的博主 ID */
   creatorId?: number | null
   /** 已关联的博主信息 */

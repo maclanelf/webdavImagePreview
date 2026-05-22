@@ -1,8 +1,11 @@
 'use client'
 
-import { useCallback, useRef, type MutableRefObject } from 'react'
+import { useCallback, useEffect, type MutableRefObject, useRef } from 'react'
 
 import databasePreloadManager from '@/lib/databasePreloadManager'
+import {
+  localRatingQueue,
+} from '@/lib/localRatingQueue'
 import { QUICK_RATING_CONFIG } from '@/types'
 import type {
   GroupRating,
@@ -26,6 +29,8 @@ interface UseSharedRatingActionsOptions {
   setRatingType: (type: 'media' | 'group') => void
   setStats: React.Dispatch<React.SetStateAction<{ total: number; images: number; videos: number; viewed: number }>>
   hasAutoRatedRef: MutableRefObject<boolean>
+  patchMediaRatingSnapshot: (filePath: string, rating: MediaRating | null) => void
+  patchGroupRatingSnapshot: (groupPath: string, rating: GroupRating | null) => void
   notify: (message: string, severity?: SnackbarSeverity) => void
 }
 
@@ -41,19 +46,28 @@ const getGroupName = (groupPath: string): string => {
   return pathParts.length > 0 ? pathParts[pathParts.length - 1] : '根目录'
 }
 
+function normalizeMediaRating(data: MediaRating): MediaRating {
+  return {
+    rating: data.rating,
+    recommendationReason: data.recommendationReason,
+    customEvaluation: data.customEvaluation,
+    category: data.category,
+    isViewed: data.isViewed,
+  }
+}
+
+function normalizeGroupRating(data: GroupRating): GroupRating {
+  return {
+    rating: data.rating,
+    recommendationReason: data.recommendationReason,
+    customEvaluation: data.customEvaluation,
+    category: data.category,
+    isViewed: data.isViewed,
+  }
+}
+
 /**
  * 拆分主壳层中的共享评分与自动已看逻辑。
- *
- * 这里集中承接三种模式都共用的评分领域能力：
- * - 媒体评分读取
- * - 图组评分读取
- * - 媒体 / 图组评分保存
- * - 快速评分
- * - 自动标记已看过
- * - 自动标记定时器
- *
- * 这样 [`SplitMainWorkspace`](components/split-main/SplitMainWorkspace.tsx)
- * 可以把这部分共享领域逻辑从壳层装配代码中抽离出去。
  */
 export function useSharedRatingActions({
   currentFile,
@@ -68,16 +82,82 @@ export function useSharedRatingActions({
   setRatingType,
   setStats,
   hasAutoRatedRef,
+  patchMediaRatingSnapshot,
+  patchGroupRatingSnapshot,
   notify,
 }: UseSharedRatingActionsOptions) {
-  /**
-   * 标记当前文件是否处于“只允许浏览，不允许自动补 2 星”的状态。
-   *
-   * 典型场景是随机模式历史回看：
-   * - 需要继续允许用户播放/查看历史文件
-   * - 但不能再因为播放结束或 80% 阈值命中而重新触发自动评分
-   */
+  const localMediaRatingOverridesRef = useRef<Map<string, MediaRating | null>>(new Map())
+  const localGroupRatingOverridesRef = useRef<Map<string, GroupRating | null>>(new Map())
+  const mediaRatingRollbackRef = useRef<Map<string, MediaRating | null>>(new Map())
+  const groupRatingRollbackRef = useRef<Map<string, GroupRating | null>>(new Map())
   const autoRatingSuppressedFileRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const syncLocalOverrides = () => {
+      const activeMediaKeys = new Set<string>()
+      const activeGroupKeys = new Set<string>()
+
+      localRatingQueue.getAllRecords().forEach((record) => {
+        if (record.type === 'media') {
+          activeMediaKeys.add(record.filePath)
+        } else {
+          activeGroupKeys.add(record.groupPath)
+        }
+      })
+
+      localMediaRatingOverridesRef.current.forEach((_value, filename) => {
+        if (!activeMediaKeys.has(filename)) {
+          patchMediaRatingSnapshot(filename, localMediaRatingOverridesRef.current.get(filename) ?? null)
+          localMediaRatingOverridesRef.current.delete(filename)
+          mediaRatingRollbackRef.current.delete(filename)
+        }
+      })
+
+      localGroupRatingOverridesRef.current.forEach((_value, groupPath) => {
+        if (!activeGroupKeys.has(groupPath)) {
+          patchGroupRatingSnapshot(groupPath, localGroupRatingOverridesRef.current.get(groupPath) ?? null)
+          localGroupRatingOverridesRef.current.delete(groupPath)
+          groupRatingRollbackRef.current.delete(groupPath)
+        }
+      })
+    }
+
+    const rollbackIfFailed = () => {
+      localRatingQueue.getAllRecords().forEach((record) => {
+        if (record.status !== 'failed') {
+          return
+        }
+
+        if (record.type === 'media') {
+          if (!mediaRatingRollbackRef.current.has(record.filePath)) {
+            return
+          }
+
+          const rollbackRating = mediaRatingRollbackRef.current.get(record.filePath) ?? null
+          patchMediaRatingSnapshot(record.filePath, rollbackRating)
+          localMediaRatingOverridesRef.current.delete(record.filePath)
+          mediaRatingRollbackRef.current.delete(record.filePath)
+          return
+        }
+
+        if (!groupRatingRollbackRef.current.has(record.groupPath)) {
+          return
+        }
+
+        const rollbackRating = groupRatingRollbackRef.current.get(record.groupPath) ?? null
+        patchGroupRatingSnapshot(record.groupPath, rollbackRating)
+        localGroupRatingOverridesRef.current.delete(record.groupPath)
+        groupRatingRollbackRef.current.delete(record.groupPath)
+      })
+    }
+
+    syncLocalOverrides()
+    rollbackIfFailed()
+    return localRatingQueue.subscribe(() => {
+      syncLocalOverrides()
+      rollbackIfFailed()
+    })
+  }, [patchGroupRatingSnapshot, patchMediaRatingSnapshot])
 
   const stopAutoMarkTimer = useCallback(() => {
     if (autoMarkTimer) {
@@ -86,9 +166,104 @@ export function useSharedRatingActions({
     }
   }, [autoMarkTimer, setAutoMarkTimer])
 
+  const resolveMediaRatingSnapshot = useCallback((file?: MediaFile | null) => {
+    const targetFile = file || currentFile
+    if (!targetFile) {
+      return { hasData: false, rating: null as MediaRating | null }
+    }
+
+    const queueRecord = localRatingQueue.getMediaRecord(targetFile.filename)
+    if (queueRecord) {
+      if (queueRecord.status === 'failed') {
+        if (targetFile.mediaRatingData !== undefined) {
+          return {
+            hasData: true,
+            rating: targetFile.mediaRatingData ?? null,
+          }
+        }
+
+        return { hasData: false, rating: null as MediaRating | null }
+      }
+
+      return {
+        hasData: true,
+        rating: queueRecord.rating,
+      }
+    }
+
+    if (localMediaRatingOverridesRef.current.has(targetFile.filename)) {
+      return {
+        hasData: true,
+        rating: localMediaRatingOverridesRef.current.get(targetFile.filename) ?? null,
+      }
+    }
+
+    if (targetFile.mediaRatingData !== undefined) {
+      return {
+        hasData: true,
+        rating: targetFile.mediaRatingData ?? null,
+      }
+    }
+
+    return { hasData: false, rating: null as MediaRating | null }
+  }, [currentFile])
+
+  const resolveGroupRatingSnapshot = useCallback((groupFiles?: MediaFile[]) => {
+    const sourceFiles = groupFiles && groupFiles.length > 0 ? groupFiles : currentGroup
+    const seedFile = sourceFiles[0]
+    if (!seedFile) {
+      return { hasData: false, rating: null as GroupRating | null }
+    }
+
+    const groupPath = getGroupPath(seedFile.filename)
+    const queueRecord = localRatingQueue.getGroupRecord(groupPath)
+    if (queueRecord) {
+      if (queueRecord.status === 'failed') {
+        if (seedFile.groupRatingData !== undefined) {
+          return {
+            hasData: true,
+            rating: seedFile.groupRatingData ?? null,
+          }
+        }
+
+        return { hasData: false, rating: null as GroupRating | null }
+      }
+
+      return {
+        hasData: true,
+        rating: queueRecord.rating,
+      }
+    }
+
+    if (localGroupRatingOverridesRef.current.has(groupPath)) {
+      return {
+        hasData: true,
+        rating: localGroupRatingOverridesRef.current.get(groupPath) ?? null,
+      }
+    }
+
+    if (seedFile.groupRatingData !== undefined) {
+      return {
+        hasData: true,
+        rating: seedFile.groupRatingData ?? null,
+      }
+    }
+
+    return { hasData: false, rating: null as GroupRating | null }
+  }, [currentGroup])
+
   const loadMediaRating = useCallback(async (filePath: string) => {
     try {
       setRatingType('media')
+
+      if (currentFile?.filename === filePath) {
+        const snapshot = resolveMediaRatingSnapshot(currentFile)
+        if (snapshot.hasData) {
+          setCurrentRating(snapshot.rating)
+          return
+        }
+      }
+
       const response = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(filePath)}`)
       if (!response.ok) {
         setCurrentRating(null)
@@ -101,7 +276,7 @@ export function useSharedRatingActions({
       console.error('加载媒体评分失败:', loadRatingError)
       setCurrentRating(null)
     }
-  }, [setCurrentRating, setRatingType])
+  }, [currentFile, resolveMediaRatingSnapshot, setCurrentRating, setRatingType])
 
   const loadCurrentRating = useCallback(async (file?: MediaFile, forceType?: 'media' | 'group') => {
     const targetFile = file || currentFile
@@ -113,6 +288,12 @@ export function useSharedRatingActions({
 
     try {
       if (effectiveRatingType === 'media' && targetFile) {
+        const snapshot = resolveMediaRatingSnapshot(targetFile)
+        if (snapshot.hasData) {
+          setCurrentRating(snapshot.rating)
+          return
+        }
+
         const response = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(targetFile.filename)}`)
         if (!response.ok) {
           setCurrentRating(null)
@@ -125,6 +306,12 @@ export function useSharedRatingActions({
       }
 
       if (effectiveRatingType === 'group' && currentGroup.length > 0) {
+        const snapshot = resolveGroupRatingSnapshot(currentGroup)
+        if (snapshot.hasData) {
+          setCurrentRating(snapshot.rating)
+          return
+        }
+
         const groupPath = getGroupPath(currentGroup[0].filename)
         const response = await fetch(`/api/ratings/group?groupPath=${encodeURIComponent(groupPath)}`)
         if (!response.ok) {
@@ -139,7 +326,50 @@ export function useSharedRatingActions({
       console.error('加载评分失败:', loadCurrentRatingError)
       setCurrentRating(null)
     }
-  }, [currentFile, currentGroup, ratingType, setCurrentRating])
+  }, [currentFile, currentGroup, ratingType, resolveGroupRatingSnapshot, resolveMediaRatingSnapshot, setCurrentRating])
+
+  const enqueueMediaRating = useCallback(async (targetFile: MediaFile, data: MediaRating) => {
+    const normalizedRating = normalizeMediaRating(data)
+    const previousRating = resolveMediaRatingSnapshot(targetFile).rating
+
+    mediaRatingRollbackRef.current.set(targetFile.filename, previousRating)
+    localMediaRatingOverridesRef.current.set(targetFile.filename, normalizedRating)
+    patchMediaRatingSnapshot(targetFile.filename, normalizedRating)
+    setCurrentRating(normalizedRating)
+
+    await localRatingQueue.enqueueMedia({
+      filePath: targetFile.filename,
+      fileName: targetFile.basename,
+      fileType: isImageFile(targetFile.filename) ? 'image' : 'video',
+      ...normalizedRating,
+    })
+
+    notify('已暂存，等待同步', 'info')
+  }, [notify, patchMediaRatingSnapshot, resolveMediaRatingSnapshot, setCurrentRating])
+
+  const enqueueGroupRating = useCallback(async (data: GroupRating) => {
+    if (currentGroup.length === 0) {
+      throw new Error('当前没有可评分的图组')
+    }
+
+    const groupPath = getGroupPath(currentGroup[0].filename)
+    const normalizedRating = normalizeGroupRating(data)
+    const previousRating = resolveGroupRatingSnapshot(currentGroup).rating
+
+    groupRatingRollbackRef.current.set(groupPath, previousRating)
+    localGroupRatingOverridesRef.current.set(groupPath, normalizedRating)
+    patchGroupRatingSnapshot(groupPath, normalizedRating)
+    setCurrentRating(normalizedRating)
+
+    await localRatingQueue.enqueueGroup({
+      groupPath,
+      groupName: getGroupName(groupPath),
+      fileCount: currentGroup.length,
+      ...normalizedRating,
+    })
+
+    notify('图组评分已暂存，等待同步', 'info')
+  }, [currentGroup, notify, patchGroupRatingSnapshot, resolveGroupRatingSnapshot, setCurrentRating])
 
   const saveRating = useCallback(async (data: MediaRating | GroupRating, file?: MediaFile, optimistic = false) => {
     const effectiveRatingType: 'media' | 'group' = file ? 'media' : ratingType
@@ -147,12 +377,21 @@ export function useSharedRatingActions({
 
     try {
       if (optimistic && optimisticUpdateEnabled) {
-        setCurrentRating(data)
+        if (effectiveRatingType === 'group') {
+          await enqueueGroupRating(data as GroupRating)
+          return
+        }
+
+        if (targetFile) {
+          await enqueueMediaRating(targetFile, data as MediaRating)
+          return
+        }
       }
 
       if (effectiveRatingType === 'group' && currentGroup.length > 0) {
         const groupPath = getGroupPath(currentGroup[0].filename)
         const groupName = getGroupName(groupPath)
+        localRatingQueue.cancelGroupRecord(groupPath)
         const response = await fetch('/api/ratings/group', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -177,11 +416,14 @@ export function useSharedRatingActions({
           throw new Error(errorMessage)
         }
 
-        await loadCurrentRating(undefined, 'group')
+        const normalizedGroupRating = normalizeGroupRating(data as GroupRating)
+        patchGroupRatingSnapshot(groupPath, normalizedGroupRating)
+        setCurrentRating(normalizedGroupRating)
         return
       }
 
       if (targetFile) {
+        localRatingQueue.cancelMediaRecord(targetFile.filename)
         const apiUrl = optimistic && optimisticUpdateEnabled ? '/api/ratings/optimistic' : '/api/ratings/media'
         const response = await fetch(apiUrl, {
           method: 'POST',
@@ -207,9 +449,9 @@ export function useSharedRatingActions({
           throw new Error(errorMessage)
         }
 
-        if (!optimistic || !optimisticUpdateEnabled) {
-          await loadMediaRating(targetFile.filename)
-        }
+        const normalizedMediaRating = normalizeMediaRating(data as MediaRating)
+        patchMediaRatingSnapshot(targetFile.filename, normalizedMediaRating)
+        setCurrentRating(normalizedMediaRating)
         return
       }
 
@@ -217,7 +459,7 @@ export function useSharedRatingActions({
     } catch (saveRatingError: any) {
       throw new Error(saveRatingError.message)
     }
-  }, [currentFile, currentGroup, loadCurrentRating, loadMediaRating, optimisticUpdateEnabled, ratingType, setCurrentRating])
+  }, [currentFile, currentGroup, enqueueGroupRating, enqueueMediaRating, optimisticUpdateEnabled, patchGroupRatingSnapshot, patchMediaRatingSnapshot, ratingType, setCurrentRating])
 
   const saveRatingManual = useCallback(async (data: MediaRating | GroupRating, file?: MediaFile) => {
     await saveRating(data, file, true)
@@ -243,7 +485,6 @@ export function useSharedRatingActions({
       )
 
       hasAutoRatedRef.current = true
-      notify(`${rating}星 - ${evaluation}`, 'success')
     } catch (quickRateError) {
       console.error('快速评分失败:', quickRateError)
       notify('❌ 评分失败，请重试', 'error')
@@ -264,13 +505,20 @@ export function useSharedRatingActions({
 
     try {
       if (viewedFilter !== 'unviewed') {
-        const response = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(targetFile.filename)}`)
-        if (response.ok) {
-          const text = await response.text()
-          if (text) {
-            const data = JSON.parse(text)
-            if (data.rating?.rating) {
-              return
+        const snapshot = resolveMediaRatingSnapshot(targetFile)
+        if (snapshot.hasData) {
+          if (snapshot.rating?.rating) {
+            return
+          }
+        } else {
+          const response = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(targetFile.filename)}`)
+          if (response.ok) {
+            const text = await response.text()
+            if (text) {
+              const data = JSON.parse(text)
+              if (data.rating?.rating) {
+                return
+              }
             }
           }
         }
@@ -297,7 +545,7 @@ export function useSharedRatingActions({
     } catch (autoRateError) {
       console.error('自动标记已看过失败:', autoRateError)
     }
-  }, [currentFile, hasAutoRatedRef, saveRating, setStats, viewedFilter])
+  }, [currentFile, hasAutoRatedRef, resolveMediaRatingSnapshot, saveRating, setStats, viewedFilter])
 
   const startAutoMarkTimer = useCallback((file?: MediaFile, skipAutoRating = false) => {
     const targetFile = file || currentFile

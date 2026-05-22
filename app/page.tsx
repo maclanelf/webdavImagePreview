@@ -47,6 +47,7 @@ import SettingsDrawer from '@/components/SettingsDrawer'
 import GalleryModePage from '@/components/split-main/modes/GalleryModePage'
 import LargeVideoModePage from '@/components/split-main/modes/LargeVideoModePage'
 import RandomModePage from '@/components/split-main/modes/RandomModePage'
+import { buildGroupQueueKey, buildMediaQueueKey, localRatingQueue } from '@/lib/localRatingQueue'
 import databasePreloadManager from '@/lib/databasePreloadManager'
 import { setErudaEnabled } from '@/lib/erudaInit'
 import { QUICK_RATING_CONFIG } from '@/types'
@@ -78,6 +79,11 @@ const PAGE_LINKS = [
 
 const isImageFile = (filename: string) => /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(filename)
 const isVideoFile = (filename: string) => /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(filename)
+
+const getGroupPathFromFilePath = (filePath: string): string => {
+  const lastSlashIndex = filePath.lastIndexOf('/')
+  return lastSlashIndex > 0 ? filePath.substring(0, lastSlashIndex) : '/'
+}
 
 export default function HomePage() {
   const router = useRouter()
@@ -153,6 +159,7 @@ export default function HomePage() {
   const [snackbarOpen, setSnackbarOpen] = useState(false)
   const [snackbarMessage, setSnackbarMessage] = useState('')
   const [snackbarSeverity, setSnackbarSeverity] = useState<SnackbarSeverity>('success')
+  const [ratingQueueActiveCount, setRatingQueueActiveCount] = useState(0)
 
   const [pageMenuAnchor, setPageMenuAnchor] = useState<HTMLElement | null>(null)
   const pageMenuOpen = Boolean(pageMenuAnchor)
@@ -170,6 +177,7 @@ export default function HomePage() {
   const hasAutoRatedRef = useRef(false)
   const playIntentRef = useRef(true)
   const videoStateRef = useRef<{ currentTime: number; paused: boolean } | null>(null)
+  const ratingQueueSnapshotRef = useRef<Map<string, { status: 'queued' | 'syncing' | 'synced' | 'failed'; updatedAt: number }>>(new Map())
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const mobileVideoRef = useRef<any>(null)
@@ -219,6 +227,42 @@ export default function HomePage() {
     databasePreloadManager.patchFileCreatorMetadata(filePath, creator, creatorResolved)
   }, [])
 
+  const patchMediaRatingAcrossState = useCallback((filePath: string, rating: MediaRating | null) => {
+    setCurrentFile((prev) => prev && prev.filename === filePath ? {
+      ...prev,
+      mediaRatingData: rating,
+    } : prev)
+
+    setCurrentGroup((prev) => prev.map((file) => (
+      file.filename === filePath
+        ? {
+            ...file,
+            mediaRatingData: rating,
+          }
+        : file
+    )))
+
+    databasePreloadManager.patchFileRatingMetadata(filePath, rating)
+  }, [])
+
+  const patchGroupRatingAcrossState = useCallback((groupPath: string, rating: GroupRating | null) => {
+    setCurrentFile((prev) => prev && getGroupPathFromFilePath(prev.filename) === groupPath ? {
+      ...prev,
+      groupRatingData: rating,
+    } : prev)
+
+    setCurrentGroup((prev) => prev.map((file) => (
+      getGroupPathFromFilePath(file.filename) === groupPath
+        ? {
+            ...file,
+            groupRatingData: rating,
+          }
+        : file
+    )))
+
+    databasePreloadManager.patchGroupRatingMetadata(groupPath, rating)
+  }, [])
+
   const notify = useCallback((message: string, severity: SnackbarSeverity = 'info') => {
     setSnackbarMessage(message)
     setSnackbarSeverity(severity)
@@ -246,6 +290,8 @@ export default function HomePage() {
     setRatingType,
     setStats,
     hasAutoRatedRef,
+    patchMediaRatingSnapshot: patchMediaRatingAcrossState,
+    patchGroupRatingSnapshot: patchGroupRatingAcrossState,
     notify,
   })
 
@@ -489,9 +535,23 @@ export default function HomePage() {
   }, [currentFile, resetCurrentPreviewState])
 
   const openRatingDialog = useCallback((type: 'media' | 'group') => {
+    if (type === 'group') {
+      setCurrentRating(
+        ratingType === 'group'
+          ? currentRating ?? currentGroup[currentGroupIndex]?.groupRatingData ?? currentGroup[0]?.groupRatingData ?? null
+          : currentGroup[currentGroupIndex]?.groupRatingData ?? currentGroup[0]?.groupRatingData ?? null,
+      )
+    } else {
+      setCurrentRating(
+        ratingType === 'media'
+          ? currentRating ?? currentFile?.mediaRatingData ?? null
+          : currentFile?.mediaRatingData ?? null,
+      )
+    }
+
     setRatingType(type)
     setRatingDialogOpen(true)
-  }, [])
+  }, [currentFile, currentGroup, currentGroupIndex, currentRating, ratingType])
 
   const closeRatingDialog = useCallback(() => {
     setRatingDialogOpen(false)
@@ -746,6 +806,39 @@ export default function HomePage() {
     }
   }, [creatorDetailOpen])
 
+  useEffect(() => {
+    const syncRatingQueueStatus = () => {
+      setRatingQueueActiveCount(localRatingQueue.getStatus().active)
+
+      const nextSnapshot = new Map<string, { status: 'queued' | 'syncing' | 'synced' | 'failed'; updatedAt: number }>()
+      const queueRecords = localRatingQueue.getAllRecords()
+
+      queueRecords.forEach((record) => {
+        const key = record.type === 'media'
+          ? buildMediaQueueKey(record.filePath)
+          : buildGroupQueueKey(record.groupPath)
+
+        nextSnapshot.set(key, {
+          status: record.status,
+          updatedAt: record.updatedAt,
+        })
+
+        const previousRecord = ratingQueueSnapshotRef.current.get(key)
+        if (previousRecord && previousRecord.status !== 'failed' && record.status === 'failed') {
+          notify(
+            `${record.type === 'media' ? '媒体评分' : '图组评分'}同步失败${record.errorMessage ? `：${record.errorMessage}` : ''}`,
+            'error',
+          )
+        }
+      })
+
+      ratingQueueSnapshotRef.current = nextSnapshot
+    }
+
+    syncRatingQueueStatus()
+    return localRatingQueue.subscribe(syncRatingQueueStatus)
+  }, [notify])
+
   if (!gateReady) {
     return null
   }
@@ -793,6 +886,22 @@ export default function HomePage() {
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             {preloadEnabled && cachePreloadProgress && viewMode !== 'large-video' && (
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mr: 0.5 }}>
+                <DownloadIcon
+                  sx={{
+                    fontSize: 18,
+                    color: ratingQueueActiveCount > 0 ? '#ec4899' : 'rgba(0,0,0,0.22)',
+                    transform: 'rotate(180deg)',
+                    animation: ratingQueueActiveCount > 0 ? 'upload 1.2s ease-in-out infinite' : 'none',
+                    '@keyframes upload': {
+                      '0%': { transform: 'translateY(0px) rotate(180deg)', opacity: 1 },
+                      '50%': { transform: 'translateY(-4px) rotate(180deg)', opacity: 0.7 },
+                      '100%': { transform: 'translateY(0px) rotate(180deg)', opacity: 1 },
+                    },
+                  }}
+                />
+                <Typography variant="body2" color="text.secondary" sx={{ minWidth: '20px', fontWeight: 'bold' }}>
+                  {ratingQueueActiveCount}
+                </Typography>
                 <DownloadIcon
                   sx={{
                     fontSize: 18,
@@ -886,6 +995,7 @@ export default function HomePage() {
             preloadInsufficient={preloadInsufficient}
             setActualFoundCount={setActualFoundCount}
             actualFoundCount={actualFoundCount}
+            ratingQueueActiveCount={ratingQueueActiveCount}
             currentRating={currentRating}
             setCurrentRating={setCurrentRating}
             setRatingType={setRatingType}
@@ -949,6 +1059,7 @@ export default function HomePage() {
             cachePreloadProgress={cachePreloadProgress}
             preloadInsufficient={preloadInsufficient}
             actualFoundCount={actualFoundCount}
+            ratingQueueActiveCount={ratingQueueActiveCount}
             galleryPreloadReady={galleryPreloadReady}
             currentRating={currentRating}
             setCurrentRating={setCurrentRating}
@@ -1001,6 +1112,7 @@ export default function HomePage() {
             viewedFilter={viewedFilter}
             advancedFilters={advancedFilters}
             preloadRandomness={preloadRandomness}
+            ratingQueueActiveCount={ratingQueueActiveCount}
             currentRating={currentRating}
             creatorRefreshKey={creatorRefreshKey}
             fullscreen={fullscreen}

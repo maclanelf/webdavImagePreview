@@ -72,6 +72,61 @@ function parseCreatorOtherNames(value: unknown): string[] | undefined {
   return undefined
 }
 
+function parseRatingJsonArray(value: unknown): string[] | undefined {
+  if (typeof value !== 'string') {
+    return undefined
+  }
+
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return undefined
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (Array.isArray(parsed)) {
+      const filtered = parsed.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      return filtered.length > 0 ? filtered : undefined
+    }
+
+    if (typeof parsed === 'string' && parsed.trim()) {
+      return [parsed.trim()]
+    }
+  } catch {
+    return [trimmed]
+  }
+
+  return undefined
+}
+
+function buildMediaRatingFromJoinedRow(row: any) {
+  if (!row || Number(row.media_rating_exists) !== 1) {
+    return null
+  }
+
+  return {
+    rating: row.media_rating_value ?? undefined,
+    recommendationReason: row.media_recommendation_reason ?? undefined,
+    customEvaluation: parseRatingJsonArray(row.media_custom_evaluation),
+    category: parseRatingJsonArray(row.media_category),
+    isViewed: row.media_is_viewed === 1,
+  }
+}
+
+function buildGroupRatingFromJoinedRow(row: any) {
+  if (!row || Number(row.group_rating_exists) !== 1) {
+    return null
+  }
+
+  return {
+    rating: row.group_rating_value ?? undefined,
+    recommendationReason: row.group_recommendation_reason ?? undefined,
+    customEvaluation: parseRatingJsonArray(row.group_custom_evaluation),
+    category: parseRatingJsonArray(row.group_category),
+    isViewed: row.group_is_viewed === 1,
+  }
+}
+
 function buildCreatorSummaryFromJoinedRow(row: any) {
   const linkedCreatorId = row.creator_linked_id == null ? null : Number(row.creator_linked_id)
   if (!Number.isFinite(linkedCreatorId)) {
@@ -96,6 +151,8 @@ function attachCreatorInfoToScanFileRow(row: any) {
   return {
     ...row,
     creator,
+    mediaRatingData: buildMediaRatingFromJoinedRow(row),
+    groupRatingData: buildGroupRatingFromJoinedRow(row),
     creatorResolved: creatorId === UNKNOWN_CREATOR_ID || creator !== null,
   }
 }
@@ -619,6 +676,18 @@ export const scanFiles = {
       `
         SELECT
           sf.*,
+          CASE WHEN mr.file_path IS NULL THEN 0 ELSE 1 END AS media_rating_exists,
+          mr.rating AS media_rating_value,
+          mr.recommendation_reason AS media_recommendation_reason,
+          mr.custom_evaluation AS media_custom_evaluation,
+          mr.category AS media_category,
+          mr.is_viewed AS media_is_viewed,
+          CASE WHEN gr.group_path IS NULL THEN 0 ELSE 1 END AS group_rating_exists,
+          gr.rating AS group_rating_value,
+          gr.recommendation_reason AS group_recommendation_reason,
+          gr.custom_evaluation AS group_custom_evaluation,
+          gr.category AS group_category,
+          gr.is_viewed AS group_is_viewed,
           sfc.creator_id AS creator_id,
           c.id AS creator_linked_id,
           c.primary_name AS creator_primary_name,
@@ -628,6 +697,8 @@ export const scanFiles = {
           c.bio AS creator_bio,
           c.avatar_path AS creator_avatar_path
         FROM scan_files sf
+        LEFT JOIN media_ratings mr ON mr.file_path = sf.filename
+        LEFT JOIN group_ratings gr ON gr.group_path = sf.parent_path
         LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
         LEFT JOIN creators c ON c.id = sfc.creator_id
         WHERE ${fileWhere.join(' AND ')}
@@ -698,6 +769,18 @@ export const scanFiles = {
         `
           SELECT
             sf.*,
+            CASE WHEN mr.file_path IS NULL THEN 0 ELSE 1 END AS media_rating_exists,
+            mr.rating AS media_rating_value,
+            mr.recommendation_reason AS media_recommendation_reason,
+            mr.custom_evaluation AS media_custom_evaluation,
+            mr.category AS media_category,
+            mr.is_viewed AS media_is_viewed,
+            CASE WHEN gr.group_path IS NULL THEN 0 ELSE 1 END AS group_rating_exists,
+            gr.rating AS group_rating_value,
+            gr.recommendation_reason AS group_recommendation_reason,
+            gr.custom_evaluation AS group_custom_evaluation,
+            gr.category AS group_category,
+            gr.is_viewed AS group_is_viewed,
             sfc.creator_id AS creator_id,
             c.id AS creator_linked_id,
             c.primary_name AS creator_primary_name,
@@ -707,6 +790,8 @@ export const scanFiles = {
             c.bio AS creator_bio,
             c.avatar_path AS creator_avatar_path
           FROM scan_files sf
+          LEFT JOIN media_ratings mr ON mr.file_path = sf.filename
+          LEFT JOIN group_ratings gr ON gr.group_path = sf.parent_path
           LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
           LEFT JOIN creators c ON c.id = sfc.creator_id
           WHERE sf.id IN (${placeholders})

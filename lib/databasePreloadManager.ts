@@ -1,4 +1,22 @@
-import type { CreatorSummary } from '@/types'
+import type { CreatorSummary, GroupRating, MediaRating } from '@/types'
+
+function getGroupPathFromFilepath(filepath: string): string {
+  const lastSlashIndex = filepath.lastIndexOf('/')
+  return lastSlashIndex > 0 ? filepath.substring(0, lastSlashIndex) : '/'
+}
+
+type CachedMediaMetadata = {
+  blob: Blob
+  url: string
+  timestamp: number
+  filepath: string
+  size: number
+  lastmod: string
+  creator?: CreatorSummary | null
+  creatorResolved?: boolean
+  mediaRatingData?: MediaRating | null
+  groupRatingData?: GroupRating | null
+}
 
 /**
  * 数据库预加载管理器
@@ -15,28 +33,10 @@ class DatabasePreloadManager {
   //#region 状态管理
   
   // 当前组缓存：存储当前正在浏览的图组文件
-  private cache = new Map<string, {
-    blob: Blob
-    url: string
-    timestamp: number
-    filepath: string
-    size: number
-    lastmod: string
-    creator?: CreatorSummary | null
-    creatorResolved?: boolean
-  }>()
+  private cache = new Map<string, CachedMediaMetadata>()
   
   // 图组模式专用：下一组预加载缓存
-  private nextGroupCache = new Map<string, {
-    blob: Blob
-    url: string
-    timestamp: number
-    filepath: string
-    size: number
-    lastmod: string
-    creator?: CreatorSummary | null
-    creatorResolved?: boolean
-  }>()
+  private nextGroupCache = new Map<string, CachedMediaMetadata>()
   
   // 预加载队列：正在预加载的文件路径集合
   private queue = new Set<string>()
@@ -312,7 +312,9 @@ class DatabasePreloadManager {
           size: file.size || 0,
           lastmod: file.lastmod || '',
           creator: file.creator || null,
-          creatorResolved: Boolean(file.creatorResolved)
+          creatorResolved: Boolean(file.creatorResolved),
+          mediaRatingData: file.mediaRatingData ?? null,
+          groupRatingData: file.groupRatingData ?? null,
         })
 
         // 图组模式下不驱逐缓存（允许缓存整个图组）
@@ -438,7 +440,9 @@ class DatabasePreloadManager {
           size: file.size || 0,
           lastmod: file.lastmod || '',
           creator: file.creator || null,
-          creatorResolved: Boolean(file.creatorResolved)
+          creatorResolved: Boolean(file.creatorResolved),
+          mediaRatingData: file.mediaRatingData ?? null,
+          groupRatingData: file.groupRatingData ?? null,
         })
         
         console.log(`[数据库模式] 预加载完成: ${file.basename}`)
@@ -538,7 +542,9 @@ class DatabasePreloadManager {
           size: file.size || 0,
           lastmod: file.lastmod || '',
           creator: file.creator || null,
-          creatorResolved: Boolean(file.creatorResolved)
+          creatorResolved: Boolean(file.creatorResolved),
+          mediaRatingData: file.mediaRatingData ?? null,
+          groupRatingData: file.groupRatingData ?? null,
         })
         
         if (this.nextGroupCache.size > this.maxCacheSize) {
@@ -726,14 +732,25 @@ class DatabasePreloadManager {
   }
 
   // 获取所有缓存的文件信息（包含元数据）
-  getCachedFiles(): Array<{ filename: string, basename: string, size: number, lastmod: string, creator?: CreatorSummary | null, creatorResolved?: boolean }> {
+  getCachedFiles(): Array<{
+    filename: string
+    basename: string
+    size: number
+    lastmod: string
+    creator?: CreatorSummary | null
+    creatorResolved?: boolean
+    mediaRatingData?: MediaRating | null
+    groupRatingData?: GroupRating | null
+  }> {
     return Array.from(this.cache.entries()).map(([filepath, cached]) => ({
       filename: filepath,
       basename: filepath.substring(filepath.lastIndexOf('/') + 1),
       size: cached.size,
       lastmod: cached.lastmod,
       creator: cached.creator || null,
-      creatorResolved: Boolean(cached.creatorResolved)
+      creatorResolved: Boolean(cached.creatorResolved),
+      mediaRatingData: cached.mediaRatingData ?? null,
+      groupRatingData: cached.groupRatingData ?? null,
     }))
   }
 
@@ -830,8 +847,85 @@ class DatabasePreloadManager {
     ))
   }
 
+  // 同步更新文件的媒体评分快照
+  patchFileRatingMetadata(filepath: string, mediaRatingData: MediaRating | null): void {
+    const nextMediaRatingData = mediaRatingData ?? null
+
+    const cached = this.cache.get(filepath)
+    if (cached) {
+      cached.mediaRatingData = nextMediaRatingData
+    }
+
+    const nextGroupCached = this.nextGroupCache.get(filepath)
+    if (nextGroupCached) {
+      nextGroupCached.mediaRatingData = nextMediaRatingData
+    }
+
+    this.currentGroupFiles = this.currentGroupFiles.map((file) => (
+      file.filename === filepath
+        ? {
+            ...file,
+            mediaRatingData: nextMediaRatingData,
+          }
+        : file
+    ))
+
+    this.nextGroupFiles = this.nextGroupFiles.map((file) => (
+      file.filename === filepath
+        ? {
+            ...file,
+            mediaRatingData: nextMediaRatingData,
+          }
+        : file
+    ))
+  }
+
+  // 同步更新图组评分快照
+  patchGroupRatingMetadata(groupPath: string, groupRatingData: GroupRating | null): void {
+    const nextGroupRatingData = groupRatingData ?? null
+
+    this.cache.forEach((cached, filepath) => {
+      if (getGroupPathFromFilepath(filepath) === groupPath) {
+        cached.groupRatingData = nextGroupRatingData
+      }
+    })
+
+    this.nextGroupCache.forEach((cached, filepath) => {
+      if (getGroupPathFromFilepath(filepath) === groupPath) {
+        cached.groupRatingData = nextGroupRatingData
+      }
+    })
+
+    this.currentGroupFiles = this.currentGroupFiles.map((file) => (
+      getGroupPathFromFilepath(file.filename) === groupPath
+        ? {
+            ...file,
+            groupRatingData: nextGroupRatingData,
+          }
+        : file
+    ))
+
+    this.nextGroupFiles = this.nextGroupFiles.map((file) => (
+      getGroupPathFromFilepath(file.filename) === groupPath
+        ? {
+            ...file,
+            groupRatingData: nextGroupRatingData,
+          }
+        : file
+    ))
+  }
+
   // 直接添加文件到缓存
-  addToCacheDirectly(filepath: string, blob: Blob, size: number = 0, lastmod: string = '', creator?: CreatorSummary | null, creatorResolved: boolean = false): void {
+  addToCacheDirectly(
+    filepath: string,
+    blob: Blob,
+    size: number = 0,
+    lastmod: string = '',
+    creator?: CreatorSummary | null,
+    creatorResolved: boolean = false,
+    mediaRatingData?: MediaRating | null,
+    groupRatingData?: GroupRating | null,
+  ): void {
     if (this.cache.has(filepath)) return
 
     const url = URL.createObjectURL(blob)
@@ -845,6 +939,8 @@ class DatabasePreloadManager {
       lastmod,
       creator: creator || null,
       creatorResolved,
+      mediaRatingData: mediaRatingData ?? null,
+      groupRatingData: groupRatingData ?? null,
     })
   }
 
@@ -1037,7 +1133,9 @@ class DatabasePreloadManager {
         type: f.file_type,
         lastmod: f.lastmod || '',
         creator: f.creator || null,
-        creatorResolved: Boolean(f.creatorResolved)
+        creatorResolved: Boolean(f.creatorResolved),
+        mediaRatingData: f.mediaRatingData ?? null,
+        groupRatingData: f.groupRatingData ?? null,
       }))
       
       // 统一使用受控并发预加载：最大 4 个文件同时请求。
@@ -1189,7 +1287,9 @@ class DatabasePreloadManager {
         type: f.file_type,
         lastmod: f.lastmod || '',
         creator: f.creator || null,
-        creatorResolved: Boolean(f.creatorResolved)
+        creatorResolved: Boolean(f.creatorResolved),
+        mediaRatingData: f.mediaRatingData ?? null,
+        groupRatingData: f.groupRatingData ?? null,
       }))
       this.currentGroupPreloadTriggered = false
       
@@ -1313,7 +1413,9 @@ class DatabasePreloadManager {
         type: f.file_type,
         lastmod: f.lastmod || '',
         creator: f.creator || null,
-        creatorResolved: Boolean(f.creatorResolved)
+        creatorResolved: Boolean(f.creatorResolved),
+        mediaRatingData: f.mediaRatingData ?? null,
+        groupRatingData: f.groupRatingData ?? null,
       }))
       
       const filesToPreload = this.nextGroupFiles.slice(0, Math.min(count, data.files.length))
@@ -1487,7 +1589,9 @@ class DatabasePreloadManager {
         type: f.file_type,
         lastmod: f.lastmod || '',
         creator: f.creator || null,
-        creatorResolved: Boolean(f.creatorResolved)
+        creatorResolved: Boolean(f.creatorResolved),
+        mediaRatingData: f.mediaRatingData ?? null,
+        groupRatingData: f.groupRatingData ?? null,
       }))
       
       // ✅ 立即返回结果（不等待文件下载完成）
@@ -1588,7 +1692,9 @@ class DatabasePreloadManager {
         type: 'file',
         lastmod: data.files[0].lastmod || '',
         creator: data.files[0].creator || null,
-        creatorResolved: Boolean(data.files[0].creatorResolved)
+        creatorResolved: Boolean(data.files[0].creatorResolved),
+        mediaRatingData: data.files[0].mediaRatingData ?? null,
+        groupRatingData: data.files[0].groupRatingData ?? null,
       }
       
       return {
@@ -1894,7 +2000,9 @@ class DatabasePreloadManager {
           type: f.file_type,
           lastmod: f.lastmod || '',
           creator: f.creator || null,
-          creatorResolved: Boolean(f.creatorResolved)
+          creatorResolved: Boolean(f.creatorResolved),
+          mediaRatingData: f.mediaRatingData ?? null,
+          groupRatingData: f.groupRatingData ?? null,
         }))
         
         console.log(`[数据库模式] 开始并行预加载 ${filesToPreload.length} 个文件（受并发控制，最多4个同时进行）`)

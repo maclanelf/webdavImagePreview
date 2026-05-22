@@ -20,6 +20,7 @@ interface FullscreenRatingDockProps {
   isSwitching: boolean
   detailDisabled: boolean
   preloadCurrent?: number | null
+  ratingSyncCount?: number | null
   zIndex?: number
   variant?: 'basic' | 'enhanced'
   defaultPosition?: {
@@ -48,6 +49,7 @@ export default function FullscreenRatingDock({
   isSwitching,
   detailDisabled,
   preloadCurrent,
+  ratingSyncCount,
   zIndex = 2001,
   variant = 'basic',
   defaultPosition = { right: 10, bottom: 151 },
@@ -77,9 +79,9 @@ export default function FullscreenRatingDock({
         ...(!position && defaultPosition),
       })}
     >
-      {typeof preloadCurrent === 'number' && (
+      {(typeof preloadCurrent === 'number' || typeof ratingSyncCount === 'number') && (
         <Typography variant="caption" sx={{ color: 'rgba(255, 255, 255, 0.8)', fontSize: '10px', mb: 0.5 }}>
-          {preloadCurrent}
+          {typeof ratingSyncCount === 'number' ? ratingSyncCount : 0}/{typeof preloadCurrent === 'number' ? preloadCurrent : 0}
         </Typography>
       )}
 

@@ -89,6 +89,7 @@ interface RandomModePageProps {
   preloadInsufficient: boolean
   setActualFoundCount: (count: number) => void
   actualFoundCount: number
+  ratingQueueActiveCount?: number
   currentRating: MediaRating | GroupRating | null
   setCurrentRating: (rating: any) => void
   setRatingType: (type: 'media' | 'group') => void
@@ -169,6 +170,7 @@ export default function RandomModePage({
   preloadInsufficient,
   setActualFoundCount,
   actualFoundCount,
+  ratingQueueActiveCount = 0,
   currentRating,
   setCurrentRating,
   setRatingType,
@@ -911,6 +913,7 @@ export default function RandomModePage({
                   isSwitching={isSwitching}
                   detailDisabled={loading || isSwitching || !currentFile}
                   preloadCurrent={preloadEnabled && cachePreloadProgress ? cachePreloadProgress.current : null}
+                  ratingSyncCount={ratingQueueActiveCount}
                   variant="basic"
                 />
 

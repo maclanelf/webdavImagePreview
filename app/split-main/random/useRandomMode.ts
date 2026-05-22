@@ -390,6 +390,8 @@ export function useRandomMode({
         size: randomFile.size,
         type: 'file',
         lastmod: randomFile.lastmod,
+        mediaRatingData: randomFile.mediaRatingData ?? null,
+        groupRatingData: randomFile.groupRatingData ?? null,
         creator: randomFile.creator || null,
         creatorResolved: Boolean(randomFile.creatorResolved),
       }
@@ -442,6 +444,8 @@ export function useRandomMode({
               size: dbFile.file_size || 0,
               type: 'file',
               lastmod: dbFile.lastmod || '',
+              mediaRatingData: dbFile.mediaRatingData ?? null,
+              groupRatingData: dbFile.groupRatingData ?? null,
               creator: dbFile.creator || null,
               creatorResolved: Boolean(dbFile.creatorResolved),
             }

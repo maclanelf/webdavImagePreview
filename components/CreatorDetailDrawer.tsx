@@ -36,6 +36,7 @@ import CreatorDetailPreviewContainer, { type CreatorDetailPreviewContainerRef } 
 import { type InstantVideoPlayerRef } from '@/components/InstantVideoPlayer'
 import RatingDialog from '@/components/RatingDialog'
 import { openExternalPlayerUrl } from '@/components/split-main/shared/videoPlayback'
+import { buildMediaQueueKey, localRatingQueue } from '@/lib/localRatingQueue'
 import type {
   CreatorGroupCard,
   CreatorMediaCard,
@@ -146,6 +147,71 @@ type CreatorPreviewPlayMode = 'webdav' | 'direct' | 'transcode'
 
 function getDefaultPreviewPlayMode(media: CreatorMediaCard | null | undefined): CreatorPreviewPlayMode {
   return media?.mediaType === 'stream-video' ? 'direct' : 'webdav'
+}
+
+function normalizeMediaRating(data: MediaRating): MediaRating {
+  return {
+    rating: data.rating,
+    recommendationReason: data.recommendationReason,
+    customEvaluation: data.customEvaluation,
+    category: data.category,
+    isViewed: data.isViewed,
+  }
+}
+
+function buildMediaRatingFromCard(media?: CreatorMediaCard | null): MediaRating | null {
+  if (!media) {
+    return null
+  }
+
+  return {
+    rating: media.rating ?? undefined,
+    recommendationReason: media.recommendationReason ?? undefined,
+    customEvaluation: media.customEvaluation,
+    category: media.category,
+    isViewed: media.isViewed,
+  }
+}
+
+function buildMediaCardRatingPatch(rating: MediaRating | null): Partial<CreatorMediaCard> {
+  return {
+    rating: rating?.rating ?? null,
+    recommendationReason: rating?.recommendationReason ?? null,
+    customEvaluation: Array.isArray(rating?.customEvaluation)
+      ? rating.customEvaluation
+      : rating?.customEvaluation
+        ? [rating.customEvaluation]
+        : [],
+    category: Array.isArray(rating?.category)
+      ? rating.category
+      : rating?.category
+        ? [rating.category]
+        : [],
+    isViewed: rating?.isViewed ?? false,
+  }
+}
+
+function buildMediaCardRollbackSnapshot(media: CreatorMediaCard): Partial<CreatorMediaCard> {
+  return {
+    rating: media.rating ?? null,
+    recommendationReason: media.recommendationReason ?? null,
+    customEvaluation: Array.isArray(media.customEvaluation) ? [...media.customEvaluation] : [],
+    category: Array.isArray(media.category) ? [...media.category] : [],
+    isViewed: media.isViewed,
+  }
+}
+
+function resolvePreviewRatingSnapshot(media?: CreatorMediaCard | null): MediaRating | null {
+  if (!media) {
+    return null
+  }
+
+  const queueRecord = localRatingQueue.getMediaRecord(media.filePath)
+  if (queueRecord && queueRecord.status !== 'failed') {
+    return normalizeMediaRating(queueRecord.rating)
+  }
+
+  return buildMediaRatingFromCard(media)
 }
 
 /**
@@ -366,6 +432,8 @@ export default function CreatorDetailDrawer({
   const previewInstantVideoRef = useRef<InstantVideoPlayerRef | null>(null)
   /** 预览是否已自动评分的标记 */
   const previewAutoRatedRef = useRef(false)
+  const previewRatingQueueSnapshotRef = useRef<Map<string, { status: string; updatedAt: number }>>(new Map())
+  const previewRatingRollbackRef = useRef<Map<string, Partial<CreatorMediaCard>>>(new Map())
   const headerCollapseProgressRef = useRef(0)
   const headerMotionSnapshotRef = useRef('')
   const previousLocalMediaRef = useRef<CreatorMediaCard[]>([])
@@ -869,24 +937,13 @@ export default function CreatorDetailDrawer({
    * 
    * @param filePath - 媒体文件路径
    */
-  const loadPreviewRating = useCallback(async (filePath?: string | null) => {
-    if (!filePath) {
+  const loadPreviewRating = useCallback(async (media?: CreatorMediaCard | null) => {
+    if (!media) {
       setPreviewCurrentRating(null)
       return
     }
 
-    try {
-      const response = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(filePath)}`)
-      if (!response.ok) {
-        setPreviewCurrentRating(null)
-        return
-      }
-      const data = await response.json()
-      setPreviewCurrentRating(data.rating || null)
-    } catch (error) {
-      console.error('[CreatorDetailDrawer] 加载预览评分失败:', error)
-      setPreviewCurrentRating(null)
-    }
+    setPreviewCurrentRating(resolvePreviewRatingSnapshot(media))
   }, [])
 
   /**
@@ -915,12 +972,12 @@ export default function CreatorDetailDrawer({
    * 预览打开时加载当前媒体的评分
    */
   useEffect(() => {
-    if (!previewOpen || !previewMedia?.filePath) {
+    if (!previewOpen || !activePreviewMedia) {
       setPreviewCurrentRating(null)
       return
     }
-    void loadPreviewRating(previewMedia.filePath)
-  }, [loadPreviewRating, previewMedia?.filePath, previewOpen])
+    void loadPreviewRating(activePreviewMedia)
+  }, [activePreviewMedia, loadPreviewRating, previewOpen])
 
   /**
    * 更新本地媒体卡片的部分属性
@@ -932,6 +989,24 @@ export default function CreatorDetailDrawer({
     setLocalMedia((prev) => prev.map((item) => (item.filePath === filePath ? { ...item, ...patch } : item)))
   }, [])
 
+  const enqueuePreviewRating = useCallback(async (media: CreatorMediaCard, data: MediaRating) => {
+    const normalizedRating = normalizeMediaRating(data)
+
+    if (!previewRatingRollbackRef.current.has(media.filePath)) {
+      previewRatingRollbackRef.current.set(media.filePath, buildMediaCardRollbackSnapshot(media))
+    }
+
+    setPreviewCurrentRating(normalizedRating)
+    updateLocalMediaCard(media.filePath, buildMediaCardRatingPatch(normalizedRating))
+
+    await localRatingQueue.enqueueMedia({
+      filePath: media.filePath,
+      fileName: media.basename,
+      fileType: media.fileType,
+      ...normalizedRating,
+    })
+  }, [updateLocalMediaCard])
+
   /**
    * 执行预览自动评分
    * 
@@ -941,54 +1016,27 @@ export default function CreatorDetailDrawer({
    * 3. 更新本地状态和服务器数据
    */
   const performPreviewAutoRating = useCallback(async () => {
-    if (!previewMedia || previewAutoRatedRef.current) return
-
-    previewAutoRatedRef.current = true
+    if (!activePreviewMedia || previewAutoRatedRef.current) return
 
     try {
-      // 先检查是否已有评分
-      const existingResponse = await fetch(`/api/ratings/media?filePath=${encodeURIComponent(previewMedia.filePath)}`)
-      if (existingResponse.ok) {
-        const existingData = await existingResponse.json()
-        if (existingData.rating?.rating) {
-          setPreviewCurrentRating(existingData.rating)
-          return
-        }
+      const existingRating = resolvePreviewRatingSnapshot(activePreviewMedia)
+      if (existingRating?.rating) {
+        setPreviewCurrentRating(existingRating)
+        previewAutoRatedRef.current = true
+        return
       }
 
-      // 没有评分则自动给 2 星
-      const response = await fetch('/api/ratings/optimistic', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filePath: previewMedia.filePath,
-          fileName: previewMedia.basename,
-          fileType: previewMedia.fileType,
+      await enqueuePreviewRating(activePreviewMedia, {
           rating: 2,
           customEvaluation: [QUICK_RATING_CONFIG[1].evaluation],
           isViewed: true,
-        }),
       })
-
-      if (!response.ok) {
-        throw new Error('自动评分失败')
-      }
-
-      setPreviewCurrentRating((prev) => ({
-        ...prev,
-        rating: 2,
-        customEvaluation: [QUICK_RATING_CONFIG[1].evaluation],
-        isViewed: true,
-      }))
-      updateLocalMediaCard(previewMedia.filePath, {
-        rating: 2,
-        customEvaluation: [QUICK_RATING_CONFIG[1].evaluation],
-        isViewed: true,
-      })
+      previewAutoRatedRef.current = true
     } catch (error) {
+      previewAutoRatedRef.current = false
       console.error('[CreatorDetailDrawer] 自动评分失败:', error)
     }
-  }, [previewMedia, updateLocalMediaCard])
+  }, [activePreviewMedia, enqueuePreviewRating])
 
   /**
    * 图片预览时自动触发评分
@@ -1038,50 +1086,22 @@ export default function CreatorDetailDrawer({
    * @param evaluation - 评价标签
    */
   const handlePreviewQuickRate = useCallback(async (rating: number, evaluation: string) => {
-    if (!previewMedia) return
+    if (!activePreviewMedia) return
 
-    const payload = {
-      filePath: previewMedia.filePath,
-      fileName: previewMedia.basename,
-      fileType: previewMedia.fileType,
-      rating,
-      customEvaluation: [evaluation],
-      category: previewCurrentRating?.category,
-      recommendationReason: previewCurrentRating?.recommendationReason,
-      isViewed: true,
+    try {
+      await enqueuePreviewRating(activePreviewMedia, {
+        rating,
+        customEvaluation: [evaluation],
+        category: previewCurrentRating?.category,
+        recommendationReason: previewCurrentRating?.recommendationReason,
+        isViewed: true,
+      })
+      previewAutoRatedRef.current = true
+    } catch (error) {
+      console.error('[CreatorDetailDrawer] 快捷评分失败:', error)
+      onErrorRef.current?.(getErrorMessage(error, '快捷评分失败'))
     }
-
-    const response = await fetch('/api/ratings/optimistic', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
-
-    if (!response.ok) {
-      throw new Error('快捷评分失败')
-    }
-
-    setPreviewCurrentRating((prev) => ({
-      ...prev,
-      rating,
-      customEvaluation: [evaluation],
-      category: prev?.category,
-      recommendationReason: prev?.recommendationReason,
-      isViewed: true,
-    }))
-    updateLocalMediaCard(previewMedia.filePath, {
-      rating,
-      customEvaluation: [evaluation],
-      category: Array.isArray(previewCurrentRating?.category)
-        ? previewCurrentRating.category
-        : previewCurrentRating?.category
-          ? [previewCurrentRating.category]
-          : [],
-      recommendationReason: previewCurrentRating?.recommendationReason || null,
-      isViewed: true,
-    })
-    previewAutoRatedRef.current = true
-  }, [previewCurrentRating, previewMedia, updateLocalMediaCard])
+  }, [activePreviewMedia, enqueuePreviewRating, previewCurrentRating])
 
   /**
    * 处理预览详细评分保存
@@ -1089,42 +1109,71 @@ export default function CreatorDetailDrawer({
    * @param data - 评分数据
    */
   const handlePreviewRatingSave = useCallback(async (data: MediaRating) => {
-    if (!previewMedia) return
+    if (!activePreviewMedia) return
 
-    const response = await fetch('/api/ratings/media', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        filePath: previewMedia.filePath,
-        fileName: previewMedia.basename,
-        fileType: previewMedia.fileType,
-        ...data,
-      }),
-    })
+    try {
+      await enqueuePreviewRating(activePreviewMedia, data)
+      previewAutoRatedRef.current = true
+    } catch (error) {
+      const message = getErrorMessage(error, '保存评分失败')
+      onError?.(message)
+      throw new Error(message)
+    }
+  }, [activePreviewMedia, enqueuePreviewRating, onError])
 
-    const result = await response.json()
-    if (!response.ok || result.error) {
-      throw new Error(result.error || '保存评分失败')
+  useEffect(() => {
+    const syncPreviewQueueStatus = () => {
+      const nextSnapshot = new Map<string, { status: string; updatedAt: number }>()
+      const queueRecords = localRatingQueue.getAllRecords()
+
+      queueRecords.forEach((record) => {
+        if (record.type !== 'media') {
+          return
+        }
+
+        const key = buildMediaQueueKey(record.filePath)
+        nextSnapshot.set(key, {
+          status: record.status,
+          updatedAt: record.updatedAt,
+        })
+
+        const previousRecord = previewRatingQueueSnapshotRef.current.get(key)
+        if (previousRecord && previousRecord.status !== 'failed' && record.status === 'failed') {
+          const rollbackPatch = previewRatingRollbackRef.current.get(record.filePath)
+          if (rollbackPatch) {
+            updateLocalMediaCard(record.filePath, rollbackPatch)
+
+            if (activePreviewMedia?.filePath === record.filePath) {
+              previewAutoRatedRef.current = false
+              const rollbackPreviewMedia = {
+                ...activePreviewMedia,
+                ...rollbackPatch,
+              }
+              setPreviewCurrentRating(buildMediaRatingFromCard(rollbackPreviewMedia))
+            }
+          }
+
+          previewRatingRollbackRef.current.delete(record.filePath)
+          onErrorRef.current?.(`媒体评分同步失败${record.errorMessage ? `：${record.errorMessage}` : ''}`)
+        }
+      })
+
+      previewRatingQueueSnapshotRef.current.forEach((_record, key) => {
+        if (!nextSnapshot.has(key) && key.startsWith('media:')) {
+          previewRatingRollbackRef.current.delete(key.slice('media:'.length))
+        }
+      })
+
+      previewRatingQueueSnapshotRef.current = nextSnapshot
+
+      if (activePreviewMedia) {
+        void loadPreviewRating(activePreviewMedia)
+      }
     }
 
-    previewAutoRatedRef.current = true
-    await loadPreviewRating(previewMedia.filePath)
-    updateLocalMediaCard(previewMedia.filePath, {
-      rating: data.rating ?? null,
-      recommendationReason: data.recommendationReason || null,
-      customEvaluation: Array.isArray(data.customEvaluation)
-        ? data.customEvaluation
-        : data.customEvaluation
-          ? [data.customEvaluation]
-          : [],
-      category: Array.isArray(data.category)
-        ? data.category
-        : data.category
-          ? [data.category]
-          : [],
-      isViewed: data.isViewed ?? true,
-    })
-  }, [loadPreviewRating, previewMedia, updateLocalMediaCard])
+    syncPreviewQueueStatus()
+    return localRatingQueue.subscribe(syncPreviewQueueStatus)
+  }, [activePreviewMedia, loadPreviewRating, updateLocalMediaCard])
 
   /**
    * 预览时的键盘快捷键监听

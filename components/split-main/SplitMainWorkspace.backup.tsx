@@ -88,6 +88,11 @@ const PAGE_LINKS = [
 const isImageFile = (filename: string) => /\.(jpg|jpeg|png|gif|webp|bmp|tiff|tif|svg|ico)$/i.test(filename)
 const isVideoFile = (filename: string) => /\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv|ts|mts|m2ts)$/i.test(filename)
 
+const getGroupPathFromFilePath = (filePath: string): string => {
+  const lastSlashIndex = filePath.lastIndexOf('/')
+  return lastSlashIndex > 0 ? filePath.substring(0, lastSlashIndex) : '/'
+}
+
 /**
  * 拆分主页面工作区壳层。
  *
@@ -273,6 +278,42 @@ export default function SplitMainWorkspace({
     setShouldAutoPlay(intent)
   }, [])
 
+  const patchMediaRatingSnapshot = useCallback((filePath: string, rating: MediaRating | null) => {
+    setCurrentFile((prev) => prev && prev.filename === filePath ? {
+      ...prev,
+      mediaRatingData: rating,
+    } : prev)
+
+    setCurrentGroup((prev) => prev.map((file) => (
+      file.filename === filePath
+        ? {
+            ...file,
+            mediaRatingData: rating,
+          }
+        : file
+    )))
+
+    databasePreloadManager.patchFileRatingMetadata(filePath, rating)
+  }, [])
+
+  const patchGroupRatingSnapshot = useCallback((groupPath: string, rating: GroupRating | null) => {
+    setCurrentFile((prev) => prev && getGroupPathFromFilePath(prev.filename) === groupPath ? {
+      ...prev,
+      groupRatingData: rating,
+    } : prev)
+
+    setCurrentGroup((prev) => prev.map((file) => (
+      getGroupPathFromFilePath(file.filename) === groupPath
+        ? {
+            ...file,
+            groupRatingData: rating,
+          }
+        : file
+    )))
+
+    databasePreloadManager.patchGroupRatingMetadata(groupPath, rating)
+  }, [])
+
   /**
    * 统一通知入口。
    * 所有模式页面都复用壳层的 Snackbar，而不自己维护一套新的全局提示系统。
@@ -304,6 +345,8 @@ export default function SplitMainWorkspace({
     setRatingType,
     setStats,
     hasAutoRatedRef,
+    patchMediaRatingSnapshot,
+    patchGroupRatingSnapshot,
     notify,
   })
 

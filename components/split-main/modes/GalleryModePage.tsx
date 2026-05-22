@@ -107,6 +107,7 @@ interface GalleryModePageProps {
   cachePreloadProgress: { current: number; total: number } | null
   preloadInsufficient: boolean
   actualFoundCount: number
+  ratingQueueActiveCount?: number
   galleryPreloadReady: boolean
   currentRating: MediaRating | GroupRating | null
   setCurrentRating: (rating: any) => void
@@ -183,6 +184,7 @@ export default function GalleryModePage({
   cachePreloadProgress,
   preloadInsufficient,
   actualFoundCount,
+  ratingQueueActiveCount = 0,
   galleryPreloadReady,
   currentRating,
   setCurrentRating,
@@ -948,6 +950,7 @@ export default function GalleryModePage({
                 isSwitching={isSwitching}
                 detailDisabled={loading || isSwitching || !currentFile}
                 preloadCurrent={preloadEnabled && cachePreloadProgress ? cachePreloadProgress.current : null}
+                ratingSyncCount={ratingQueueActiveCount}
                 variant="enhanced"
               />
 
