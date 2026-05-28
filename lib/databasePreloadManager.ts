@@ -7,9 +7,22 @@ function getGroupPathFromFilepath(filepath: string): string {
 }
 
 type CachedMediaMetadata = {
+  id?: number
   blob: Blob
   url: string
   timestamp: number
+  filepath: string
+  size: number
+  lastmod: string
+  creator?: CreatorSummary | null
+  creatorResolved?: boolean
+  mediaRatingData?: MediaRating | null
+  groupRatingData?: GroupRating | null
+}
+
+type TakenCachedMediaMetadata = {
+  id?: number
+  blob: Blob
   filepath: string
   size: number
   lastmod: string
@@ -53,6 +66,7 @@ class DatabasePreloadManager {
   
   // 本地已观看文件（当前会话，用于避免重复标记请求）
   private localViewedFiles = new Set<string>()
+  private localViewedFileIds = new Set<number>()
   
   // 图组模式相关状态
   private currentGroupFiles: any[] = []
@@ -87,6 +101,15 @@ class DatabasePreloadManager {
   setConcurrencyLimitEnabled(enabled: boolean) {
     this.concurrencyLimitEnabled = enabled
     console.log(`[数据库模式][并发控制] 并发限制${enabled ? '已启用' : '已禁用'}`)
+  }
+
+  // 随机模式缓存池配置：基础阈值=预加载数量，目标池容量=预加载数量 x 5
+  getRandomPoolConfig(preloadCount: number) {
+    const baseCount = Math.max(1, preloadCount || 1)
+    return {
+      baseCount,
+      targetCount: baseCount * 5,
+    }
   }
   
   //#endregion
@@ -306,6 +329,7 @@ class DatabasePreloadManager {
         const url = URL.createObjectURL(blob)
         
         this.cache.set(filepath, {
+          id: Number.isFinite(Number(file.id)) ? Number(file.id) : undefined,
           blob,
           url,
           timestamp: Date.now(),
@@ -434,6 +458,7 @@ class DatabasePreloadManager {
         }
         
         this.cache.set(filepath, {
+          id: Number.isFinite(Number(file.id)) ? Number(file.id) : undefined,
           blob,
           url,
           timestamp: Date.now(),
@@ -536,6 +561,7 @@ class DatabasePreloadManager {
         const url = URL.createObjectURL(blob)
         
         this.nextGroupCache.set(filepath, {
+          id: Number.isFinite(Number(file.id)) ? Number(file.id) : undefined,
           blob,
           url,
           timestamp: Date.now(),
@@ -734,6 +760,7 @@ class DatabasePreloadManager {
 
   // 获取所有缓存的文件信息（包含元数据）
   getCachedFiles(): Array<{
+    id?: number
     filename: string
     basename: string
     size: number
@@ -744,6 +771,7 @@ class DatabasePreloadManager {
     groupRatingData?: GroupRating | null
   }> {
     return Array.from(this.cache.entries()).map(([filepath, cached]) => ({
+      id: cached.id,
       filename: filepath,
       basename: filepath.substring(filepath.lastIndexOf('/') + 1),
       size: cached.size,
@@ -755,6 +783,30 @@ class DatabasePreloadManager {
     }))
   }
 
+  // 取出一个已缓存文件，并立刻从缓存池中消费掉。
+  // 用于随机模式：用户真正浏览到该文件后，不再长期保留在预加载池内存中。
+  takePreloadedFile(filepath: string): TakenCachedMediaMetadata | null {
+    const cached = this.cache.get(filepath)
+    if (!cached) {
+      return null
+    }
+
+    this.cache.delete(filepath)
+    URL.revokeObjectURL(cached.url)
+
+    return {
+      id: cached.id,
+      blob: cached.blob,
+      filepath: cached.filepath,
+      size: cached.size,
+      lastmod: cached.lastmod,
+      creator: cached.creator || null,
+      creatorResolved: Boolean(cached.creatorResolved),
+      mediaRatingData: cached.mediaRatingData ?? null,
+      groupRatingData: cached.groupRatingData ?? null,
+    }
+  }
+
   // 从缓存中随机获取文件
   getRandomCachedFile(): string | null {
     const cachedPaths = this.getCachedFilepaths()
@@ -762,6 +814,12 @@ class DatabasePreloadManager {
     
     const randomIndex = Math.floor(Math.random() * cachedPaths.length)
     return cachedPaths[randomIndex]
+  }
+
+  getCachedFileIds(): number[] {
+    return Array.from(this.cache.values())
+      .map((cached) => cached.id)
+      .filter((value): value is number => Number.isFinite(value))
   }
   
   //#endregion
@@ -926,12 +984,14 @@ class DatabasePreloadManager {
     creatorResolved: boolean = false,
     mediaRatingData?: MediaRating | null,
     groupRatingData?: GroupRating | null,
+    fileId?: number,
   ): void {
     if (this.cache.has(filepath)) return
 
     const url = URL.createObjectURL(blob)
     
     this.cache.set(filepath, {
+      id: Number.isFinite(Number(fileId)) ? Number(fileId) : undefined,
       blob,
       url,
       timestamp: Date.now(),
@@ -945,9 +1005,60 @@ class DatabasePreloadManager {
     })
   }
 
+  async preloadProvidedFiles(
+    config: any,
+    files: Array<{
+      id?: number
+      filename: string
+      basename: string
+      size?: number
+      lastmod?: string
+      creator?: CreatorSummary | null
+      creatorResolved?: boolean
+      mediaRatingData?: MediaRating | null
+      groupRatingData?: GroupRating | null
+    }>,
+    maxCount: number = files.length,
+  ): Promise<{
+    successCount: number
+    failedCount: number
+  }> {
+    if (files.length === 0) {
+      return {
+        successCount: 0,
+        failedCount: 0,
+      }
+    }
+
+    if (this.isPreloadCancelled()) {
+      this.resetCancelState()
+    }
+
+    this.setConcurrencyLimitEnabled(true)
+    this.setMaxCacheSize(Math.max(1, maxCount || files.length))
+
+    const results = await Promise.allSettled(
+      files.map((file) => this.preloadFile(config, file)),
+    )
+
+    return {
+      successCount: results.filter((result) => result.status === 'fulfilled').length,
+      failedCount: results.filter((result) => result.status === 'rejected').length,
+    }
+  }
+
   // 本地已看过文件管理
-  addLocalViewedFile(filepath: string) {
-    this.localViewedFiles.add(filepath)
+  addLocalViewedFile(fileOrPath: string | { filename: string; id?: number }) {
+    if (typeof fileOrPath === 'string') {
+      this.localViewedFiles.add(fileOrPath)
+      return
+    }
+
+    this.localViewedFiles.add(fileOrPath.filename)
+    const fileId = Number(fileOrPath.id)
+    if (Number.isFinite(fileId) && fileId > 0) {
+      this.localViewedFileIds.add(fileId)
+    }
   }
 
   isLocalViewed(filepath: string): boolean {
@@ -955,6 +1066,7 @@ class DatabasePreloadManager {
   }  
   clearLocalViewedFiles() {
     this.localViewedFiles.clear()
+    this.localViewedFileIds.clear()
   }
 
   getLocalViewedCount(): number {
@@ -964,6 +1076,10 @@ class DatabasePreloadManager {
   // 获取本地已看过的文件名列表
   getLocalViewedFilenames(): Set<string> {
     return new Set(this.localViewedFiles)
+  }
+
+  getLocalViewedFileIds(): Set<number> {
+    return new Set(this.localViewedFileIds)
   }
   
   //#endregion
@@ -1063,14 +1179,14 @@ class DatabasePreloadManager {
     }
     
     try {
-      // 构建排除列表：缓存中的文件 + 已看过模式下的本地已看过文件
-      const cachedPaths = this.getCachedFilepaths()
-      let excludeList = [...cachedPaths]
+      // 构建排除列表：缓存中的文件 ID + 已看过模式下的本地已看过文件 ID
+      const cachedFileIds = this.getCachedFileIds()
+      let excludeFileIds = [...cachedFileIds]
       
       // 已看过模式下，需要额外排除本地已看过的文件，避免短期内重复
       if (viewedFilter === 'viewed') {
-        const localViewed = Array.from(this.localViewedFiles)
-        excludeList = [...new Set([...excludeList, ...localViewed])]
+        const localViewedIds = Array.from(this.localViewedFileIds)
+        excludeFileIds = [...new Set([...excludeFileIds, ...localViewedIds])]
       }
       
       // 使用 POST 请求避免 URL 过长导致 431 错误
@@ -1083,7 +1199,7 @@ class DatabasePreloadManager {
           paths: config.mediaPaths,
           count: count,
           isViewed: viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined,
-          excludeFilenames: excludeList.length > 0 ? excludeList : undefined,
+          excludeFileIds: excludeFileIds.length > 0 ? excludeFileIds : undefined,
           maxFileSize: this.maxVideoSize, // 过滤大于100MB的视频
           // 高级过滤参数（仅已看过模式）
           ratings: advancedFilters?.ratings,
@@ -1128,6 +1244,7 @@ class DatabasePreloadManager {
         : ''
       
       const filesToPreload = files.map((f: any) => ({
+        id: Number.isFinite(Number(f.id)) ? Number(f.id) : undefined,
         filename: f.filename,
         basename: f.basename,
         size: f.file_size || 0,
@@ -1282,6 +1399,7 @@ class DatabasePreloadManager {
       }
       
       this.currentGroupFiles = files.map((f: any) => ({
+        id: Number.isFinite(Number(f.id)) ? Number(f.id) : undefined,
         filename: f.filename,
         basename: f.basename,
         size: f.file_size || 0,
@@ -1408,6 +1526,7 @@ class DatabasePreloadManager {
       }
       
       this.nextGroupFiles = data.files.map((f: any) => ({
+        id: Number.isFinite(Number(f.id)) ? Number(f.id) : undefined,
         filename: f.filename,
         basename: f.basename,
         size: f.file_size || 0,
@@ -1510,14 +1629,14 @@ class DatabasePreloadManager {
     }
     
     try {
-      // 构建排除列表：缓存中的文件 + 已看过模式下的本地已看过文件
-      const cachedPaths = this.getCachedFilepaths()
-      let excludeList = [...cachedPaths]
+      // 构建排除列表：缓存中的文件 ID + 已看过模式下的本地已看过文件 ID
+      const cachedFileIds = this.getCachedFileIds()
+      let excludeFileIds = [...cachedFileIds]
       
       // 已看过模式下，需要额外排除本地已看过的文件，避免短期内重复
       if (viewedFilter === 'viewed') {
-        const localViewed = Array.from(this.localViewedFiles)
-        excludeList = [...new Set([...excludeList, ...localViewed])]
+        const localViewedIds = Array.from(this.localViewedFileIds)
+        excludeFileIds = [...new Set([...excludeFileIds, ...localViewedIds])]
       }
       
       // 使用 POST 请求避免 URL 过长导致 431 错误
@@ -1533,7 +1652,7 @@ class DatabasePreloadManager {
           isViewed: viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined,
           fileType: mediaFilter === 'images' ? 'image' : mediaFilter === 'videos' ? 'video' : undefined,
           currentParentPath: currentParentPath || undefined,
-          excludeFilenames: excludeList.length > 0 ? excludeList : undefined,
+          excludeFileIds: excludeFileIds.length > 0 ? excludeFileIds : undefined,
           maxFileSize: this.maxVideoSize, // 过滤大于100MB的视频
           // 高级过滤参数（仅已看过模式）
           ratings: advancedFilters?.ratings,
@@ -1584,6 +1703,7 @@ class DatabasePreloadManager {
       }
       
       const filesToPreload = data.files.map((f: any) => ({
+        id: Number.isFinite(Number(f.id)) ? Number(f.id) : undefined,
         filename: f.filename,
         basename: f.basename,
         size: f.file_size || 0,
@@ -1642,7 +1762,7 @@ class DatabasePreloadManager {
     config: any,
     viewedFilter: string = 'unviewed',
     minFileSize: number = 100 * 1024 * 1024,
-    excludeFilenames: string[] = []
+    excludeFileIds: number[] = []
   ): Promise<{
     file: any | null
     hasData: boolean
@@ -1661,7 +1781,7 @@ class DatabasePreloadManager {
           fileType: 'video',
           minFileSize: minFileSize,
           isViewed: viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined,
-          excludeFilenames: excludeFilenames.length > 0 ? excludeFilenames : undefined
+          excludeFileIds: excludeFileIds.length > 0 ? excludeFileIds : undefined
         })
       })
       if (!response.ok) {
@@ -1687,6 +1807,7 @@ class DatabasePreloadManager {
       }
       
       const file = {
+        id: Number.isFinite(Number(data.files[0].id)) ? Number(data.files[0].id) : undefined,
         filename: data.files[0].filename,
         basename: data.files[0].basename,
         size: data.files[0].file_size || 0,
@@ -1936,17 +2057,18 @@ class DatabasePreloadManager {
       console.log(`[数据库模式] 智能预加载 (尝试 ${retryAttempt + 1}/${maxRetries + 1})：当前缓存 ${currentCacheSize} 个，本次预加载 ${needCount} 个，筛选条件: ${viewedFilter}，随机性: ${randomness}，媒体类型: ${mediaFilter}`)
       
       try {
-        // 构建排除列表：当前文件 + 缓存中的文件 + 已看过模式下的本地已看过文件
-        const cachedPaths = this.getCachedFilepaths()
-        let excludeList = [...cachedPaths]
-        if (currentFile?.filename && !excludeList.includes(currentFile.filename)) {
-          excludeList.push(currentFile.filename)
+        // 构建排除列表：当前文件 ID + 缓存中的文件 ID + 已看过模式下的本地已看过文件 ID
+        const cachedFileIds = this.getCachedFileIds()
+        let excludeFileIds = [...cachedFileIds]
+        const currentFileId = Number(currentFile?.id)
+        if (Number.isFinite(currentFileId) && currentFileId > 0 && !excludeFileIds.includes(currentFileId)) {
+          excludeFileIds.push(currentFileId)
         }
         
         // 已看过模式下，需要额外排除本地已看过的文件，避免短期内重复
         if (viewedFilter === 'viewed') {
-          const localViewed = Array.from(this.localViewedFiles)
-          excludeList = [...new Set([...excludeList, ...localViewed])]
+          const localViewedIds = Array.from(this.localViewedFileIds)
+          excludeFileIds = [...new Set([...excludeFileIds, ...localViewedIds])]
         }
         
         // 使用 POST 请求避免 URL 过长导致 431 错误
@@ -1962,7 +2084,7 @@ class DatabasePreloadManager {
             isViewed: viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined,
             fileType: mediaFilter === 'images' ? 'image' : mediaFilter === 'videos' ? 'video' : undefined,
             currentParentPath: currentParentPath || undefined,
-            excludeFilenames: excludeList.length > 0 ? excludeList : undefined,
+            excludeFileIds: excludeFileIds.length > 0 ? excludeFileIds : undefined,
             maxFileSize: this.maxVideoSize, // 过滤大于100MB的视频
             // 高级过滤参数（仅已看过模式）
             ratings: advancedFilters?.ratings,
@@ -1995,6 +2117,7 @@ class DatabasePreloadManager {
         
         // ✅ 将所有文件转换为预加载格式
         const filesToPreload = data.files.map((f: any) => ({
+          id: Number.isFinite(Number(f.id)) ? Number(f.id) : undefined,
           filename: f.filename,
           basename: f.basename,
           size: f.file_size || 0,

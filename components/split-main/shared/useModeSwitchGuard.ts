@@ -7,6 +7,7 @@ interface UseModeSwitchGuardOptions {
   currentFile: MediaFile | null
   setPreloadStatus: (status: any) => void
   beforeSwitch?: () => void
+  skipCacheStatusSync?: boolean
 }
 
 /**
@@ -25,6 +26,7 @@ export function useModeSwitchGuard({
   currentFile,
   setPreloadStatus,
   beforeSwitch,
+  skipCacheStatusSync = false,
 }: UseModeSwitchGuardOptions) {
   const [isSwitching, setIsSwitching] = useState(false)
   const isSwitchingRef = useRef(false)
@@ -41,9 +43,11 @@ export function useModeSwitchGuard({
       beforeSwitch?.()
 
       if (currentFile) {
-        databasePreloadManager.addLocalViewedFile(currentFile.filename)
+        databasePreloadManager.addLocalViewedFile(currentFile)
         databasePreloadManager.removeFromCache(currentFile.filename)
-        setPreloadStatus(databasePreloadManager.getCacheStatus())
+        if (!skipCacheStatusSync) {
+          setPreloadStatus(databasePreloadManager.getCacheStatus())
+        }
       }
 
       switchCallback()
@@ -56,7 +60,7 @@ export function useModeSwitchGuard({
         setIsSwitching(false)
       }, 500)
     }
-  }, [beforeSwitch, currentFile, setPreloadStatus])
+  }, [beforeSwitch, currentFile, setPreloadStatus, skipCacheStatusSync])
 
   return {
     isSwitching,

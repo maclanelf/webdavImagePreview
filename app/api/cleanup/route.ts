@@ -1,5 +1,6 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { cleanupDatabase } from '@/lib/database'
+import { serverRandomPoolManager } from '@/lib/serverRandomPoolManager'
 import {
   cleanupAllStreams,
   getActiveStreamCount,
@@ -20,8 +21,11 @@ import {
  */
 
 // POST /api/cleanup - 清理服务端资源
-export async function POST() {
+export async function POST(request: NextRequest) {
   try {
+    const body = await request.json().catch(() => ({}))
+    const randomPoolSessionId = typeof body?.randomPoolSessionId === 'string' ? body.randomPoolSessionId.trim() : ''
+
     console.log('🧹 [统一清理] 收到清理请求，开始清理服务端资源...')
     
     // 1. 获取清理前的状态
@@ -41,6 +45,17 @@ export async function POST() {
     // 2. 清理视频流
     const cleanedStreamCount = cleanupAllStreams('浏览器关闭清理')
     console.log(`✅ [统一清理] 已清理 ${cleanedStreamCount} 个视频流`)
+
+    const randomPoolBeforeCount = randomPoolSessionId
+      ? serverRandomPoolManager.getStatus(randomPoolSessionId).cacheSize
+      : 0
+
+    if (randomPoolSessionId) {
+      serverRandomPoolManager.clearSession(randomPoolSessionId, 'cleanup-api')
+      console.log(`✅ [统一清理] 已清理当前会话服务端随机缓存池 ${randomPoolBeforeCount} 项`)
+    } else {
+      console.log('ℹ️ [统一清理] 未提供 randomPoolSessionId，跳过服务端随机缓存池定向清理')
+    }
     
     // 3. 清理数据库缓存和其他资源
     // 注意：不关闭数据库连接，因为服务器还在运行
@@ -51,6 +66,7 @@ export async function POST() {
       message: '服务端资源清理完成',
       cleaned: {
         streams: cleanedStreamCount,
+        randomPoolItems: randomPoolBeforeCount,
         beforeStreamCount,
         afterStreamCount: getActiveStreamCount()
       }
@@ -75,6 +91,10 @@ export async function GET() {
       success: true,
       resources: {
         activeStreams: streamCount,
+        randomPool: {
+          ...serverRandomPoolManager.getStatus(),
+          sessionCount: serverRandomPoolManager.getSessionCount(),
+        },
         streams: streams.map(s => ({
           requestId: s.requestId,
           filepath: s.filepath,

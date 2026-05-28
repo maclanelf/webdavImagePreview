@@ -101,6 +101,10 @@ export function useLargeVideoMode({
     console.log(`[大视频模式] 开始加载，筛选条件: ${viewedFilter}，随机性: ${preloadRandomness}`)
     console.log(`[大视频模式] 当前缓存文件数量: ${databasePreloadManager.getCachedFilepaths().length}`)
 
+    if (currentFile) {
+      databasePreloadManager.addLocalViewedFile(currentFile)
+    }
+
     cleanupCurrentStreamVideo()
 
     // 大视频模式不依赖小文件预加载缓存；
@@ -122,7 +126,7 @@ export function useLargeVideoMode({
       const currentParentPath = currentFile
         ? currentFile.filename.substring(0, currentFile.filename.lastIndexOf('/'))
         : ''
-      const localViewedFiles = Array.from(databasePreloadManager.getLocalViewedFilenames())
+      const localViewedFileIds = Array.from(databasePreloadManager.getLocalViewedFileIds())
 
       const response = await fetch('/api/scan-files/random', {
         method: 'POST',
@@ -137,7 +141,7 @@ export function useLargeVideoMode({
           randomness: preloadRandomness,
           isViewed: isViewedParam,
           currentParentPath: currentParentPath && preloadRandomness < 1 ? currentParentPath : undefined,
-          excludeFilenames: localViewedFiles.length > 0 ? localViewedFiles : undefined,
+          excludeFileIds: localViewedFileIds.length > 0 ? localViewedFileIds : undefined,
           ...(viewedFilter === 'viewed' && {
             ratings: advancedFilters.ratings.length > 0 ? advancedFilters.ratings : undefined,
             evaluations: advancedFilters.evaluations.length > 0 ? advancedFilters.evaluations : undefined,
@@ -164,6 +168,7 @@ export function useLargeVideoMode({
 
       const dbFile = data.files[0]
       const fileToLoad: MediaFile = {
+        id: Number.isFinite(Number(dbFile.id)) ? Number(dbFile.id) : undefined,
         filename: dbFile.filename,
         basename: dbFile.basename,
         size: dbFile.file_size || 0,

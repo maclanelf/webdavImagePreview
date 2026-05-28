@@ -99,10 +99,31 @@ interface PathStats {
 }
 
 const FIXED_MYSQL_DATABASE = 'webdav_image_preview'
+const PRELOAD_COUNT_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100] as const
 
-export default function ConfigPage() {
-  const router = useRouter()
-  const [config, setConfig] = useState<WebDAVConfig>({
+function normalizePreloadCount(value: unknown): number {
+  const numericValue = Number(value)
+  return PRELOAD_COUNT_OPTIONS.includes(numericValue as typeof PRELOAD_COUNT_OPTIONS[number])
+    ? numericValue
+    : 10
+}
+
+function normalizeConcurrency(value: unknown): number {
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) && numericValue >= 5
+    ? numericValue
+    : 10
+}
+
+function normalizeScanSettings(scanSettings?: WebDAVConfig['scanSettings']): NonNullable<WebDAVConfig['scanSettings']> {
+  return {
+    concurrency: normalizeConcurrency(scanSettings?.concurrency),
+    preloadCount: normalizePreloadCount(scanSettings?.preloadCount),
+  }
+}
+
+function createDefaultWebdavConfig(): WebDAVConfig {
+  return {
     url: '',
     username: '',
     password: '',
@@ -110,11 +131,26 @@ export default function ConfigPage() {
     sourceType: 'clouddrive2',
     directLinkUrl: '',
     enableDirectLink: false,
-    scanSettings: {
-      concurrency: 10,
-      preloadCount: 10
-    }
-  })
+    scanSettings: normalizeScanSettings(),
+  }
+}
+
+function normalizeWebdavConfig(rawConfig: Partial<WebDAVConfig> | null | undefined): WebDAVConfig {
+  return {
+    url: rawConfig?.url || '',
+    username: rawConfig?.username || '',
+    password: rawConfig?.password || '',
+    mediaPaths: rawConfig?.mediaPaths?.length ? rawConfig.mediaPaths : ['/'],
+    sourceType: rawConfig?.sourceType || 'clouddrive2',
+    directLinkUrl: rawConfig?.directLinkUrl || '',
+    enableDirectLink: rawConfig?.enableDirectLink || false,
+    scanSettings: normalizeScanSettings(rawConfig?.scanSettings),
+  }
+}
+
+export default function ConfigPage() {
+  const router = useRouter()
+  const [config, setConfig] = useState<WebDAVConfig>(createDefaultWebdavConfig())
   const [showPassword, setShowPassword] = useState(false)
   const [testing, setTesting] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -335,43 +371,14 @@ export default function ConfigPage() {
         if (response.ok) {
           const dbConfig = await response.json()
           if (dbConfig.url && dbConfig.username) {
-            setConfig({
-              url: dbConfig.url,
-              username: dbConfig.username,
-              password: dbConfig.password,
-              mediaPaths: dbConfig.mediaPaths || ['/'],
-              sourceType: dbConfig.sourceType || 'clouddrive2',
-              directLinkUrl: dbConfig.directLinkUrl || '',
-              enableDirectLink: dbConfig.enableDirectLink || false,
-              scanSettings: dbConfig.scanSettings || {
-                concurrency: 10,
-                preloadCount: 10
-              }
-            })
-            setSelectedPaths(new Set(dbConfig.mediaPaths || []))
+            const normalizedDbConfig = normalizeWebdavConfig(dbConfig)
+            setConfig(normalizedDbConfig)
+            setSelectedPaths(new Set(normalizedDbConfig.mediaPaths || []))
             
             // 加载扫描缓存数据
-            loadScanCache({
-              url: dbConfig.url,
-              username: dbConfig.username,
-              password: dbConfig.password,
-              mediaPaths: dbConfig.mediaPaths || ['/'],
-              scanSettings: dbConfig.scanSettings || {
-                concurrency: 10,
-                preloadCount: 10
-              }
-            })
+            loadScanCache(normalizedDbConfig)
             // 加载正在执行的扫描任务状态
-            loadRunningScanTasks({
-              url: dbConfig.url,
-              username: dbConfig.username,
-              password: dbConfig.password,
-              mediaPaths: dbConfig.mediaPaths || ['/'],
-              scanSettings: dbConfig.scanSettings || {
-                concurrency: 10,
-                preloadCount: 10
-              }
-            })
+            loadRunningScanTasks(normalizedDbConfig)
             setWebdavLoadError(null)
             return
           }
@@ -390,14 +397,15 @@ export default function ConfigPage() {
           if (parsed.mediaPath && !parsed.mediaPaths) {
             parsed.mediaPaths = [parsed.mediaPath]
           }
-          setConfig(parsed)
-          setSelectedPaths(new Set(parsed.mediaPaths || []))
+          const normalizedLocalConfig = normalizeWebdavConfig(parsed)
+          setConfig(normalizedLocalConfig)
+          setSelectedPaths(new Set(normalizedLocalConfig.mediaPaths || []))
           setWebdavLoadError(null)
           
           // 加载扫描缓存数据
-          loadScanCache(parsed)
+          loadScanCache(normalizedLocalConfig)
           // 加载正在执行的扫描任务状态
-          loadRunningScanTasks(parsed)
+          loadRunningScanTasks(normalizedLocalConfig)
           
           // 如果 localStorage 中有配置，尝试将其保存到数据库（迁移）
           if (parsed.url && parsed.username) {
@@ -406,14 +414,11 @@ export default function ConfigPage() {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  url: parsed.url,
-                  username: parsed.username,
-                  password: parsed.password,
-                  mediaPaths: parsed.mediaPaths || ['/'],
-                  scanSettings: parsed.scanSettings || {
-                    concurrency: 10,
-                    preloadCount: 10
-                  },
+                  url: normalizedLocalConfig.url,
+                  username: normalizedLocalConfig.username,
+                  password: normalizedLocalConfig.password,
+                  mediaPaths: normalizedLocalConfig.mediaPaths,
+                  scanSettings: normalizeScanSettings(normalizedLocalConfig.scanSettings),
                   isDefault: true // 迁移时设为默认配置
                 })
               })
@@ -593,6 +598,7 @@ export default function ConfigPage() {
       const configToSave = {
         ...config,
         mediaPaths: Array.from(selectedPaths),
+        scanSettings: normalizeScanSettings(config.scanSettings),
         // 如果没有填写直链源，使用 WebDAV URL
         directLinkUrl: config.directLinkUrl || config.url,
         // OpenList 源默认开启直链播放（如果用户没有明确设置）
@@ -615,10 +621,7 @@ export default function ConfigPage() {
             sourceType: configToSave.sourceType || 'clouddrive2',
             directLinkUrl: configToSave.directLinkUrl,
             enableDirectLink: configToSave.enableDirectLink,
-            scanSettings: configToSave.scanSettings || {
-              concurrency: 10,
-              preloadCount: 10
-            },
+            scanSettings: normalizeScanSettings(configToSave.scanSettings),
             isDefault: true // 当前配置设为默认
           })
         })
@@ -1111,30 +1114,10 @@ export default function ConfigPage() {
         if (defaultResponse.ok) {
           const dbConfig = await defaultResponse.json()
           if (dbConfig.url && dbConfig.username) {
-            setConfig({
-              url: dbConfig.url,
-              username: dbConfig.username,
-              password: dbConfig.password,
-              mediaPaths: dbConfig.mediaPaths || ['/'],
-              sourceType: dbConfig.sourceType || 'clouddrive2',
-              directLinkUrl: dbConfig.directLinkUrl || '',
-              enableDirectLink: dbConfig.enableDirectLink || false,
-              scanSettings: dbConfig.scanSettings || {
-                concurrency: 10,
-                preloadCount: 10
-              }
-            })
-            setSelectedPaths(new Set(dbConfig.mediaPaths || []))
-            loadScanCache({
-              url: dbConfig.url,
-              username: dbConfig.username,
-              password: dbConfig.password,
-              mediaPaths: dbConfig.mediaPaths || ['/'],
-              scanSettings: dbConfig.scanSettings || {
-                concurrency: 10,
-                preloadCount: 10
-              }
-            })
+            const normalizedDbConfig = normalizeWebdavConfig(dbConfig)
+            setConfig(normalizedDbConfig)
+            setSelectedPaths(new Set(normalizedDbConfig.mediaPaths || []))
+            loadScanCache(normalizedDbConfig)
           }
         }
       } else {
@@ -1170,19 +1153,7 @@ export default function ConfigPage() {
         loadAllConfigs()
         // 如果删除的是当前配置，清空表单
         if (config.url === url && config.username === username) {
-          setConfig({
-            url: '',
-            username: '',
-            password: '',
-            mediaPaths: ['/'],
-            sourceType: 'clouddrive2',
-            directLinkUrl: '',
-            enableDirectLink: false,
-            scanSettings: {
-              concurrency: 10,
-              preloadCount: 10
-            }
-          })
+          setConfig(createDefaultWebdavConfig())
           setSelectedPaths(new Set())
         }
       } else {
@@ -1202,50 +1173,18 @@ export default function ConfigPage() {
 
   // 加载指定配置到表单
   const loadConfigToForm = (configData: any) => {
-    setConfig({
-      url: configData.url,
-      username: configData.username,
-      password: configData.password,
-      mediaPaths: configData.mediaPaths || ['/'],
-      sourceType: configData.sourceType || 'clouddrive2',
-      directLinkUrl: configData.directLinkUrl || '',
-      enableDirectLink: configData.enableDirectLink || false,
-      scanSettings: configData.scanSettings || {
-        concurrency: 10,
-        preloadCount: 10
-      }
-    })
-    setSelectedPaths(new Set(configData.mediaPaths || []))
+    const normalizedConfigData = normalizeWebdavConfig(configData)
+    setConfig(normalizedConfigData)
+    setSelectedPaths(new Set(normalizedConfigData.mediaPaths || []))
     setConfigListDialogOpen(false)
     
     // 加载扫描缓存
-    loadScanCache({
-      url: configData.url,
-      username: configData.username,
-      password: configData.password,
-      mediaPaths: configData.mediaPaths || ['/'],
-      scanSettings: configData.scanSettings || {
-        concurrency: 10,
-        preloadCount: 10
-      }
-    })
+    loadScanCache(normalizedConfigData)
   }
 
   // 新建配置
   const createNewConfig = () => {
-    setConfig({
-      url: '',
-      username: '',
-      password: '',
-      mediaPaths: ['/'],
-      sourceType: 'clouddrive2',
-      directLinkUrl: '',
-      enableDirectLink: false,
-      scanSettings: {
-        concurrency: 10,
-        preloadCount: 10
-      }
-    })
+    setConfig(createDefaultWebdavConfig())
     setSelectedPaths(new Set())
     setIsNewConfig(true)
     setConfigListDialogOpen(false)
@@ -1253,34 +1192,14 @@ export default function ConfigPage() {
 
   // 复制配置
   const copyConfig = (configData: any) => {
-    setConfig({
-      url: configData.url,
-      username: configData.username,
-      password: configData.password,
-      mediaPaths: configData.mediaPaths || ['/'],
-      sourceType: configData.sourceType || 'clouddrive2',
-      directLinkUrl: configData.directLinkUrl || '',
-      enableDirectLink: configData.enableDirectLink || false,
-      scanSettings: configData.scanSettings || {
-        concurrency: 10,
-        preloadCount: 10
-      }
-    })
-    setSelectedPaths(new Set(configData.mediaPaths || []))
+    const normalizedConfigData = normalizeWebdavConfig(configData)
+    setConfig(normalizedConfigData)
+    setSelectedPaths(new Set(normalizedConfigData.mediaPaths || []))
     setIsNewConfig(true)
     setConfigListDialogOpen(false)
     
     // 加载扫描缓存（如果有的话）
-    loadScanCache({
-      url: configData.url,
-      username: configData.username,
-      password: configData.password,
-      mediaPaths: configData.mediaPaths || ['/'],
-      scanSettings: configData.scanSettings || {
-        concurrency: 10,
-        preloadCount: 10
-      }
-    })
+    loadScanCache(normalizedConfigData)
     
     setSaveResult({
       type: 'info',
@@ -1732,43 +1651,26 @@ export default function ConfigPage() {
                 />
                 <TextField
                   label="预加载数量"
-                  type="number"
+                  select
                   value={config.scanSettings?.preloadCount ?? 10}
                   onChange={(e) => {
-                    const value = e.target.value
                     setConfig({
                       ...config,
                       scanSettings: {
                         ...config.scanSettings,
-                        preloadCount: value
+                        preloadCount: normalizePreloadCount(e.target.value)
                       }
                     })
                   }}
-                  onBlur={(e) => {
-                    const value = e.target.value
-                    const numValue = parseInt(value)
-                    if (value === '' || isNaN(numValue) || numValue < 5) {
-                      setConfig({
-                        ...config,
-                        scanSettings: {
-                          ...config.scanSettings,
-                          preloadCount: 10
-                        }
-                      })
-                    } else {
-                      setConfig({
-                        ...config,
-                        scanSettings: {
-                          ...config.scanSettings,
-                          preloadCount: numValue
-                        }
-                      })
-                    }
-                  }}
-                  helperText="预加载缓存的文件数量，影响浏览流畅度"
-                  inputProps={{ min: 5, max: 30 }}
+                  helperText="仅允许选择固定值：10、20、30...100，避免保存异常预加载数量"
                   sx={{ flex: 1 }}
-                />
+                >
+                  {PRELOAD_COUNT_OPTIONS.map((option) => (
+                    <MenuItem key={option} value={option}>
+                      {option}
+                    </MenuItem>
+                  ))}
+                </TextField>
               </Box>
             </Box>
 

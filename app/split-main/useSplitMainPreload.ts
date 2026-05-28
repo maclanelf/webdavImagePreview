@@ -2,7 +2,9 @@
 
 import { useCallback, type MutableRefObject } from 'react'
 
+import { clearRandomPoolSession, initializeRandomPoolSession } from '@/lib/clientRandomPool'
 import databasePreloadManager from '@/lib/databasePreloadManager'
+import { getRandomPoolSessionId, renewRandomPoolSessionId } from '@/lib/randomPoolSession'
 import type {
   AdvancedFilters,
   MediaFilter,
@@ -15,7 +17,6 @@ type SnackbarSeverity = 'success' | 'error' | 'info' | 'warning'
 
 interface UseSplitMainPreloadOptions {
   config: WebDAVConfig | null
-  preloadEnabled: boolean
   viewedFilter: ViewedFilter
   advancedFilters: AdvancedFilters
   mediaFilter: MediaFilter
@@ -44,7 +45,6 @@ interface UseSplitMainPreloadOptions {
  */
 export function useSplitMainPreload({
   config,
-  preloadEnabled,
   viewedFilter,
   advancedFilters,
   mediaFilter,
@@ -58,6 +58,98 @@ export function useSplitMainPreload({
   setPreloadStatus,
   notify,
 }: UseSplitMainPreloadOptions) {
+  const buildCombinedRandomPoolStatus = useCallback((
+    poolStatus?: { cacheSize: number; maxCacheSize: number } | null,
+    fallbackMaxCacheSize: number = 0,
+  ) => {
+    const clientCacheStatus = databasePreloadManager.getCacheStatus()
+    const maxCacheSize = fallbackMaxCacheSize || poolStatus?.maxCacheSize || clientCacheStatus.maxCacheSize || 0
+
+    return {
+      cacheSize: maxCacheSize > 0
+        ? Math.min(maxCacheSize, clientCacheStatus.cacheSize)
+        : clientCacheStatus.cacheSize,
+      maxCacheSize,
+    }
+  }, [])
+
+  const clearServerRandomPool = useCallback(async () => {
+    try {
+      await clearRandomPoolSession(getRandomPoolSessionId())
+    } catch (error) {
+      console.warn('清理服务端随机缓存池失败:', error)
+    }
+  }, [])
+
+  const prewarmRandomMediaCache = useCallback(async (preloadCount: number, filters?: AdvancedFilters) => {
+    if (!config || preloadCount <= 0) {
+      return null
+    }
+
+    const randomPoolSessionId = getRandomPoolSessionId()
+    const localViewedFileIds = viewedFilter === 'viewed'
+      ? Array.from(databasePreloadManager.getLocalViewedFileIds())
+      : []
+
+    if (!randomPoolSessionId) {
+      return null
+    }
+
+    const response = await fetch('/api/scan-files/random', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        webdavUrl: config.url,
+        webdavUsername: config.username,
+        paths: config.mediaPaths,
+        count: preloadCount,
+        preloadCount,
+        useRandomPool: true,
+        randomPoolSessionId,
+        randomness: preloadRandomness,
+        fileType: mediaFilter === 'images' ? 'image' : mediaFilter === 'videos' ? 'video' : undefined,
+        isViewed: viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined,
+        excludeFileIds: localViewedFileIds.length > 0 ? localViewedFileIds : undefined,
+        maxFileSize: 100 * 1024 * 1024,
+        ratings: filters?.ratings,
+        evaluations: filters?.evaluations,
+        categories: filters?.categories,
+        reasonFilter: filters?.reasonFilter,
+        reasonKeyword: filters?.reasonKeyword,
+        ratingEmptyFilter: filters?.ratingEmptyFilter,
+        evaluationEmptyFilter: filters?.evaluationEmptyFilter,
+        categoryEmptyFilter: filters?.categoryEmptyFilter,
+      }),
+    })
+
+    if (!response.ok) {
+      throw new Error('获取随机预加载文件失败')
+    }
+
+    const data = await response.json()
+    if (randomPoolSessionId !== getRandomPoolSessionId()) {
+      return null
+    }
+
+    const filesToPreload = Array.isArray(data.files)
+      ? data.files.map((file: any) => ({
+          id: Number.isFinite(Number(file.id)) ? Number(file.id) : undefined,
+          filename: file.filename,
+          basename: file.basename,
+          size: file.file_size || 0,
+          lastmod: file.lastmod || '',
+          creator: file.creator || null,
+          creatorResolved: Boolean(file.creatorResolved),
+          mediaRatingData: file.mediaRatingData ?? null,
+          groupRatingData: file.groupRatingData ?? null,
+        }))
+      : []
+
+    await databasePreloadManager.preloadProvidedFiles(config, filesToPreload, preloadCount)
+
+    return data.poolStatus || null
+  }, [config, mediaFilter, preloadRandomness, viewedFilter])
+
   /**
    * 图组模式预加载。
    *
@@ -75,7 +167,9 @@ export function useSplitMainPreload({
     databasePreloadManager.clearNextGroupCache()
     databasePreloadManager.clearGalleryRuntimeState()
 
-    if (!config || !preloadEnabled) {
+    await clearServerRandomPool()
+
+    if (!config) {
       setGalleryPreloadReady(true)
       return
     }
@@ -124,9 +218,9 @@ export function useSplitMainPreload({
     }
   }, [
     advancedFilters,
+    clearServerRandomPool,
     config,
     notify,
-    preloadEnabled,
     setActualFoundCount,
     setCachePreloadProgress,
     setGalleryPreloadReady,
@@ -153,7 +247,7 @@ export function useSplitMainPreload({
     databasePreloadManager.clearNextGroupCache()
     databasePreloadManager.clearGalleryRuntimeState()
 
-    if (!config || !preloadEnabled) {
+    if (!config) {
       setGalleryPreloadReady(true)
       return
     }
@@ -167,26 +261,45 @@ export function useSplitMainPreload({
     setActualFoundCount(0)
 
     try {
-      const result = await databasePreloadManager.refillCache(
-        config,
-        [],
+      await clearServerRandomPool()
+      const randomPoolSessionId = renewRandomPoolSessionId()
+      const localViewedFileIds = viewedFilter === 'viewed'
+        ? Array.from(databasePreloadManager.getLocalViewedFileIds())
+        : []
+
+      if (!randomPoolSessionId) {
+        throw new Error('缺少 randomPoolSessionId')
+      }
+
+      const result = await initializeRandomPoolSession({
+        webdavUrl: config.url,
+        webdavUsername: config.username,
+        paths: config.mediaPaths,
         preloadCount,
-        viewedFilter,
-        (current, total) => {
-          setCachePreloadProgress({ current, total })
-        },
-        preloadRandomness,
-        true,
-        undefined,
-        mediaFilter,
-        filters,
-      )
+        randomness: preloadRandomness,
+        excludeFileIds: localViewedFileIds.length > 0 ? localViewedFileIds : undefined,
+        fileType: mediaFilter === 'images' ? 'image' : mediaFilter === 'videos' ? 'video' : undefined,
+        isViewed: viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined,
+        maxFileSize: 100 * 1024 * 1024,
+        ratings: filters?.ratings,
+        evaluations: filters?.evaluations,
+        categories: filters?.categories,
+        reasonFilter: filters?.reasonFilter,
+        reasonKeyword: filters?.reasonKeyword,
+        ratingEmptyFilter: filters?.ratingEmptyFilter,
+        evaluationEmptyFilter: filters?.evaluationEmptyFilter,
+        categoryEmptyFilter: filters?.categoryEmptyFilter,
+      }, randomPoolSessionId)
 
-      setPreloadInsufficient(result.isInsufficient)
-      setActualFoundCount(result.actualCount)
+      if (randomPoolSessionId !== getRandomPoolSessionId()) {
+        return
+      }
 
-      if (result.allViewed) {
-        notify('随机模式下已无可继续浏览的文件，请点击开始预览重新触发随机加载', 'info')
+      setPreloadInsufficient(false)
+      setActualFoundCount(0)
+
+      if (!result.hasData) {
+        notify(result.message || '数据尚未迁移，请先执行迁移', 'warning')
         return
       }
 
@@ -194,12 +307,24 @@ export function useSplitMainPreload({
         return
       }
 
-      const cacheStatus = databasePreloadManager.getCacheStatus()
-      setPreloadStatus(cacheStatus)
-      setCachePreloadProgress({ current: cacheStatus.cacheSize, total: preloadCount })
+      const prewarmedPoolStatus = await prewarmRandomMediaCache(preloadCount, filters)
+      if (viewModeRef.current !== 'random') {
+        return
+      }
 
-      if (result.isInsufficient) {
-        notify(`仅找到 ${result.actualCount} 个符合条件的文件，未达到预加载目标 ${preloadCount} 个`, 'warning')
+      const cacheStatus = buildCombinedRandomPoolStatus(
+        prewarmedPoolStatus || result.poolStatus || null,
+        preloadCount,
+      )
+      setPreloadStatus(cacheStatus)
+      setCachePreloadProgress({ current: cacheStatus.cacheSize, total: cacheStatus.maxCacheSize || preloadCount })
+
+      const clientInsufficient = cacheStatus.cacheSize < preloadCount
+      setPreloadInsufficient(clientInsufficient)
+      setActualFoundCount(cacheStatus.cacheSize)
+
+      if (clientInsufficient) {
+        notify(`仅找到 ${cacheStatus.cacheSize} 个可预加载文件，未达到预加载目标 ${preloadCount} 个`, 'warning')
       }
     } catch (randomPreloadError) {
       console.warn('随机模式预加载失败:', randomPreloadError)
@@ -210,10 +335,12 @@ export function useSplitMainPreload({
     }
   }, [
     advancedFilters,
+    clearServerRandomPool,
     config,
     mediaFilter,
+    buildCombinedRandomPoolStatus,
     notify,
-    preloadEnabled,
+    prewarmRandomMediaCache,
     preloadRandomness,
     setActualFoundCount,
     setCachePreloadProgress,
@@ -241,28 +368,32 @@ export function useSplitMainPreload({
     databasePreloadManager.clearGalleryRuntimeState()
     setPreloadStatus(databasePreloadManager.getCacheStatus())
 
-    if (!preloadEnabled || !config || statsTotal <= 0) {
+    void (async () => {
+      if (!config || statsTotal <= 0) {
+        await clearServerRandomPool()
+        setGalleryPreloadReady(true)
+        setCachePreloadProgress(null)
+        return
+      }
+
+      if (viewModeRef.current === 'gallery') {
+        await runGalleryPreload()
+        return
+      }
+
+      if (viewModeRef.current === 'random') {
+        await runRandomPreload()
+        return
+      }
+
+      await clearServerRandomPool()
+
+      // 大视频模式不依赖小文件预加载缓存，因此这里直接视为“已准备完成”。
       setGalleryPreloadReady(true)
       setCachePreloadProgress(null)
-      return
-    }
-
-    if (viewModeRef.current === 'gallery') {
-      void runGalleryPreload()
-      return
-    }
-
-    if (viewModeRef.current === 'random') {
-      void runRandomPreload()
-      return
-    }
-
-    // 大视频模式不依赖小文件预加载缓存，因此这里直接视为“已准备完成”。
-    setGalleryPreloadReady(true)
-    setCachePreloadProgress(null)
+    })()
   }, [
     config,
-    preloadEnabled,
     runGalleryPreload,
     runRandomPreload,
     setCachePreloadProgress,

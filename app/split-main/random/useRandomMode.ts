@@ -1,7 +1,9 @@
-import { useCallback, useRef, useState, type MutableRefObject, type SyntheticEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type MutableRefObject, type SyntheticEvent } from 'react'
 
-import databasePreloadManager from '@/lib/databasePreloadManager'
 import { scheduleStreamRequest } from '@/lib/clientRequestScheduler'
+import { clearRandomPoolSession, initializeRandomPoolSession } from '@/lib/clientRandomPool'
+import databasePreloadManager from '@/lib/databasePreloadManager'
+import { getRandomPoolSessionId, renewRandomPoolSessionId } from '@/lib/randomPoolSession'
 import type {
   AdvancedFilters,
   CreatorSummary,
@@ -42,7 +44,6 @@ interface UseRandomModeOptions {
   mediaFilter: MediaFilter
   viewedFilter: ViewedFilter
   advancedFilters: AdvancedFilters
-  preloadEnabled: boolean
   preloadRandomness: number
   viewModeRef: MutableRefObject<ViewMode>
   setCurrentFile: (file: MediaFile | null) => void
@@ -98,7 +99,6 @@ export function useRandomMode({
   mediaFilter,
   viewedFilter,
   advancedFilters,
-  preloadEnabled,
   preloadRandomness,
   viewModeRef,
   setCurrentFile,
@@ -147,6 +147,175 @@ export function useRandomMode({
   const smartPreloadLatestFileRef = useRef<MediaFile | null>(null)
   const resumableLatestFileRef = useRef<string | null>(null)
 
+  const buildCombinedPoolStatus = useCallback((
+    poolStatus?: { cacheSize: number; maxCacheSize: number } | null,
+    fallbackMaxCacheSize: number = 0,
+  ) => {
+    const clientCacheStatus = databasePreloadManager.getCacheStatus()
+    const maxCacheSize = fallbackMaxCacheSize || poolStatus?.maxCacheSize || clientCacheStatus.maxCacheSize || 0
+
+    return {
+      cacheSize: maxCacheSize > 0
+        ? Math.min(maxCacheSize, clientCacheStatus.cacheSize)
+        : clientCacheStatus.cacheSize,
+      maxCacheSize,
+    }
+  }, [])
+
+  const updatePoolStatus = useCallback((
+    poolStatus?: { cacheSize: number; maxCacheSize: number } | null,
+    fallbackMaxCacheSize: number = 0,
+  ) => {
+    if (!poolStatus && fallbackMaxCacheSize <= 0) {
+      return
+    }
+
+    const nextStatus = buildCombinedPoolStatus(poolStatus, fallbackMaxCacheSize)
+
+    setPreloadStatus(nextStatus)
+    setCachePreloadProgress({
+      current: nextStatus.cacheSize,
+      total: nextStatus.maxCacheSize,
+    })
+  }, [buildCombinedPoolStatus, setCachePreloadProgress, setPreloadStatus])
+
+  const mapRandomApiFileToMediaFile = useCallback((dbFile: any): MediaFile => ({
+    id: Number.isFinite(Number(dbFile.id)) ? Number(dbFile.id) : undefined,
+    filename: dbFile.filename,
+    basename: dbFile.basename,
+    size: dbFile.file_size || dbFile.size || 0,
+    type: 'file',
+    lastmod: dbFile.lastmod || '',
+    mediaRatingData: dbFile.mediaRatingData ?? null,
+    groupRatingData: dbFile.groupRatingData ?? null,
+    creator: dbFile.creator || null,
+    creatorResolved: Boolean(dbFile.creatorResolved),
+  }), [])
+
+  const requestRandomFiles = useCallback(async ({
+    count,
+    usePool,
+    currentParentPath,
+  }: {
+    count: number
+    usePool: boolean
+    currentParentPath?: string
+  }) => {
+    if (!config) {
+      return null
+    }
+
+    const fileTypeParam = mediaFilter === 'images' ? 'image' : mediaFilter === 'videos' ? 'video' : ''
+    const isViewedParam = viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined
+    const preloadCount = config.scanSettings?.preloadCount || 10
+    const localViewedFileIds = viewedFilter === 'viewed'
+      ? Array.from(databasePreloadManager.getLocalViewedFileIds())
+      : []
+
+    const requestOnce = async (
+      randomPoolSessionId: string | null,
+      allowSessionRenew: boolean,
+    ): Promise<any> => {
+      const response = await fetch('/api/scan-files/random', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          webdavUrl: config.url,
+          webdavUsername: config.username,
+          paths: config.mediaPaths,
+          count,
+          preloadCount,
+          useRandomPool: usePool,
+          randomPoolSessionId,
+          randomness: preloadRandomness,
+          currentParentPath: currentParentPath && preloadRandomness < 1 ? currentParentPath : undefined,
+          maxFileSize: 100 * 1024 * 1024,
+          fileType: fileTypeParam || undefined,
+          isViewed: isViewedParam,
+          excludeFileIds: localViewedFileIds.length > 0 ? localViewedFileIds : undefined,
+          ...(viewedFilter === 'viewed' && {
+            ratings: advancedFilters.ratings.length > 0 ? advancedFilters.ratings : undefined,
+            evaluations: advancedFilters.evaluations.length > 0 ? advancedFilters.evaluations : undefined,
+            categories: advancedFilters.categories.length > 0 ? advancedFilters.categories : undefined,
+            reasonFilter: advancedFilters.reasonFilter !== 'all' ? advancedFilters.reasonFilter : undefined,
+            reasonKeyword: advancedFilters.reasonKeyword || undefined,
+            ratingEmptyFilter: advancedFilters.ratingEmptyFilter,
+            evaluationEmptyFilter: advancedFilters.evaluationEmptyFilter,
+            categoryEmptyFilter: advancedFilters.categoryEmptyFilter,
+          }),
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error('获取随机文件失败')
+      }
+
+      const data = await response.json()
+      if (usePool && randomPoolSessionId && randomPoolSessionId !== getRandomPoolSessionId()) {
+        return { staleSession: true }
+      }
+
+      if (usePool && allowSessionRenew && data?.sessionExpired === true) {
+        const activeSessionId = getRandomPoolSessionId()
+        if (randomPoolSessionId && activeSessionId === randomPoolSessionId) {
+          const nextRandomPoolSessionId = renewRandomPoolSessionId()
+          if (nextRandomPoolSessionId && nextRandomPoolSessionId !== randomPoolSessionId) {
+            console.log('[随机模式] 检测到随机缓存池会话失效，已自动续期并重试')
+            return requestOnce(nextRandomPoolSessionId, false)
+          }
+        }
+      }
+
+      updatePoolStatus(data.poolStatus, preloadCount)
+      return data
+    }
+
+    const randomPoolSessionId = usePool ? getRandomPoolSessionId() : null
+    return requestOnce(randomPoolSessionId, true)
+  }, [advancedFilters, config, mediaFilter, preloadRandomness, updatePoolStatus, viewedFilter])
+
+  const clearRandomHistoryCache = useCallback(() => {
+    randomHistoryCache.current.forEach((cached) => {
+      URL.revokeObjectURL(cached.url)
+    })
+    randomHistoryCache.current.clear()
+  }, [])
+
+  const resetRandomRuntimeState = useCallback(() => {
+    if (smartPreloadTimeoutRef.current) {
+      clearTimeout(smartPreloadTimeoutRef.current)
+      smartPreloadTimeoutRef.current = null
+    }
+
+    smartPreloadInProgressRef.current = false
+    smartPreloadRerunRequestedRef.current = false
+    smartPreloadLatestFileRef.current = null
+    resumableLatestFileRef.current = null
+
+    clearRandomHistoryCache()
+    setRandomHistory([])
+    setRandomHistoryIndex(-1)
+    setShowRestartDialog(false)
+    smallVideoDirectPlayAvailableRef.current = false
+    setSmallVideoDirectPlayEnabled(false)
+  }, [clearRandomHistoryCache, setSmallVideoDirectPlayEnabled, smallVideoDirectPlayAvailableRef])
+
+  useEffect(() => () => {
+    resetRandomRuntimeState()
+  }, [resetRandomRuntimeState])
+
+  useEffect(() => {
+    resetRandomRuntimeState()
+  }, [
+    config?.url,
+    config?.username,
+    config?.mediaPaths?.join('|'),
+    mediaFilter,
+    viewedFilter,
+    JSON.stringify(advancedFilters),
+    resetRandomRuntimeState,
+  ])
+
   /**
    * 随机模式专属播放回调：小视频播放进度更新。
    *
@@ -185,20 +354,15 @@ export function useRandomMode({
    * 只有随机模式会用到这套“看当前文件后智能补仓”的逻辑，
    * 图组模式和大视频模式分别走自己的策略。
    */
-  const smartPreload = useCallback(async (activeFile: MediaFile) => {
-    if (viewModeRef.current === 'large-video') {
-      console.log('[大视频模式] 跳过智能预加载')
-      return
-    }
-
-    if (!preloadEnabled || !config) return
+  const smartPreload = useCallback(async (_activeFile: MediaFile) => {
+    if (!config) return
 
     if (smartPreloadTimeoutRef.current) {
       clearTimeout(smartPreloadTimeoutRef.current)
       console.log('[智能预加载] 清除旧定时器，重新设置')
     }
 
-    smartPreloadLatestFileRef.current = activeFile
+    smartPreloadLatestFileRef.current = _activeFile
 
     smartPreloadTimeoutRef.current = setTimeout(async () => {
       if (smartPreloadInProgressRef.current) {
@@ -210,7 +374,7 @@ export function useRandomMode({
       smartPreloadInProgressRef.current = true
 
       try {
-        const targetFile = smartPreloadLatestFileRef.current ?? activeFile
+        const targetFile = smartPreloadLatestFileRef.current ?? _activeFile
         const preloadCount = config.scanSettings?.preloadCount || 10
         const cacheStatus = databasePreloadManager.getCacheStatus()
         const currentCacheSize = cacheStatus.cacheSize
@@ -219,31 +383,39 @@ export function useRandomMode({
         const needCount = Math.max(0, preloadCount - currentCacheSize - queueSize - pendingQueueSize)
 
         console.log(`[智能预加载] 动态计算：预加载总数=${preloadCount}, 当前缓存=${currentCacheSize}, 正在下载=${queueSize}, 等待许可=${pendingQueueSize}, 需要预加载=${needCount}`)
-        console.log(`[智能预加载] 缓存详情：`, cacheStatus.cachedFiles.map(f => f.substring(f.lastIndexOf('/') + 1)))
 
         if (needCount <= 0) {
           console.log('[智能预加载] 无需预加载，缓存充足')
-          setPreloadStatus(cacheStatus)
           return
         }
 
-        const filters = (viewedFilter === 'viewed' && viewModeRef.current !== 'gallery') ? advancedFilters : undefined
+        const currentParentPath = targetFile?.filename
+          ? targetFile.filename.substring(0, targetFile.filename.lastIndexOf('/'))
+          : undefined
 
-        await databasePreloadManager.smartPreload(
-          config,
-          [],
-          targetFile,
-          preloadCount,
-          viewedFilter,
-          preloadRandomness,
-          mediaFilter,
-          filters,
-          needCount,
-        )
-        setPreloadStatus(databasePreloadManager.getCacheStatus())
+        const data = await requestRandomFiles({
+          count: needCount,
+          usePool: true,
+          currentParentPath,
+        })
+
+        if (data?.staleSession) {
+          return
+        }
+
+        const filesToPreload = Array.isArray(data?.files)
+          ? data.files.map(mapRandomApiFileToMediaFile)
+          : []
+
+        if (filesToPreload.length === 0) {
+          console.log('[智能预加载] 服务端缓存池没有返回可预加载文件')
+          return
+        }
+
+        await databasePreloadManager.preloadProvidedFiles(config, filesToPreload, preloadCount)
+        updatePoolStatus(data?.poolStatus, preloadCount)
       } catch (error) {
         console.error('智能预加载失败:', error)
-        setPreloadStatus(databasePreloadManager.getCacheStatus())
       } finally {
         smartPreloadInProgressRef.current = false
 
@@ -258,7 +430,7 @@ export function useRandomMode({
         }
       }
     }, 200)
-  }, [advancedFilters, config, mediaFilter, preloadEnabled, preloadRandomness, setPreloadStatus, viewedFilter, viewModeRef])
+  }, [config, mapRandomApiFileToMediaFile, requestRandomFiles, updatePoolStatus])
 
   /**
    * 从随机历史缓存中直接恢复文件。
@@ -371,101 +543,72 @@ export function useRandomMode({
       return
     }
 
-    console.log(`[DEBUG] loadRandomFile 开始，筛选条件: viewedFilter=${viewedFilter}, mediaFilter=${mediaFilter}`)
-    console.log(`[DEBUG] 缓存文件数量: ${databasePreloadManager.getCachedFilepaths().length}`)
-    console.log(`[DEBUG] 本地已看过文件数量: ${databasePreloadManager.getLocalViewedCount()}`)
+    console.log(`[DEBUG] loadRandomFile 开始，筛选条件: viewedFilter=${viewedFilter}, mediaFilter=${mediaFilter}, usePool=true`)
     console.log(`[DEBUG] 历史导航模式: ${isNavigatingHistory}`)
 
-    const cachedFiles = databasePreloadManager.getCachedFiles()
-    const availableCachedFiles = cachedFiles.filter(file => !databasePreloadManager.isLocalViewed(file.filename))
-
-    console.log(`[DEBUG] 可用缓存文件数量: ${availableCachedFiles.length}`)
+    if (!isNavigatingHistory && currentFile) {
+      databasePreloadManager.addLocalViewedFile(currentFile)
+    }
 
     let fileToLoad: MediaFile | null = null
+    let preloadedBlob: Blob | null = null
 
-    if (availableCachedFiles.length > 0) {
-      const randomFile = availableCachedFiles[Math.floor(Math.random() * availableCachedFiles.length)]
-      fileToLoad = {
-        filename: randomFile.filename,
-        basename: randomFile.basename,
-        size: randomFile.size,
-        type: 'file',
-        lastmod: randomFile.lastmod,
-        mediaRatingData: randomFile.mediaRatingData ?? null,
-        groupRatingData: randomFile.groupRatingData ?? null,
-        creator: randomFile.creator || null,
-        creatorResolved: Boolean(randomFile.creatorResolved),
-      }
-      console.log(`[DEBUG] 从预加载缓存中选择文件: ${fileToLoad?.basename}`)
-    } else {
-      if (viewedFilter === 'viewed' && databasePreloadManager.getLocalViewedCount() > 0) {
-        console.log(`[DEBUG] 缓存中没有可用文件，已看过 ${databasePreloadManager.getLocalViewedCount()} 个文件`)
-        console.log(`[DEBUG] 可能已看完所有符合条件的文件，显示重新开始对话框`)
-        setShowRestartDialog(true)
-        setLoading(false)
-        return
-      }
+    const cachedFilepath = databasePreloadManager.getRandomCachedFile()
+    if (cachedFilepath) {
+      const cachedFile = databasePreloadManager.takePreloadedFile(cachedFilepath)
+      if (cachedFile) {
+        fileToLoad = {
+          id: cachedFile.id,
+          filename: cachedFile.filepath,
+          basename: cachedFile.filepath.substring(cachedFile.filepath.lastIndexOf('/') + 1),
+          size: cachedFile.size,
+          type: 'file',
+          lastmod: cachedFile.lastmod,
+          mediaRatingData: cachedFile.mediaRatingData ?? null,
+          groupRatingData: cachedFile.groupRatingData ?? null,
+          creator: cachedFile.creator || null,
+          creatorResolved: Boolean(cachedFile.creatorResolved),
+        }
+        preloadedBlob = cachedFile.blob
+        console.log(`[DEBUG] 从客户端预加载缓存中选择文件: ${fileToLoad.basename}`)
 
-      console.log(`[DEBUG] 缓存中没有可用文件，从数据库随机获取`)
+        const preloadCount = config.scanSettings?.preloadCount || 10
+        updatePoolStatus(null, preloadCount)
+      }
+    }
+
+    if (!fileToLoad) {
+      console.log('[DEBUG] 通过服务端随机缓存池/随机接口获取文件')
 
       try {
-        const fileTypeParam = mediaFilter === 'images' ? 'image' : mediaFilter === 'videos' ? 'video' : ''
-        const isViewedParam = viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined
+        const currentParentPath = currentFile?.filename
+          ? currentFile.filename.substring(0, currentFile.filename.lastIndexOf('/'))
+          : undefined
 
-        const response = await fetch('/api/scan-files/random', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            webdavUrl: config.url,
-            webdavUsername: config.username,
-            paths: config.mediaPaths,
-            count: 1,
-            fileType: fileTypeParam || undefined,
-            isViewed: isViewedParam,
-            ...(viewedFilter === 'viewed' && {
-              ratings: advancedFilters.ratings.length > 0 ? advancedFilters.ratings : undefined,
-              evaluations: advancedFilters.evaluations.length > 0 ? advancedFilters.evaluations : undefined,
-              categories: advancedFilters.categories.length > 0 ? advancedFilters.categories : undefined,
-              reasonFilter: advancedFilters.reasonFilter !== 'all' ? advancedFilters.reasonFilter : undefined,
-              reasonKeyword: advancedFilters.reasonKeyword || undefined,
-              ratingEmptyFilter: advancedFilters.ratingEmptyFilter,
-              evaluationEmptyFilter: advancedFilters.evaluationEmptyFilter,
-              categoryEmptyFilter: advancedFilters.categoryEmptyFilter,
-            }),
-          }),
+        const data = await requestRandomFiles({
+          count: 1,
+          usePool: true,
+          currentParentPath,
         })
 
-        if (response.ok) {
-          const data = await response.json()
-          if (data.files && data.files.length > 0) {
-            const dbFile = data.files[0]
-            fileToLoad = {
-              filename: dbFile.filename,
-              basename: dbFile.basename,
-              size: dbFile.file_size || 0,
-              type: 'file',
-              lastmod: dbFile.lastmod || '',
-              mediaRatingData: dbFile.mediaRatingData ?? null,
-              groupRatingData: dbFile.groupRatingData ?? null,
-              creator: dbFile.creator || null,
-              creatorResolved: Boolean(dbFile.creatorResolved),
-            }
-            console.log(`[DEBUG] 从数据库随机获取文件: ${fileToLoad.basename}`)
-          }
+        if (data?.staleSession) {
+          return
         }
-      } catch (e) {
-        console.error('从数据库获取随机文件失败:', e)
-      }
 
-      if (!fileToLoad) {
-        if (viewedFilter === 'viewed' && databasePreloadManager.getLocalViewedCount() > 0) {
-          console.log(`[DEBUG] 数据库也无法获取文件，已看过 ${databasePreloadManager.getLocalViewedCount()} 个文件`)
-          console.log(`[DEBUG] 确认已看完所有符合条件的文件，显示重新开始对话框`)
+        if (data?.files && data.files.length > 0) {
+          fileToLoad = mapRandomApiFileToMediaFile(data.files[0])
+          console.log(`[DEBUG] 从服务端随机池获取文件: ${fileToLoad.basename}`)
+        } else if (data?.allViewed && viewedFilter === 'viewed') {
+          console.log('[DEBUG] 已消费完所有符合条件的文件，显示重新开始对话框')
           setShowRestartDialog(true)
           setLoading(false)
           return
         }
+      } catch (e) {
+        console.error('获取随机文件失败:', e)
+      }
 
+      if (!fileToLoad) {
         const filterMsg = viewedFilter === 'viewed' ? '已看过' : viewedFilter === 'unviewed' ? '未看过' : '全部'
         const mediaMsg = mediaFilter === 'images' ? '图片' : mediaFilter === 'videos' ? '视频' : '媒体'
         setError(`没有找到符合条件的${mediaMsg}文件（${filterMsg}）`)
@@ -496,11 +639,8 @@ export function useRandomMode({
       setCurrentFile(fileToLoad)
       setCurrentCreator(fileToLoad.creator ?? null)
 
-      const preloadedBlob = databasePreloadManager.getPreloadedFile(fileToLoad.filename)
-
-      let blob: Blob
-      if (preloadedBlob) {
-        blob = preloadedBlob
+      let blob = preloadedBlob
+      if (blob) {
         console.log(`使用预加载文件: ${fileToLoad.basename}`)
       } else {
         console.log('正在使用正常加载...')
@@ -661,7 +801,11 @@ export function useRandomMode({
     startAutoMarkTimerRef,
     videoStateRef,
     viewedFilter,
+    currentFile,
     enterVideoFullscreenRef,
+    mapRandomApiFileToMediaFile,
+    requestRandomFiles,
+    updatePoolStatus,
   ])
 
   /**
@@ -762,7 +906,7 @@ export function useRandomMode({
     console.log('[重新开始] 已清空本地已看过文件列表')
 
     databasePreloadManager.clearCache()
-    console.log('[重新开始] 已清空缓存')
+    console.log('[重新开始] 已清空客户端随机缓存')
 
     const preloadCount = config.scanSettings?.preloadCount || 10
     const filters = viewedFilter === 'viewed' ? advancedFilters : undefined
@@ -771,36 +915,91 @@ export function useRandomMode({
     setCachePreloadProgress({ current: 0, total: preloadCount })
 
     try {
-      const result = await databasePreloadManager.refillCache(
-        config,
-        [],
-        preloadCount,
-        viewedFilter,
-        (current, total) => {
-          setCachePreloadProgress({ current, total })
-        },
-        preloadRandomness,
-        true,
-        undefined,
-        mediaFilter,
-        filters,
-      )
-
-      setPreloadInsufficient(result.isInsufficient)
-      setActualFoundCount(result.actualCount)
-
-      console.log('[重新开始] API 返回，实际找到:', result.actualCount, '个文件')
-
-      let waitCount = 0
-      const maxWait = 500
-      while (databasePreloadManager.getCachedFilepaths().length === 0 && waitCount < maxWait) {
-        await new Promise(resolve => setTimeout(resolve, 100))
-        waitCount++
+      const previousRandomPoolSessionId = getRandomPoolSessionId()
+      if (previousRandomPoolSessionId) {
+        await clearRandomPoolSession(previousRandomPoolSessionId)
       }
 
-      console.log('[重新开始] 等待完成，缓存文件数:', databasePreloadManager.getCachedFilepaths().length)
+      const randomPoolSessionId = renewRandomPoolSessionId()
+      if (!randomPoolSessionId) {
+        throw new Error('缺少 randomPoolSessionId')
+      }
 
-      if (databasePreloadManager.getCachedFilepaths().length > 0) {
+      const result = await initializeRandomPoolSession({
+        webdavUrl: config.url,
+        webdavUsername: config.username,
+        paths: config.mediaPaths,
+        preloadCount,
+        randomness: preloadRandomness,
+        fileType: mediaFilter === 'images' ? 'image' : mediaFilter === 'videos' ? 'video' : undefined,
+        isViewed: viewedFilter === 'viewed' ? true : viewedFilter === 'unviewed' ? false : undefined,
+        maxFileSize: 100 * 1024 * 1024,
+        ratings: filters?.ratings,
+        evaluations: filters?.evaluations,
+        categories: filters?.categories,
+        reasonFilter: filters?.reasonFilter,
+        reasonKeyword: filters?.reasonKeyword,
+        ratingEmptyFilter: filters?.ratingEmptyFilter,
+        evaluationEmptyFilter: filters?.evaluationEmptyFilter,
+        categoryEmptyFilter: filters?.categoryEmptyFilter,
+      }, randomPoolSessionId)
+
+      if (randomPoolSessionId !== getRandomPoolSessionId()) {
+        return
+      }
+
+      if (!result.hasData) {
+        const message = result.message || '数据尚未迁移，请先执行迁移'
+        updatePoolStatus(result.poolStatus, preloadCount)
+        setError(message)
+        setSnackbarMessage(message)
+        setSnackbarSeverity('warning')
+        setSnackbarOpen(true)
+        return
+      }
+
+      if ((result.actualCount || 0) <= 0) {
+        const message = result.message || '未找到符合条件的文件'
+        updatePoolStatus(result.poolStatus, preloadCount)
+        setPreloadInsufficient(true)
+        setActualFoundCount(0)
+        setError(message)
+        setSnackbarMessage(message)
+        setSnackbarSeverity('info')
+        setSnackbarOpen(true)
+        return
+      }
+
+      setPreloadInsufficient(false)
+      setActualFoundCount(0)
+
+      console.log('[重新开始] API 返回，实际找到:', result.actualCount, '个文件')
+      let latestPoolStatus = result.poolStatus
+
+      const prewarmData = await requestRandomFiles({
+        count: preloadCount,
+        usePool: true,
+      })
+
+      if (prewarmData?.staleSession) {
+        return
+      }
+
+      const filesToPreload = Array.isArray(prewarmData?.files)
+        ? prewarmData.files.map(mapRandomApiFileToMediaFile)
+        : []
+
+      await databasePreloadManager.preloadProvidedFiles(config, filesToPreload, preloadCount)
+      latestPoolStatus = prewarmData?.poolStatus || latestPoolStatus
+
+      updatePoolStatus(latestPoolStatus, preloadCount)
+
+      const clientCacheStatus = databasePreloadManager.getCacheStatus()
+      const clientInsufficient = clientCacheStatus.cacheSize < preloadCount
+      setPreloadInsufficient(clientInsufficient)
+      setActualFoundCount(clientCacheStatus.cacheSize)
+
+      if (databasePreloadManager.getCachedFilepaths().length > 0 || (latestPoolStatus?.cacheSize || 0) > 0) {
         await loadRandomFile()
         setSnackbarMessage('🔄 已重新开始，文件顺序已重新随机')
         setSnackbarSeverity('success')
@@ -826,6 +1025,9 @@ export function useRandomMode({
     loadRandomFile,
     mediaFilter,
     preloadRandomness,
+    mapRandomApiFileToMediaFile,
+    requestRandomFiles,
+    updatePoolStatus,
     setActualFoundCount,
     setCachePreloadProgress,
     setError,

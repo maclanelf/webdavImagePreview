@@ -293,7 +293,6 @@ function sortFilesByBasename(rows: any[]) {
 }
 
 const MAX_RANDOM_KEY = 0xffffffff
-const MAX_RANDOM_BATCH_EXCLUDES = 200
 
 function createRandomSeekKey() {
   return Math.floor(Math.random() * (MAX_RANDOM_KEY + 1))
@@ -717,7 +716,7 @@ export const scanFiles = {
   getRandomBatchMultiple: async (cacheIds: number[], count: number, options?: {
     fileType?: 'image' | 'video'
     isViewed?: boolean
-    excludeFilenames?: string[]
+    excludeFileIds?: number[]
     minFileSize?: number
     maxFileSize?: number
     currentParentPath?: string
@@ -738,7 +737,7 @@ export const scanFiles = {
     const {
       fileType,
       isViewed,
-      excludeFilenames = [],
+      excludeFileIds = [],
       minFileSize,
       maxFileSize,
       currentParentPath,
@@ -759,7 +758,11 @@ export const scanFiles = {
       || ratingEmptyFilter !== undefined || evaluationEmptyFilter !== undefined || categoryEmptyFilter !== undefined,
     )
 
-    const excludeSet = new Set(excludeFilenames.slice(-MAX_RANDOM_BATCH_EXCLUDES))
+    const excludeIdSet = new Set(
+      excludeFileIds
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value) && value > 0),
+    )
 
     const loadFilesByIds = async (ids: number[]) => {
       if (ids.length === 0) return []
@@ -845,10 +848,10 @@ export const scanFiles = {
           where.push('sf.file_size <= ?')
           params.push(maxFileSize)
         }
-        if (excludeSet.size > 0) {
-          const excludePlaceholders = Array.from(excludeSet).map(() => '?').join(',')
-          where.push(`sf.filename NOT IN (${excludePlaceholders})`)
-          params.push(...Array.from(excludeSet))
+        if (excludeIdSet.size > 0) {
+          const excludeIdPlaceholders = Array.from(excludeIdSet).map(() => '?').join(',')
+          where.push(`sf.id NOT IN (${excludeIdPlaceholders})`)
+          params.push(...Array.from(excludeIdSet))
         }
         if (needsRatingJoin) {
           buildAdvancedFiltersClause({
@@ -891,7 +894,7 @@ export const scanFiles = {
 
           selectedIdSet.add(numericId)
           selectedIds.push(numericId)
-          excludeSet.add(row.filename)
+          excludeIdSet.add(numericId)
         })
       }
 
@@ -923,5 +926,93 @@ export const scanFiles = {
 
     results.push(...await queryRandomFiles(count))
     return results.slice(0, count)
+  },
+
+  hasRandomCandidatesMultiple: async (cacheIds: number[], options?: {
+    fileType?: 'image' | 'video'
+    isViewed?: boolean
+    minFileSize?: number
+    maxFileSize?: number
+    ratings?: number[]
+    evaluations?: string[]
+    categories?: string[]
+    reasonFilter?: 'all' | 'empty' | 'nonempty' | 'keyword'
+    reasonKeyword?: string
+    ratingEmptyFilter?: boolean
+    evaluationEmptyFilter?: boolean
+    categoryEmptyFilter?: boolean
+  }) => {
+    await ensureMySqlInitialized()
+    if (cacheIds.length === 0) return false
+
+    const {
+      fileType,
+      isViewed,
+      minFileSize,
+      maxFileSize,
+      ratings,
+      evaluations,
+      categories,
+      reasonFilter,
+      reasonKeyword,
+      ratingEmptyFilter,
+      evaluationEmptyFilter,
+      categoryEmptyFilter,
+    } = options || {}
+
+    const needsRatingJoin = Boolean(
+      ratings?.length || evaluations?.length || categories?.length
+      || (reasonFilter && reasonFilter !== 'all')
+      || ratingEmptyFilter !== undefined || evaluationEmptyFilter !== undefined || categoryEmptyFilter !== undefined,
+    )
+
+    const placeholders = cacheIds.map(() => '?').join(',')
+    const where: string[] = [`sf.cache_id IN (${placeholders})`]
+    const params: any[] = [...cacheIds]
+
+    if (fileType) {
+      where.push('sf.file_type = ?')
+      params.push(fileType)
+    }
+    if (isViewed !== undefined) {
+      where.push('sf.is_viewed = ?')
+      params.push(isViewed ? 1 : 0)
+    }
+    if (minFileSize !== undefined && minFileSize > 0) {
+      where.push('sf.file_size >= ?')
+      params.push(minFileSize)
+    }
+    if (maxFileSize !== undefined && maxFileSize > 0) {
+      where.push('sf.file_size <= ?')
+      params.push(maxFileSize)
+    }
+    if (needsRatingJoin) {
+      buildAdvancedFiltersClause({
+        ratings,
+        evaluations,
+        categories,
+        reasonFilter,
+        reasonKeyword,
+        ratingEmptyFilter,
+        evaluationEmptyFilter,
+        categoryEmptyFilter,
+      }, where, params)
+    }
+
+    const fromSql = needsRatingJoin
+      ? 'FROM scan_files sf LEFT JOIN media_ratings mr ON sf.filename = mr.file_path'
+      : 'FROM scan_files sf'
+
+    const result = await queryMySqlOne<{ id: number }>(
+      `
+        SELECT sf.id
+        ${fromSql}
+        WHERE ${where.join(' AND ')}
+        LIMIT 1
+      `,
+      params,
+    )
+
+    return Number.isFinite(Number(result?.id))
   },
 }

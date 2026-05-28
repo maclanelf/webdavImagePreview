@@ -2,6 +2,18 @@ import { NextRequest, NextResponse } from 'next/server'
 
 import { webdavConfigs } from '@/lib/database'
 
+const PRELOAD_COUNT_OPTIONS = new Set([10, 20, 30, 40, 50, 60, 70, 80, 90, 100])
+
+function normalizePreloadCount(value: unknown): number {
+  const numericValue = Number(value)
+  return PRELOAD_COUNT_OPTIONS.has(numericValue) ? numericValue : 10
+}
+
+function normalizeConcurrency(value: unknown): number {
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) && numericValue >= 5 ? numericValue : 10
+}
+
 // 获取所有 WebDAV 配置
 export async function GET(_request: NextRequest) {
   try {
@@ -36,12 +48,17 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    const normalizedScanSettings = {
+      concurrency: normalizeConcurrency(scanSettings?.concurrency),
+      preloadCount: normalizePreloadCount(scanSettings?.preloadCount),
+    }
+
     const result = await webdavConfigs.save({
       url,
       username,
       password,
       mediaPaths,
-      scanSettings: scanSettings || { concurrency: 10, preloadCount: 10 },
+      scanSettings: normalizedScanSettings,
       isDefault,
       sourceType: sourceType || 'clouddrive2',
       directLinkUrl,

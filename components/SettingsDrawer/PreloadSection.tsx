@@ -2,8 +2,6 @@ import { Box, Typography, Button, Stack, Paper, Slider } from '@mui/material'
 import { Speed as SpeedIcon, Download as DownloadIcon, Refresh as RefreshIcon } from '@mui/icons-material'
 
 interface PreloadSectionProps {
-  preloadEnabled: boolean
-  onPreloadEnabledChange: (enabled: boolean) => void
   optimisticUpdateEnabled: boolean
   onOptimisticUpdateEnabledChange: (enabled: boolean) => void
   erudaEnabled: boolean
@@ -18,8 +16,6 @@ interface PreloadSectionProps {
 }
 
 export default function PreloadSection({
-  preloadEnabled,
-  onPreloadEnabledChange,
   optimisticUpdateEnabled,
   onOptimisticUpdateEnabledChange,
   erudaEnabled,
@@ -42,16 +38,17 @@ export default function PreloadSection({
       </Box>
 
       <Stack spacing={2}>
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <Typography variant="body2">启用预加载</Typography>
-          <Button
-            size="small"
-            variant={preloadEnabled ? 'contained' : 'outlined'}
-            onClick={() => onPreloadEnabledChange(!preloadEnabled)}
-          >
-            {preloadEnabled ? '已启用' : '已禁用'}
-          </Button>
-        </Box>
+        <Paper variant="outlined" sx={{ p: 1.5 }}>
+          <Typography variant="caption" color="text.secondary" display="block">
+            预加载模式
+          </Typography>
+          <Typography variant="body2" fontWeight="medium">
+            已固定启用
+          </Typography>
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+            当前项目默认始终启用预加载，随机模式与图组模式均依赖该能力。
+          </Typography>
+        </Paper>
 
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <Box>

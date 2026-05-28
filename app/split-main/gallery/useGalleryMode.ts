@@ -22,7 +22,6 @@ interface UseGalleryModeOptions {
   mediaUrl: string | null
   viewedFilter: ViewedFilter
   advancedFilters: AdvancedFilters
-  preloadEnabled: boolean
   setCurrentFile: (file: MediaFile | null) => void
   setCurrentCreator: (creator: any) => void
   setLoading: (loading: boolean) => void
@@ -67,7 +66,6 @@ export function useGalleryMode({
   mediaUrl,
   viewedFilter,
   advancedFilters,
-  preloadEnabled,
   setCurrentFile,
   setCurrentCreator,
   setLoading,
@@ -159,11 +157,9 @@ export function useGalleryMode({
           if (!streamResponse.ok) throw new Error('获取文件流失败')
           blob = await streamResponse.blob()
 
-          if (preloadEnabled) {
-            databasePreloadManager.addToCacheDirectly(file.filename, blob, file.size, file.lastmod, file.creator, Boolean(file.creatorResolved))
-            setPreloadStatus(databasePreloadManager.getCacheStatus())
-          }
-}
+          databasePreloadManager.addToCacheDirectly(file.filename, blob, file.size, file.lastmod, file.creator, Boolean(file.creatorResolved))
+          setPreloadStatus(databasePreloadManager.getCacheStatus())
+        }
       } else {
         console.log(`[DEBUG] 图组模式文件不在预加载缓存中，正常加载: ${file.basename}`)
         const streamResponse = await scheduleStreamRequest(() => fetch('/api/webdav/stream', {
@@ -178,11 +174,9 @@ export function useGalleryMode({
         if (!streamResponse.ok) throw new Error('获取文件流失败')
         blob = await streamResponse.blob()
 
-          if (preloadEnabled) {
-            databasePreloadManager.addToCacheDirectly(file.filename, blob, file.size, file.lastmod, file.creator, Boolean(file.creatorResolved))
-            setPreloadStatus(databasePreloadManager.getCacheStatus())
-          }
-}
+        databasePreloadManager.addToCacheDirectly(file.filename, blob, file.size, file.lastmod, file.creator, Boolean(file.creatorResolved))
+        setPreloadStatus(databasePreloadManager.getCacheStatus())
+      }
 
       const url = URL.createObjectURL(blob)
       const isSmallVideoTarget = isVideoRef.current(file.filename)
@@ -246,7 +240,7 @@ export function useGalleryMode({
 
       startAutoMarkTimerRef.current(file)
 
-      if (preloadEnabled && databasePreloadManager.isBrowseHalfway(index)) {
+      if (databasePreloadManager.isBrowseHalfway(index)) {
         // 当用户浏览到图组的一半左右时，预先把当前图组剩余文件拉入缓存，
         // 提升后半段图内切换体验。
         setTimeout(() => {
@@ -277,7 +271,6 @@ export function useGalleryMode({
     isVideoRef,
     loadCurrentRatingRef,
     mediaUrl,
-    preloadEnabled,
     setCachePreloadProgress,
     setCurrentCreator,
     setCurrentFile,
@@ -311,7 +304,7 @@ export function useGalleryMode({
     console.log(`[DEBUG] loadRandomGroup 开始，当前筛选条件: ${viewedFilter}`)
     const galleryFilters = viewedFilter === 'viewed' ? advancedFilters : undefined
 
-    if (preloadEnabled && databasePreloadManager.hasCurrentGroupCache() && currentGroup.length === 0) {
+    if (databasePreloadManager.hasCurrentGroupCache() && currentGroup.length === 0) {
       const currentGroupFromCache = databasePreloadManager.getCurrentGroup()
       console.log('[DEBUG] 首次点击，使用预加载的当前图组')
       setCurrentGroup(currentGroupFromCache)
@@ -320,7 +313,7 @@ export function useGalleryMode({
       return
     }
 
-    if (preloadEnabled && databasePreloadManager.hasNextGroupCache()) {
+    if (databasePreloadManager.hasNextGroupCache()) {
       console.log('[DEBUG] 使用预加载的下一组图组')
       databasePreloadManager.switchToNextGroup()
 
@@ -350,25 +343,21 @@ export function useGalleryMode({
 
     void (async () => {
       try {
-        const preloadCount = preloadEnabled ? (config?.scanSettings?.preloadCount || 10) : 1
+        const preloadCount = config?.scanSettings?.preloadCount || 10
 
         databasePreloadManager.clearNextGroupCache()
         databasePreloadManager.clearGalleryRuntimeState()
 
-        if (preloadEnabled) {
-          setCachePreloadProgress({ current: 0, total: preloadCount })
-        }
+        setCachePreloadProgress({ current: 0, total: preloadCount })
 
         const result = await databasePreloadManager.preloadForGalleryMode(
           config,
           [],
           preloadCount,
           viewedFilter,
-          preloadEnabled
-            ? (current, total) => {
-                setCachePreloadProgress({ current, total })
-              }
-            : undefined,
+          (current, total) => {
+            setCachePreloadProgress({ current, total })
+          },
           galleryFilters,
         )
 
@@ -383,7 +372,7 @@ export function useGalleryMode({
         setCurrentGroupIndex(0)
         await loadFileFromGroup(loadedGroup, 0)
 
-        if (preloadEnabled && config) {
+        if (config) {
           setTimeout(() => {
             databasePreloadManager.preloadNextGroup(config, [], preloadCount, viewedFilter, galleryFilters).catch((error) => {
               console.error('预加载下一组失败:', error)
@@ -400,7 +389,6 @@ export function useGalleryMode({
     config,
     currentGroup.length,
     loadFileFromGroup,
-    preloadEnabled,
     setCachePreloadProgress,
     setPreloadStatus,
     viewedFilter,

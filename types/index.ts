@@ -15,6 +15,7 @@ export interface WebDAVConfig {
 }
 
 export interface MediaFile {
+  id?: number
   filename: string
   basename: string
   size: number

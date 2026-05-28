@@ -80,7 +80,6 @@ interface RandomModePageProps {
   mediaFilter: MediaFilter
   viewedFilter: ViewedFilter
   advancedFilters: AdvancedFilters
-  preloadEnabled: boolean
   preloadRandomness: number
   setPreloadStatus: (status: any) => void
   setCachePreloadProgress: (progress: { current: number; total: number } | null) => void
@@ -162,7 +161,6 @@ export default function RandomModePage({
   mediaFilter,
   viewedFilter,
   advancedFilters,
-  preloadEnabled,
   preloadRandomness,
   setPreloadStatus,
   setCachePreloadProgress,
@@ -234,6 +232,7 @@ export default function RandomModePage({
     currentFile,
     setPreloadStatus,
     beforeSwitch: stopAutoMarkTimer,
+    skipCacheStatusSync: true,
   })
 
   /**
@@ -272,7 +271,6 @@ export default function RandomModePage({
     mediaFilter,
     viewedFilter,
     advancedFilters,
-    preloadEnabled,
     preloadRandomness,
     viewModeRef,
     setCurrentFile,
@@ -927,7 +925,7 @@ export default function RandomModePage({
                   loading={loading}
                   isSwitching={isSwitching}
                   detailDisabled={loading || isSwitching || !currentFile}
-                  preloadCurrent={preloadEnabled && cachePreloadProgress ? cachePreloadProgress.current : null}
+                  preloadCurrent={cachePreloadProgress ? cachePreloadProgress.current : null}
                   ratingSyncCount={ratingQueueActiveCount}
                   variant="basic"
                 />

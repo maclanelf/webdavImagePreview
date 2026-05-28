@@ -101,7 +101,6 @@ interface GalleryModePageProps {
   setError: (error: string | null) => void
   viewedFilter: ViewedFilter
   advancedFilters: AdvancedFilters
-  preloadEnabled: boolean
   setPreloadStatus: (status: any) => void
   setCachePreloadProgress: (progress: { current: number; total: number } | null) => void
   cachePreloadProgress: { current: number; total: number } | null
@@ -178,7 +177,6 @@ export default function GalleryModePage({
   setError,
   viewedFilter,
   advancedFilters,
-  preloadEnabled,
   setPreloadStatus,
   setCachePreloadProgress,
   cachePreloadProgress,
@@ -264,7 +262,6 @@ export default function GalleryModePage({
     mediaUrl,
     viewedFilter,
     advancedFilters,
-    preloadEnabled,
     setCurrentFile,
     setCurrentCreator,
     setLoading,
@@ -949,7 +946,7 @@ export default function GalleryModePage({
                 loading={loading}
                 isSwitching={isSwitching}
                 detailDisabled={loading || isSwitching || !currentFile}
-                preloadCurrent={preloadEnabled && cachePreloadProgress ? cachePreloadProgress.current : null}
+                preloadCurrent={cachePreloadProgress ? cachePreloadProgress.current : null}
                 ratingSyncCount={ratingQueueActiveCount}
                 variant="enhanced"
               />
@@ -1101,10 +1098,10 @@ export default function GalleryModePage({
         >
           <ShuffleIcon sx={{ fontSize: 80, color: 'text.secondary', mb: 2 }} />
           <Typography variant="h5" gutterBottom>
-            {preloadEnabled && !galleryPreloadReady ? '正在加载中...' : '准备好了！'}
+            {!galleryPreloadReady ? '正在加载中...' : '准备好了！'}
           </Typography>
 
-          {preloadEnabled && cachePreloadProgress && !galleryPreloadReady && (
+          {cachePreloadProgress && !galleryPreloadReady && (
             <Box sx={{ mb: 3 }}>
               <CircularProgress sx={{ mb: 2 }} />
               <Typography variant="body1" color="text.secondary">
@@ -1115,7 +1112,7 @@ export default function GalleryModePage({
             </Box>
           )}
 
-          {(!cachePreloadProgress || !preloadEnabled || galleryPreloadReady) && (
+          {(!cachePreloadProgress || galleryPreloadReady) && (
             <>
               <Typography variant="body1" color="text.secondary" sx={{ mb: 1 }}>
                 从 {directoryCount} 个目录中
@@ -1132,11 +1129,11 @@ export default function GalleryModePage({
           <Button
             variant="contained"
             size="large"
-            startIcon={preloadEnabled && !galleryPreloadReady ? <CircularProgress size={20} color="inherit" /> : <ShuffleIcon />}
+            startIcon={!galleryPreloadReady ? <CircularProgress size={20} color="inherit" /> : <ShuffleIcon />}
             onClick={loadRandomMedia}
-            disabled={preloadEnabled && !galleryPreloadReady}
+            disabled={!galleryPreloadReady}
           >
-            {preloadEnabled && !galleryPreloadReady ? '加载中...' : '开始预览'}
+            {!galleryPreloadReady ? '加载中...' : '开始预览'}
           </Button>
         </Paper>
       )}

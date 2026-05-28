@@ -1,5 +1,8 @@
 import { useEffect } from 'react'
 
+import databasePreloadManager from '@/lib/databasePreloadManager'
+import { getRandomPoolSessionId } from '@/lib/randomPoolSession'
+
 /**
  * 浏览器关闭时清理服务端资源的 Hook
  * 
@@ -19,9 +22,22 @@ export function useCleanupOnUnload() {
   useEffect(() => {
     // 使用 beforeunload 事件在页面卸载前发送清理请求
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      databasePreloadManager.cancelAllPreloads()
+      databasePreloadManager.clearCache()
+      databasePreloadManager.clearNextGroupCache()
+      databasePreloadManager.clearGalleryRuntimeState()
+      databasePreloadManager.clearLocalViewedFiles()
+
+      const randomPoolSessionId = getRandomPoolSessionId()
+      const payload = JSON.stringify(
+        randomPoolSessionId
+          ? { randomPoolSessionId }
+          : {},
+      )
+
       // 使用 sendBeacon 发送异步请求（即使页面关闭也能发送）
       // sendBeacon 是专门为页面卸载时发送数据设计的 API
-      const sent = navigator.sendBeacon('/api/cleanup', JSON.stringify({}))
+      const sent = navigator.sendBeacon('/api/cleanup', payload)
       
       if (sent) {
         console.log('🧹 [Cleanup] 已发送清理请求到服务端')
@@ -50,12 +66,25 @@ export function useCleanupOnUnload() {
 export async function manualCleanup() {
   try {
     console.log('🧹 [Cleanup] 手动触发清理...')
+
+    const randomPoolSessionId = getRandomPoolSessionId()
+
+    databasePreloadManager.cancelAllPreloads()
+    databasePreloadManager.clearCache()
+    databasePreloadManager.clearNextGroupCache()
+    databasePreloadManager.clearGalleryRuntimeState()
+    databasePreloadManager.clearLocalViewedFiles()
     
     const response = await fetch('/api/cleanup', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
-      }
+      },
+      body: JSON.stringify(
+        randomPoolSessionId
+          ? { randomPoolSessionId }
+          : {},
+      )
     })
     
     const result = await response.json()

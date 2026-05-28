@@ -47,9 +47,11 @@ import SettingsDrawer from '@/components/SettingsDrawer'
 import GalleryModePage from '@/components/split-main/modes/GalleryModePage'
 import LargeVideoModePage from '@/components/split-main/modes/LargeVideoModePage'
 import RandomModePage from '@/components/split-main/modes/RandomModePage'
+import { clearRandomPoolSession } from '@/lib/clientRandomPool'
 import { buildGroupQueueKey, buildMediaQueueKey, localRatingQueue } from '@/lib/localRatingQueue'
 import databasePreloadManager from '@/lib/databasePreloadManager'
 import { setErudaEnabled } from '@/lib/erudaInit'
+import { getRandomPoolSessionId, renewRandomPoolSessionId } from '@/lib/randomPoolSession'
 import { QUICK_RATING_CONFIG } from '@/types'
 import type {
   AdvancedFilters,
@@ -121,7 +123,6 @@ export default function HomePage() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [fullscreen, setFullscreen] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('random')
-  const [preloadEnabled, setPreloadEnabled] = useState(true)
   const [preloadStatus, setPreloadStatus] = useState<{ cacheSize: number; maxCacheSize: number } | null>(null)
   const [optimisticUpdateEnabled, setOptimisticUpdateEnabled] = useState(true)
   const [erudaEnabled, setErudaEnabledState] = useState(false)
@@ -323,7 +324,6 @@ export default function HomePage() {
     rerunModePreload,
   } = useSplitMainPreload({
     config,
-    preloadEnabled,
     viewedFilter,
     advancedFilters,
     mediaFilter,
@@ -437,7 +437,7 @@ export default function HomePage() {
     setPreloadStatus(databasePreloadManager.getCacheStatus())
 
     if (newMode === 'gallery') {
-      setGalleryPreloadReady(!preloadEnabled)
+      setGalleryPreloadReady(false)
     } else {
       setGalleryPreloadReady(true)
     }
@@ -448,23 +448,7 @@ export default function HomePage() {
     initialPreloadTriggeredRef.current = false
 
     rerunModePreload()
-  }, [preloadEnabled, rerunModePreload, resetCurrentPreviewState, viewMode])
-
-  const handlePreloadEnabledChange = useCallback((enabled: boolean) => {
-    setPreloadEnabled(enabled)
-
-    if (!enabled) {
-      databasePreloadManager.cancelAllPreloads()
-      databasePreloadManager.clearCache()
-      databasePreloadManager.clearNextGroupCache()
-      setPreloadStatus(databasePreloadManager.getCacheStatus())
-      setCachePreloadProgress(null)
-      setGalleryPreloadReady(true)
-      return
-    }
-
-    initialPreloadTriggeredRef.current = false
-  }, [])
+  }, [rerunModePreload, resetCurrentPreviewState, viewMode])
 
   const handleOptimisticUpdateEnabledChange = useCallback((enabled: boolean) => {
     setOptimisticUpdateEnabled(enabled)
@@ -483,10 +467,26 @@ export default function HomePage() {
   }, [])
 
   const handleClearCache = useCallback(() => {
+    databasePreloadManager.cancelAllPreloads()
+
+    const previousRandomPoolSessionId = getRandomPoolSessionId()
+    if (previousRandomPoolSessionId) {
+      void clearRandomPoolSession(previousRandomPoolSessionId).catch(() => {})
+      renewRandomPoolSessionId()
+    }
+
     databasePreloadManager.clearCache()
-    setPreloadStatus(databasePreloadManager.getCacheStatus())
+    databasePreloadManager.clearNextGroupCache()
+    databasePreloadManager.clearGalleryRuntimeState()
+    if (viewMode === 'random') {
+      const preloadCount = config?.scanSettings?.preloadCount || 10
+      setPreloadStatus({ cacheSize: 0, maxCacheSize: preloadCount })
+      setCachePreloadProgress({ current: 0, total: preloadCount })
+    } else {
+      setPreloadStatus(databasePreloadManager.getCacheStatus())
+    }
     notify('缓存已清理', 'info')
-  }, [notify])
+  }, [config, notify, viewMode])
 
   const handleResetButtonPositions = useCallback(() => {
     ;['fullscreen_rating', 'fullscreen_shuffle', 'normal_shuffle'].forEach((key) => {
@@ -516,9 +516,27 @@ export default function HomePage() {
   }, [currentFile, currentRating?.isViewed, resetCurrentPreviewState])
 
   const handleRestartViewedMode = useCallback(() => {
+    databasePreloadManager.cancelAllPreloads()
+
+    const previousRandomPoolSessionId = getRandomPoolSessionId()
+    if (previousRandomPoolSessionId) {
+      void clearRandomPoolSession(previousRandomPoolSessionId).catch(() => {})
+      renewRandomPoolSessionId()
+    }
+
+    if (viewMode === 'random') {
+      databasePreloadManager.clearCache()
+      databasePreloadManager.clearNextGroupCache()
+      databasePreloadManager.clearGalleryRuntimeState()
+
+      const preloadCount = config?.scanSettings?.preloadCount || 10
+      setPreloadStatus({ cacheSize: 0, maxCacheSize: preloadCount })
+      setCachePreloadProgress({ current: 0, total: preloadCount })
+    }
+
     databasePreloadManager.clearLocalViewedFiles()
     notify('已清除本地观看记录，可以重新观看', 'success')
-  }, [notify])
+  }, [config, notify, viewMode])
 
   const handleMediaFilterChangeWrapper = useCallback((newFilter: MediaFilter) => {
     setMediaFilter(newFilter)
@@ -716,7 +734,7 @@ export default function HomePage() {
   }, [currentFile, mediaType, tryPlayVideoAfterFullscreen])
 
   useEffect(() => {
-    if (!stats.total || !preloadEnabled || !config || initialPreloadTriggeredRef.current) {
+    if (!stats.total || !config || initialPreloadTriggeredRef.current) {
       return
     }
 
@@ -735,23 +753,25 @@ export default function HomePage() {
 
     setGalleryPreloadReady(true)
     setCachePreloadProgress(null)
-  }, [config, preloadEnabled, runGalleryPreload, runRandomPreload, stats.total])
+  }, [config, runGalleryPreload, runRandomPreload, stats.total])
 
   useEffect(() => {
     if (viewMode === 'large-video') {
       return
     }
 
-    if (preloadEnabled && config && preloadStatus) {
+    if (config && preloadStatus) {
       const preloadCount = config.scanSettings?.preloadCount || 10
+      const progressTotal = preloadCount
+
       setCachePreloadProgress((prev) => {
         if (prev && prev.current === preloadStatus.cacheSize) {
           return prev
         }
-        return { current: preloadStatus.cacheSize, total: preloadCount }
+        return { current: preloadStatus.cacheSize, total: progressTotal }
       })
     }
-  }, [config, preloadEnabled, preloadStatus, viewMode])
+  }, [config, preloadStatus, viewMode])
 
   useEffect(() => {
     if (viewMode === 'large-video') {
@@ -886,7 +906,7 @@ export default function HomePage() {
             See it
           </Typography>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            {preloadEnabled && cachePreloadProgress && viewMode !== 'large-video' && (
+            {cachePreloadProgress && viewMode !== 'large-video' && (
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mr: 0.5 }}>
                 <DownloadIcon
                   sx={{
@@ -994,7 +1014,6 @@ export default function HomePage() {
             mediaFilter={mediaFilter}
             viewedFilter={viewedFilter}
             advancedFilters={advancedFilters}
-            preloadEnabled={preloadEnabled}
             preloadRandomness={preloadRandomness}
             setPreloadStatus={setPreloadStatus}
             setCachePreloadProgress={setCachePreloadProgress}
@@ -1062,7 +1081,6 @@ export default function HomePage() {
             setError={setError}
             viewedFilter={viewedFilter}
             advancedFilters={advancedFilters}
-            preloadEnabled={preloadEnabled}
             setPreloadStatus={setPreloadStatus}
             setCachePreloadProgress={setCachePreloadProgress}
             cachePreloadProgress={cachePreloadProgress}
@@ -1173,8 +1191,6 @@ export default function HomePage() {
         currentGroupIndex={currentGroupIndex}
         currentFile={currentFile}
         onOpenRatingDialog={openRatingDialog}
-        preloadEnabled={preloadEnabled}
-        onPreloadEnabledChange={handlePreloadEnabledChange}
         optimisticUpdateEnabled={optimisticUpdateEnabled}
         onOptimisticUpdateEnabledChange={handleOptimisticUpdateEnabledChange}
         erudaEnabled={erudaEnabled}

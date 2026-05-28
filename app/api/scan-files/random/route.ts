@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { serverRandomPoolManager } from '@/lib/serverRandomPoolManager'
 import { scanCache } from '@/lib/scanCacheRepository'
 import { scanFiles } from '@/lib/scanFilesRepository'
-
-const MAX_EXCLUDE_FILENAMES = 200
 
 // POST: 随机获取文件（支持批量）- 使用 POST 避免 URL 过长导致 431 错误
 export async function POST(request: NextRequest) {
@@ -15,11 +14,14 @@ export async function POST(request: NextRequest) {
     const count = parseInt(body.count || '1')
     const fileType = body.fileType as 'image' | 'video' | null
     const isViewed = body.isViewed
-    const excludeFilenames = body.excludeFilenames // 逗号分隔的排除文件名或数组
+    const excludeFileIds = body.excludeFileIds // 逗号分隔的排除文件 ID 或数组
     const minFileSize = body.minFileSize // 最小文件大小（字节）
     const maxFileSize = body.maxFileSize // 最大文件大小（字节）
     const currentParentPath = body.currentParentPath // 当前目录路径（用于随机性控制）
     const randomness = parseFloat(body.randomness || '1') // 随机性：0=优先当前目录，1=完全随机
+    const preloadCount = parseInt(body.preloadCount || '10')
+    const useRandomPool = body.useRandomPool === true || body.useRandomPool === 'true'
+    const randomPoolSessionId = typeof body.randomPoolSessionId === 'string' ? body.randomPoolSessionId.trim() : ''
     
     // 高级过滤条件（仅已看过模式）
     const ratings = body.ratings // 评分星星数组：[1,2,3,4,5]
@@ -42,13 +44,60 @@ export async function POST(request: NextRequest) {
 
     // 支持数组或逗号分隔的字符串
     const pathList = Array.isArray(paths) ? paths : paths.split(',').filter((p: string) => p.trim())
-    const rawExcludeList: string[] = excludeFilenames
-      ? (Array.isArray(excludeFilenames)
-          ? excludeFilenames.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-          : excludeFilenames.split(',').filter((f: string) => f.trim()))
+    const rawExcludeIdList: number[] = excludeFileIds
+      ? (Array.isArray(excludeFileIds)
+          ? excludeFileIds.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0)
+          : String(excludeFileIds)
+              .split(',')
+              .map((value) => Number(value.trim()))
+              .filter((value) => Number.isFinite(value) && value > 0))
       : []
-    const excludeList = Array.from(new Set<string>(rawExcludeList)).slice(-MAX_EXCLUDE_FILENAMES)
-    console.log(`⏱️ [random] 解析参数完成: ${Date.now() - startTime}ms, paths=${pathList.length}, excludeList=${excludeList.length}`)
+    const excludeIdList = Array.from(new Set<number>(rawExcludeIdList))
+    const normalizedIsViewed = isViewed !== null && isViewed !== undefined ? isViewed === true || isViewed === 'true' : undefined
+    console.log(`⏱️ [random] 解析参数完成: ${Date.now() - startTime}ms, paths=${pathList.length}, excludeIds=${excludeIdList.length}`)
+
+    if (useRandomPool) {
+      if (!randomPoolSessionId) {
+        return NextResponse.json(
+          { error: '缺少 randomPoolSessionId' },
+          { status: 400 },
+        )
+      }
+
+      const poolResult = await serverRandomPoolManager.consume({
+        webdavUrl,
+        webdavUsername,
+        paths: pathList,
+        preloadCount,
+        excludeFileIds: excludeIdList,
+        fileType: fileType || undefined,
+        isViewed: normalizedIsViewed,
+        minFileSize: minFileSize ? parseInt(String(minFileSize)) : undefined,
+        maxFileSize: maxFileSize ? parseInt(String(maxFileSize)) : undefined,
+        currentParentPath: currentParentPath || undefined,
+        randomness,
+        ratings: ratings && Array.isArray(ratings) ? ratings : undefined,
+        evaluations: evaluations && Array.isArray(evaluations) ? evaluations : undefined,
+        categories: categories && Array.isArray(categories) ? categories : undefined,
+        reasonFilter: reasonFilter || undefined,
+        reasonKeyword: reasonKeyword || undefined,
+        ratingEmptyFilter,
+        evaluationEmptyFilter,
+        categoryEmptyFilter,
+      }, count, randomPoolSessionId)
+
+      return NextResponse.json({
+        files: poolResult.files,
+        count: poolResult.files.length,
+        requestedCount: count,
+        isInsufficient: poolResult.isInsufficient,
+        message: poolResult.message,
+        hasData: poolResult.hasData,
+        allViewed: poolResult.allViewed,
+        poolStatus: poolResult.poolStatus,
+        sessionExpired: poolResult.sessionExpired === true,
+      })
+    }
 
     // 批量获取所有相关 cache 的 ID（一次查询代替循环）
     const cacheStartTime = Date.now()
@@ -76,8 +125,8 @@ export async function POST(request: NextRequest) {
     const randomStartTime = Date.now()
     const files = await scanFiles.getRandomBatchMultiple(cacheIds, count, {
       fileType: fileType || undefined,
-      isViewed: isViewed !== null && isViewed !== undefined ? isViewed === true || isViewed === 'true' : undefined,
-      excludeFilenames: excludeList,
+      isViewed: normalizedIsViewed,
+      excludeFileIds: excludeIdList,
       minFileSize: minFileSize ? parseInt(String(minFileSize)) : undefined,
       maxFileSize: maxFileSize ? parseInt(String(maxFileSize)) : undefined,
       currentParentPath: currentParentPath || undefined,
@@ -97,6 +146,23 @@ export async function POST(request: NextRequest) {
 
     // 检查是否满足预加载数量要求
     const isInsufficient = files.length < count
+    const allViewed = normalizedIsViewed === true
+      && files.length === 0
+      && excludeIdList.length > 0
+      && await scanFiles.hasRandomCandidatesMultiple(cacheIds, {
+        fileType: fileType || undefined,
+        isViewed: normalizedIsViewed,
+        minFileSize: minFileSize ? parseInt(String(minFileSize)) : undefined,
+        maxFileSize: maxFileSize ? parseInt(String(maxFileSize)) : undefined,
+        ratings: ratings && Array.isArray(ratings) ? ratings : undefined,
+        evaluations: evaluations && Array.isArray(evaluations) ? evaluations : undefined,
+        categories: categories && Array.isArray(categories) ? categories : undefined,
+        reasonFilter: reasonFilter || undefined,
+        reasonKeyword: reasonKeyword || undefined,
+        ratingEmptyFilter,
+        evaluationEmptyFilter,
+        categoryEmptyFilter,
+      })
     const message = isInsufficient 
       ? `仅找到 ${files.length} 个符合条件的文件，未达到预加载目标 ${count} 个`
       : undefined
@@ -107,7 +173,8 @@ export async function POST(request: NextRequest) {
       requestedCount: count,
       isInsufficient,
       message,
-      hasData: true
+      hasData: true,
+      allViewed,
     })
 
   } catch (error: any) {
