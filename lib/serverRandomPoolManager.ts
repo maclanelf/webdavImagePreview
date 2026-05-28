@@ -480,6 +480,7 @@ class ServerRandomPoolManager {
           message: initResult.message,
           poolStatus: initResult.poolStatus,
           allViewed: false,
+          sessionExpired: false,
         }
       }
 
@@ -495,6 +496,7 @@ class ServerRandomPoolManager {
         message: '服务端缓存池初始化失败',
         poolStatus: this.createEmptyStatus(this.getRandomPoolConfig(options.preloadCount).targetCount),
         allViewed: false,
+        sessionExpired: false,
       }
     }
 
@@ -519,6 +521,7 @@ class ServerRandomPoolManager {
         message: refillResult.message,
         poolStatus: this.getPoolStatus(state),
         allViewed: false,
+        sessionExpired: false,
       }
     }
 
@@ -559,6 +562,7 @@ class ServerRandomPoolManager {
       message: selectedFiles.length === 0 ? (refillMessage || '未找到符合条件的文件') : refillMessage,
       poolStatus: this.getPoolStatus(state),
       allViewed,
+      sessionExpired: false,
     }
   }
 }
