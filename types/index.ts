@@ -9,8 +9,10 @@ export interface WebDAVConfig {
   directLinkUrl?: string
   enableDirectLink?: boolean
   scanSettings?: {
+    batchSize?: number
     concurrency?: number
     preloadCount?: number
+    timeout?: number
   }
 }
 

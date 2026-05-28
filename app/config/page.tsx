@@ -67,8 +67,10 @@ interface WebDAVConfig {
   directLinkUrl?: string
   enableDirectLink?: boolean
   scanSettings?: {
+    batchSize?: number | string
     concurrency?: number | string
     preloadCount?: number | string
+    timeout?: number | string
   }
 }
 
@@ -108,6 +110,13 @@ function normalizePreloadCount(value: unknown): number {
     : 10
 }
 
+function normalizeBatchSize(value: unknown): number {
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) && numericValue >= 5
+    ? numericValue
+    : 10
+}
+
 function normalizeConcurrency(value: unknown): number {
   const numericValue = Number(value)
   return Number.isFinite(numericValue) && numericValue >= 5
@@ -115,10 +124,19 @@ function normalizeConcurrency(value: unknown): number {
     : 10
 }
 
+function normalizeTimeout(value: unknown): number {
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) && numericValue >= 10000
+    ? numericValue
+    : 60000
+}
+
 function normalizeScanSettings(scanSettings?: WebDAVConfig['scanSettings']): NonNullable<WebDAVConfig['scanSettings']> {
   return {
+    batchSize: normalizeBatchSize(scanSettings?.batchSize),
     concurrency: normalizeConcurrency(scanSettings?.concurrency),
     preloadCount: normalizePreloadCount(scanSettings?.preloadCount),
+    timeout: normalizeTimeout(scanSettings?.timeout),
   }
 }
 
@@ -1611,6 +1629,33 @@ export default function ConfigPage() {
               
               <Box sx={{ display: 'flex', gap: 2, flexDirection: { xs: 'column', md: 'row' } }}>
                 <TextField
+                  label="批次大小"
+                  type="number"
+                  value={config.scanSettings?.batchSize ?? 10}
+                  onChange={(e) => {
+                    const value = e.target.value
+                    setConfig({
+                      ...config,
+                      scanSettings: {
+                        ...config.scanSettings,
+                        batchSize: value
+                      }
+                    })
+                  }}
+                  onBlur={(e) => {
+                    setConfig({
+                      ...config,
+                      scanSettings: {
+                        ...config.scanSettings,
+                        batchSize: normalizeBatchSize(e.target.value)
+                      }
+                    })
+                  }}
+                  helperText="兼容旧版本的批次大小设置，影响每批处理目录数量"
+                  inputProps={{ min: 5, max: 100 }}
+                  sx={{ flex: 1 }}
+                />
+                <TextField
                   label="并发数"
                   type="number"
                   value={config.scanSettings?.concurrency ?? 10}
@@ -1649,6 +1694,37 @@ export default function ConfigPage() {
                   inputProps={{ min: 5, max: 50 }}
                   sx={{ flex: 1 }}
                 />
+                <TextField
+                  label="超时时间(秒)"
+                  type="number"
+                  value={Math.floor(Number(config.scanSettings?.timeout ?? 60000) / 1000)}
+                  onChange={(e) => {
+                    const secondsValue = e.target.value
+                    setConfig({
+                      ...config,
+                      scanSettings: {
+                        ...config.scanSettings,
+                        timeout: secondsValue === '' ? '' : String((parseInt(secondsValue, 10) || 60) * 1000)
+                      }
+                    })
+                  }}
+                  onBlur={(e) => {
+                    const seconds = parseInt(e.target.value, 10)
+                    setConfig({
+                      ...config,
+                      scanSettings: {
+                        ...config.scanSettings,
+                        timeout: normalizeTimeout((Number.isFinite(seconds) ? seconds : 60) * 1000)
+                      }
+                    })
+                  }}
+                  helperText="兼容旧版本的扫描超时设置"
+                  inputProps={{ min: 10, max: 300 }}
+                  sx={{ flex: 1 }}
+                />
+              </Box>
+
+              <Box sx={{ display: 'flex', gap: 2, flexDirection: { xs: 'column', md: 'row' }, mt: 2 }}>
                 <TextField
                   label="预加载数量"
                   select

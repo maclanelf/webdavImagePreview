@@ -59,7 +59,10 @@ export default function ScheduledScanDialog({
     scanSettings: {
       maxDepth: 10,
       maxFiles: 200000,
-      timeout: 60000
+      timeout: 60000,
+      concurrency: 10,
+      batchSize: 10,
+      preloadCount: 10,
     },
     cronExpression: '0 */2 * * *', // 默认每2小时
     isActive: true
@@ -84,7 +87,10 @@ export default function ScheduledScanDialog({
         scanSettings: safeJsonParse(initialData.scan_settings, {
           maxDepth: 10,
           maxFiles: 200000,
-          timeout: 60000
+          timeout: 60000,
+          concurrency: 10,
+          batchSize: 10,
+          preloadCount: 10,
         }),
         cronExpression: initialData.cron_expression || '0 */2 * * *',
         isActive: initialData.is_active === 1
@@ -95,10 +101,13 @@ export default function ScheduledScanDialog({
       // 使用当前配置作为默认值
       setFormData({
         mediaPaths: config?.mediaPaths || [],
-        scanSettings: config?.scanSettings || {
+        scanSettings: {
           maxDepth: 10,
           maxFiles: 200000,
-          timeout: 60000
+          timeout: Number(config?.scanSettings?.timeout) || 60000,
+          concurrency: Number(config?.scanSettings?.concurrency) || 10,
+          batchSize: Number(config?.scanSettings?.batchSize) || 10,
+          preloadCount: Number(config?.scanSettings?.preloadCount) || 10,
         },
         cronExpression: '0 */2 * * *',
         isActive: true

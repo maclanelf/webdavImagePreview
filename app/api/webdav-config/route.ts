@@ -4,6 +4,11 @@ import { webdavConfigs } from '@/lib/database'
 
 const PRELOAD_COUNT_OPTIONS = new Set([10, 20, 30, 40, 50, 60, 70, 80, 90, 100])
 
+function normalizeBatchSize(value: unknown): number {
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) && numericValue >= 5 ? numericValue : 10
+}
+
 function normalizePreloadCount(value: unknown): number {
   const numericValue = Number(value)
   return PRELOAD_COUNT_OPTIONS.has(numericValue) ? numericValue : 10
@@ -12,6 +17,11 @@ function normalizePreloadCount(value: unknown): number {
 function normalizeConcurrency(value: unknown): number {
   const numericValue = Number(value)
   return Number.isFinite(numericValue) && numericValue >= 5 ? numericValue : 10
+}
+
+function normalizeTimeout(value: unknown): number {
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) && numericValue >= 10000 ? numericValue : 60000
 }
 
 // 获取所有 WebDAV 配置
@@ -49,8 +59,10 @@ export async function POST(request: NextRequest) {
     }
 
     const normalizedScanSettings = {
+      batchSize: normalizeBatchSize(scanSettings?.batchSize),
       concurrency: normalizeConcurrency(scanSettings?.concurrency),
       preloadCount: normalizePreloadCount(scanSettings?.preloadCount),
+      timeout: normalizeTimeout(scanSettings?.timeout),
     }
 
     const result = await webdavConfigs.save({

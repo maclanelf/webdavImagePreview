@@ -136,6 +136,14 @@ export async function GET() {
   try {
     await ensureMySqlInitialized()
 
+    const creatorLinkSubquery = `
+      SELECT file_path, creator_id
+      FROM scan_file_creators
+      WHERE creator_id IS NOT NULL
+        AND creator_id != -1
+      GROUP BY file_path, creator_id
+    `
+
     const totalViewed = (await queryMySqlOne<CountRow>(`
       SELECT COUNT(*) AS count
       FROM media_ratings
@@ -263,18 +271,16 @@ export async function GET() {
 
     const topCreators = (await queryMySqlRows<CreatorRow[]>(`
       SELECT
-        sfc.creator_id AS creatorId,
+        linked.creator_id AS creatorId,
         c.primary_name AS creatorName,
-        COUNT(*) AS count,
+        COUNT(DISTINCT mr.file_path) AS count,
         ROUND(AVG(mr.rating), 2) AS avgRating
       FROM media_ratings mr
-      INNER JOIN scan_file_creators sfc ON sfc.file_path = mr.file_path
-      LEFT JOIN creators c ON sfc.creator_id = c.id
+       INNER JOIN (${creatorLinkSubquery}) linked ON linked.file_path = mr.file_path
+       LEFT JOIN creators c ON linked.creator_id = c.id
       WHERE mr.is_viewed = 1
-        AND sfc.creator_id IS NOT NULL
-        AND sfc.creator_id != -1
-      GROUP BY sfc.creator_id, c.primary_name
-      ORDER BY count DESC, avgRating DESC
+      GROUP BY linked.creator_id, c.primary_name
+      ORDER BY COUNT(DISTINCT mr.file_path) DESC, avgRating DESC
       LIMIT 10
     `)).map((row) => ({
       creatorId: row.creatorId,
@@ -285,20 +291,18 @@ export async function GET() {
 
     const favoriteCreators = (await queryMySqlRows<CreatorRow[]>(`
       SELECT
-        sfc.creator_id AS creatorId,
+        linked.creator_id AS creatorId,
         c.primary_name AS creatorName,
-        COUNT(*) AS count,
+        COUNT(DISTINCT mr.file_path) AS count,
         ROUND(AVG(mr.rating), 2) AS avgRating
       FROM media_ratings mr
-      INNER JOIN scan_file_creators sfc ON sfc.file_path = mr.file_path
-      LEFT JOIN creators c ON sfc.creator_id = c.id
+       INNER JOIN (${creatorLinkSubquery}) linked ON linked.file_path = mr.file_path
+       LEFT JOIN creators c ON linked.creator_id = c.id
       WHERE mr.is_viewed = 1
-        AND sfc.creator_id IS NOT NULL
-        AND sfc.creator_id != -1
         AND mr.rating IS NOT NULL
-      GROUP BY sfc.creator_id, c.primary_name
-      HAVING COUNT(*) >= 3
-      ORDER BY avgRating DESC, count DESC
+      GROUP BY linked.creator_id, c.primary_name
+      HAVING COUNT(DISTINCT mr.file_path) >= 3
+      ORDER BY avgRating DESC, COUNT(DISTINCT mr.file_path) DESC
       LIMIT 10
     `)).map((row) => ({
       creatorId: row.creatorId,
@@ -355,12 +359,10 @@ export async function GET() {
     })
 
     const creatorLinkedCount = (await queryMySqlOne<CountRow>(`
-      SELECT COUNT(*) AS count
+      SELECT COUNT(DISTINCT mr.file_path) AS count
       FROM media_ratings mr
-      INNER JOIN scan_file_creators sfc ON sfc.file_path = mr.file_path
+      INNER JOIN (${creatorLinkSubquery}) linked ON linked.file_path = mr.file_path
       WHERE mr.is_viewed = 1
-        AND sfc.creator_id IS NOT NULL
-        AND sfc.creator_id != -1
     `))?.count ?? 0
 
     const highScoreCount = (await queryMySqlOne<CountRow>(`
