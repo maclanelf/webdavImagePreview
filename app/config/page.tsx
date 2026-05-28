@@ -1263,7 +1263,24 @@ export default function ConfigPage() {
         <Tabs
           value={activeTab}
           onChange={(_, value) => setActiveTab(value)}
-          sx={{ mb: 3 }}
+          variant="scrollable"
+          scrollButtons="auto"
+          allowScrollButtonsMobile
+          sx={{
+            mb: 3,
+            minHeight: 48,
+            '& .MuiTabs-flexContainer': {
+              flexWrap: 'nowrap',
+            },
+            '& .MuiTab-root': {
+              minHeight: 48,
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
+            },
+            '& .MuiTabs-scrollButtons.Mui-disabled': {
+              opacity: 0.3,
+            },
+          }}
         >
           <Tab label="MySQL 配置" value="mysql" />
           <Tab label="WebDAV 配置" value="webdav" />
