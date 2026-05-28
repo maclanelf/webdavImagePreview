@@ -4,7 +4,7 @@ import { useCallback, type MutableRefObject } from 'react'
 
 import { clearRandomPoolSession, initializeRandomPoolSession } from '@/lib/clientRandomPool'
 import databasePreloadManager from '@/lib/databasePreloadManager'
-import { getRandomPoolSessionId, renewRandomPoolSessionId } from '@/lib/randomPoolSession'
+import { getRandomPoolSessionId, peekRandomPoolSessionId, renewRandomPoolSessionId } from '@/lib/randomPoolSession'
 import type {
   AdvancedFilters,
   MediaFilter,
@@ -75,7 +75,7 @@ export function useSplitMainPreload({
 
   const clearServerRandomPool = useCallback(async () => {
     try {
-      await clearRandomPoolSession(getRandomPoolSessionId())
+      await clearRandomPoolSession(peekRandomPoolSessionId())
     } catch (error) {
       console.warn('清理服务端随机缓存池失败:', error)
     }
@@ -145,10 +145,26 @@ export function useSplitMainPreload({
         }))
       : []
 
-    await databasePreloadManager.preloadProvidedFiles(config, filesToPreload, preloadCount)
+    await databasePreloadManager.preloadProvidedFiles(
+      config,
+      filesToPreload,
+      preloadCount,
+      () => {
+        if (randomPoolSessionId !== getRandomPoolSessionId()) {
+          return
+        }
+
+        const nextStatus = buildCombinedRandomPoolStatus(data.poolStatus || null, preloadCount)
+        setPreloadStatus(nextStatus)
+        setCachePreloadProgress({
+          current: nextStatus.cacheSize,
+          total: nextStatus.maxCacheSize || preloadCount,
+        })
+      },
+    )
 
     return data.poolStatus || null
-  }, [config, mediaFilter, preloadRandomness, viewedFilter])
+  }, [buildCombinedRandomPoolStatus, config, mediaFilter, preloadRandomness, setCachePreloadProgress, setPreloadStatus, viewedFilter])
 
   /**
    * 图组模式预加载。

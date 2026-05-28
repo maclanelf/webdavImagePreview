@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject, type S
 import { scheduleStreamRequest } from '@/lib/clientRequestScheduler'
 import { clearRandomPoolSession, initializeRandomPoolSession } from '@/lib/clientRandomPool'
 import databasePreloadManager from '@/lib/databasePreloadManager'
-import { getRandomPoolSessionId, renewRandomPoolSessionId } from '@/lib/randomPoolSession'
+import { getRandomPoolSessionId, peekRandomPoolSessionId, renewRandomPoolSessionId } from '@/lib/randomPoolSession'
 import type {
   AdvancedFilters,
   CreatorSummary,
@@ -915,7 +915,7 @@ export function useRandomMode({
     setCachePreloadProgress({ current: 0, total: preloadCount })
 
     try {
-      const previousRandomPoolSessionId = getRandomPoolSessionId()
+      const previousRandomPoolSessionId = peekRandomPoolSessionId()
       if (previousRandomPoolSessionId) {
         await clearRandomPoolSession(previousRandomPoolSessionId)
       }

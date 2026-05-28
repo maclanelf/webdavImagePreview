@@ -23,6 +23,14 @@ export function getRandomPoolSessionId(): string | null {
   return nextSessionId
 }
 
+export function peekRandomPoolSessionId(): string | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  return window.sessionStorage.getItem(RANDOM_POOL_SESSION_STORAGE_KEY)
+}
+
 export function renewRandomPoolSessionId(): string | null {
   if (typeof window === 'undefined') {
     return null

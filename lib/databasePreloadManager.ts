@@ -1019,6 +1019,7 @@ class DatabasePreloadManager {
       groupRatingData?: GroupRating | null
     }>,
     maxCount: number = files.length,
+    onProgress?: (current: number, total: number) => void,
   ): Promise<{
     successCount: number
     failedCount: number
@@ -1037,8 +1038,14 @@ class DatabasePreloadManager {
     this.setConcurrencyLimitEnabled(true)
     this.setMaxCacheSize(Math.max(1, maxCount || files.length))
 
+    const progressTotal = Math.max(1, maxCount || files.length)
+    onProgress?.(this.cache.size, progressTotal)
+
     const results = await Promise.allSettled(
-      files.map((file) => this.preloadFile(config, file)),
+      files.map((file) => this.preloadFile(config, file)
+        .finally(() => {
+          onProgress?.(this.cache.size, progressTotal)
+        })),
     )
 
     return {

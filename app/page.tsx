@@ -51,7 +51,7 @@ import { clearRandomPoolSession } from '@/lib/clientRandomPool'
 import { buildGroupQueueKey, buildMediaQueueKey, localRatingQueue } from '@/lib/localRatingQueue'
 import databasePreloadManager from '@/lib/databasePreloadManager'
 import { setErudaEnabled } from '@/lib/erudaInit'
-import { getRandomPoolSessionId, renewRandomPoolSessionId } from '@/lib/randomPoolSession'
+import { peekRandomPoolSessionId, renewRandomPoolSessionId } from '@/lib/randomPoolSession'
 import { QUICK_RATING_CONFIG } from '@/types'
 import type {
   AdvancedFilters,
@@ -469,7 +469,7 @@ export default function HomePage() {
   const handleClearCache = useCallback(() => {
     databasePreloadManager.cancelAllPreloads()
 
-    const previousRandomPoolSessionId = getRandomPoolSessionId()
+    const previousRandomPoolSessionId = peekRandomPoolSessionId()
     if (previousRandomPoolSessionId) {
       void clearRandomPoolSession(previousRandomPoolSessionId).catch(() => {})
       renewRandomPoolSessionId()
@@ -518,7 +518,7 @@ export default function HomePage() {
   const handleRestartViewedMode = useCallback(() => {
     databasePreloadManager.cancelAllPreloads()
 
-    const previousRandomPoolSessionId = getRandomPoolSessionId()
+    const previousRandomPoolSessionId = peekRandomPoolSessionId()
     if (previousRandomPoolSessionId) {
       void clearRandomPoolSession(previousRandomPoolSessionId).catch(() => {})
       renewRandomPoolSessionId()
