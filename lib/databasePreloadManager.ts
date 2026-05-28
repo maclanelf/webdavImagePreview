@@ -79,6 +79,10 @@ class DatabasePreloadManager {
   private pendingPreloadQueue: Array<() => void> = []
   private concurrencyLimitEnabled = true
 
+  // 单个预加载文件请求的总超时时间。
+  // 目的不是限制正常下载速度，而是避免 /api/webdav/stream 长时间无响应时把智能预加载永久卡死。
+  private preloadRequestTimeoutMs = 45_000
+
   // 取消预加载控制
   private abortController: AbortController | null = null
   private preloadCancelled = false
@@ -260,6 +264,50 @@ class DatabasePreloadManager {
   //#endregion
 
   //#region 文件预加载核心方法
+
+  private async fetchPreloadStreamWithTimeout(config: any, filepath: string): Promise<Response> {
+    const requestController = new AbortController()
+    const upstreamAbortSignal = this.getAbortSignal()
+    let timedOut = false
+
+    const handleUpstreamAbort = () => {
+      requestController.abort()
+    }
+
+    if (upstreamAbortSignal?.aborted) {
+      requestController.abort()
+    } else if (upstreamAbortSignal) {
+      upstreamAbortSignal.addEventListener('abort', handleUpstreamAbort, { once: true })
+    }
+
+    const timeoutId = setTimeout(() => {
+      timedOut = true
+      requestController.abort()
+    }, this.preloadRequestTimeoutMs)
+
+    try {
+      return await scheduleStreamRequest(() => fetch('/api/webdav/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...config,
+          filepath,
+        }),
+        signal: requestController.signal,
+      }))
+    } catch (error: any) {
+      if (timedOut) {
+        throw new Error(`获取文件流超时(${Math.round(this.preloadRequestTimeoutMs / 1000)}s): ${filepath}`)
+      }
+
+      throw error
+    } finally {
+      clearTimeout(timeoutId)
+      if (upstreamAbortSignal) {
+        upstreamAbortSignal.removeEventListener('abort', handleUpstreamAbort)
+      }
+    }
+  }
   
   // 预加载单个文件（带并发控制和快速重试）
   private async preloadFile(config: any, file: any): Promise<void> {
@@ -298,15 +346,7 @@ class DatabasePreloadManager {
         
         this.queue.add(filepath)
 
-        const streamResponse = await scheduleStreamRequest(() => fetch('/api/webdav/stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...config,
-            filepath: file.filename,
-          }),
-          signal: this.getAbortSignal(),
-        }))
+        const streamResponse = await this.fetchPreloadStreamWithTimeout(config, file.filename)
 
         // 检查是否已取消
         if (this.isPreloadCancelled()) {
@@ -411,15 +451,7 @@ class DatabasePreloadManager {
         
         this.queue.add(filepath)
         
-        const streamResponse = await scheduleStreamRequest(() => fetch('/api/webdav/stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...config,
-            filepath: file.filename,
-          }),
-          signal: this.getAbortSignal(),
-        }))
+        const streamResponse = await this.fetchPreloadStreamWithTimeout(config, file.filename)
         
         // 检查是否已取消
         if (this.isPreloadCancelled()) {
@@ -530,15 +562,7 @@ class DatabasePreloadManager {
         
         this.queue.add(filepath)
         
-        const streamResponse = await scheduleStreamRequest(() => fetch('/api/webdav/stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...config,
-            filepath: file.filename,
-          }),
-          signal: this.getAbortSignal(),
-        }))
+        const streamResponse = await this.fetchPreloadStreamWithTimeout(config, file.filename)
         
         // 检查是否已取消
         if (this.isPreloadCancelled()) {

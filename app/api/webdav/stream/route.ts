@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { buildFileUrl, normalizeFilePath, type SourceType } from '@/lib/urlBuilder'
 
+const UPSTREAM_FETCH_TIMEOUT_MS = 30_000
+
 function isExpectedAbortError(error: unknown): boolean {
   const name = error instanceof Error ? error.name : ''
   const message = error instanceof Error ? error.message : String(error || '')
@@ -50,12 +52,18 @@ async function readResponseTextSafely(response: Response): Promise<string> {
 
 export async function POST(request: NextRequest) {
   const abortController = new AbortController()
+  let upstreamTimedOut = false
   const handleAbort = () => {
     console.log('🛑 [文件流] 客户端断开连接')
     abortController.abort()
   }
 
   request.signal.addEventListener('abort', handleAbort, { once: true })
+  const timeoutId = setTimeout(() => {
+    upstreamTimedOut = true
+    console.warn(`⏰ [文件流] 上游请求超过 ${Math.round(UPSTREAM_FETCH_TIMEOUT_MS / 1000)}s，主动中止`)
+    abortController.abort()
+  }, UPSTREAM_FETCH_TIMEOUT_MS)
 
   try {
     const body = await request.json()
@@ -167,6 +175,14 @@ export async function POST(request: NextRequest) {
       headers: responseHeaders,
     })
   } catch (error: any) {
+    if (upstreamTimedOut) {
+      console.error('获取文件流失败: 上游请求超时', error)
+      return NextResponse.json(
+        { error: `获取文件失败: 上游请求超时（${Math.round(UPSTREAM_FETCH_TIMEOUT_MS / 1000)}s）` },
+        { status: 504 }
+      )
+    }
+
     if (request.signal.aborted || abortController.signal.aborted || isExpectedAbortError(error)) {
       console.warn('ℹ️ [文件流] 请求已中止，忽略预期内异常:', error)
       return new NextResponse(null, { status: 499 })
@@ -178,6 +194,7 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     )
   } finally {
+    clearTimeout(timeoutId)
     request.signal.removeEventListener('abort', handleAbort)
   }
 }
