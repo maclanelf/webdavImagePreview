@@ -198,6 +198,7 @@ export async function GET() {
     const queryStart = calendarWeeks[0]?.start
     const queryEnd = calendarWeeks[calendarWeeks.length - 1]?.end
 
+    // 兼容 ONLY_FULL_GROUP_BY：SELECT / GROUP BY / ORDER BY 统一使用相同的日期表达式
     const currentMonthDailyRows = await queryMySqlRows<DailyRow[]>(`
       SELECT
         DATE_FORMAT(updated_at, '%Y-%m-%d') AS day,
@@ -244,7 +245,7 @@ export async function GET() {
       WHERE is_viewed = 1
         AND updated_at >= DATE_SUB(DATE_FORMAT(NOW(), '%Y-%m-01'), INTERVAL ${YEAR_MONTHS - 1} MONTH)
       GROUP BY DATE_FORMAT(updated_at, '%Y-%m')
-      ORDER BY month ASC
+      ORDER BY DATE_FORMAT(updated_at, '%Y-%m') ASC
     `)
 
     const monthlyMap = new Map(monthlyRows.map((row) => [row.month, row]))
@@ -318,7 +319,7 @@ export async function GET() {
       FROM media_ratings
       WHERE is_viewed = 1
       GROUP BY DATE_FORMAT(updated_at, '%H')
-      ORDER BY hour ASC
+      ORDER BY DATE_FORMAT(updated_at, '%H') ASC
     `)).map((row) => ({
       hour: row.hour,
       count: row.count,
