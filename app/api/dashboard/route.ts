@@ -19,6 +19,14 @@ type CreatorRow = {
 }
 type HourRow = { hour: string; count: number }
 type JsonFieldRow = { custom_evaluation: string | null; category: string | null }
+type DashboardResponse = Awaited<ReturnType<typeof buildDashboardResponse>>
+
+let dashboardCache:
+  | {
+    expiresAt: number
+    payload: DashboardResponse
+  }
+  | null = null
 
 function parseJsonArray(value: string | null): string[] {
   if (!value) return []
@@ -134,72 +142,103 @@ function buildCurrentMonthWeeks() {
 
 export async function GET() {
   try {
-    await ensureMySqlInitialized()
+    if (dashboardCache && dashboardCache.expiresAt > Date.now()) {
+      return NextResponse.json(dashboardCache.payload)
+    }
 
-    const creatorLinkSubquery = `
-      SELECT file_path, creator_id
-      FROM scan_file_creators
-      WHERE creator_id IS NOT NULL
-        AND creator_id != -1
-      GROUP BY file_path, creator_id
-    `
+    const payload = await buildDashboardResponse()
+    dashboardCache = {
+      expiresAt: Date.now() + 60 * 1000,
+      payload,
+    }
 
-    const totalViewed = (await queryMySqlOne<CountRow>(`
+    return NextResponse.json(payload)
+  } catch (error: any) {
+    console.error('dashboard analytics error:', error)
+    return NextResponse.json(
+      { error: error.message || 'Failed to load dashboard data' },
+      { status: 500 }
+    )
+  }
+}
+
+async function buildDashboardResponse() {
+  await ensureMySqlInitialized()
+
+  const creatorLinkSubquery = `
+    SELECT file_path, creator_id
+    FROM scan_file_creators
+    WHERE creator_id IS NOT NULL
+      AND creator_id != -1
+    GROUP BY file_path, creator_id
+  `
+
+  const calendarWeeks = buildCurrentMonthWeeks()
+  const queryStart = calendarWeeks[0]?.start
+  const queryEnd = calendarWeeks[calendarWeeks.length - 1]?.end
+
+  const [
+    totalViewedRow,
+    imagesViewedRow,
+    videosViewedRow,
+    groupsViewedRow,
+    ratedCountRow,
+    avgRatingRow,
+    activeDays30Row,
+    recent30TotalRow,
+    currentMonthDailyRows,
+    monthlyRows,
+    ratingDistributionRows,
+    topCreatorsRows,
+    favoriteCreatorsRows,
+    hourlyActivityRows,
+    jsonFieldRows,
+    creatorLinkedCountRow,
+    highScoreCountRow,
+  ] = await Promise.all([
+    queryMySqlOne<CountRow>(`
       SELECT COUNT(*) AS count
       FROM media_ratings
       WHERE is_viewed = 1
-    `))?.count ?? 0
-
-    const imagesViewed = (await queryMySqlOne<CountRow>(`
+    `),
+    queryMySqlOne<CountRow>(`
       SELECT COUNT(*) AS count
       FROM media_ratings
       WHERE is_viewed = 1 AND file_type = 'image'
-    `))?.count ?? 0
-
-    const videosViewed = (await queryMySqlOne<CountRow>(`
+    `),
+    queryMySqlOne<CountRow>(`
       SELECT COUNT(*) AS count
       FROM media_ratings
       WHERE is_viewed = 1 AND file_type = 'video'
-    `))?.count ?? 0
-
-    const groupsViewed = (await queryMySqlOne<CountRow>(`
+    `),
+    queryMySqlOne<CountRow>(`
       SELECT COUNT(*) AS count
       FROM group_ratings
       WHERE is_viewed = 1
-    `))?.count ?? 0
-
-    const ratedCount = (await queryMySqlOne<CountRow>(`
+    `),
+    queryMySqlOne<CountRow>(`
       SELECT COUNT(*) AS count
       FROM media_ratings
       WHERE is_viewed = 1 AND rating IS NOT NULL
-    `))?.count ?? 0
-
-    const avgRating = Number((await queryMySqlOne<CountRow>(`
+    `),
+    queryMySqlOne<CountRow>(`
       SELECT ROUND(AVG(rating), 2) AS count
       FROM media_ratings
       WHERE is_viewed = 1 AND rating IS NOT NULL
-    `))?.count ?? 0)
-
-    const activeDays30 = (await queryMySqlOne<CountRow>(`
+    `),
+    queryMySqlOne<CountRow>(`
       SELECT COUNT(DISTINCT DATE(updated_at)) AS count
       FROM media_ratings
       WHERE is_viewed = 1
         AND updated_at >= DATE_SUB(NOW(), INTERVAL ${ACTIVE_WINDOW_DAYS - 1} DAY)
-    `))?.count ?? 0
-
-    const recent30Total = (await queryMySqlOne<CountRow>(`
+    `),
+    queryMySqlOne<CountRow>(`
       SELECT COUNT(*) AS count
       FROM media_ratings
       WHERE is_viewed = 1
         AND updated_at >= DATE_SUB(NOW(), INTERVAL ${ACTIVE_WINDOW_DAYS - 1} DAY)
-    `))?.count ?? 0
-
-    const calendarWeeks = buildCurrentMonthWeeks()
-    const queryStart = calendarWeeks[0]?.start
-    const queryEnd = calendarWeeks[calendarWeeks.length - 1]?.end
-
-    // 兼容 ONLY_FULL_GROUP_BY：SELECT / GROUP BY / ORDER BY 统一使用相同的日期表达式
-    const currentMonthDailyRows = await queryMySqlRows<DailyRow[]>(`
+    `),
+    queryMySqlRows<DailyRow[]>(`
       SELECT
         DATE_FORMAT(updated_at, '%Y-%m-%d') AS day,
         COUNT(*) AS total,
@@ -211,7 +250,96 @@ export async function GET() {
         AND updated_at < DATE_ADD(?, INTERVAL 1 DAY)
       GROUP BY DATE_FORMAT(updated_at, '%Y-%m-%d')
       ORDER BY DATE_FORMAT(updated_at, '%Y-%m-%d') ASC
-    `, [queryStart, queryEnd])
+    `, [queryStart, queryEnd]),
+    queryMySqlRows<MonthlyRow[]>(`
+      SELECT
+        DATE_FORMAT(updated_at, '%Y-%m') AS month,
+        COUNT(*) AS total,
+        SUM(CASE WHEN file_type = 'image' THEN 1 ELSE 0 END) AS images,
+        SUM(CASE WHEN file_type = 'video' THEN 1 ELSE 0 END) AS videos
+      FROM media_ratings
+      WHERE is_viewed = 1
+        AND updated_at >= DATE_SUB(DATE_FORMAT(NOW(), '%Y-%m-01'), INTERVAL ${YEAR_MONTHS - 1} MONTH)
+      GROUP BY DATE_FORMAT(updated_at, '%Y-%m')
+      ORDER BY DATE_FORMAT(updated_at, '%Y-%m') ASC
+    `),
+    queryMySqlRows<RatingRow[]>(`
+      SELECT rating, COUNT(*) AS count
+      FROM media_ratings
+      WHERE is_viewed = 1 AND rating IS NOT NULL
+      GROUP BY rating
+      ORDER BY rating ASC
+    `),
+    queryMySqlRows<CreatorRow[]>(`
+      SELECT
+        linked.creator_id AS creatorId,
+        c.primary_name AS creatorName,
+        COUNT(DISTINCT mr.file_path) AS count,
+        ROUND(AVG(mr.rating), 2) AS avgRating
+      FROM media_ratings mr
+       INNER JOIN (${creatorLinkSubquery}) linked ON linked.file_path = mr.file_path
+       LEFT JOIN creators c ON linked.creator_id = c.id
+      WHERE mr.is_viewed = 1
+      GROUP BY linked.creator_id, c.primary_name
+      ORDER BY COUNT(DISTINCT mr.file_path) DESC, avgRating DESC
+      LIMIT 10
+    `),
+    queryMySqlRows<CreatorRow[]>(`
+      SELECT
+        linked.creator_id AS creatorId,
+        c.primary_name AS creatorName,
+        COUNT(DISTINCT mr.file_path) AS count,
+        ROUND(AVG(mr.rating), 2) AS avgRating
+      FROM media_ratings mr
+       INNER JOIN (${creatorLinkSubquery}) linked ON linked.file_path = mr.file_path
+       LEFT JOIN creators c ON linked.creator_id = c.id
+      WHERE mr.is_viewed = 1
+        AND mr.rating IS NOT NULL
+      GROUP BY linked.creator_id, c.primary_name
+      HAVING COUNT(DISTINCT mr.file_path) >= 3
+      ORDER BY avgRating DESC, COUNT(DISTINCT mr.file_path) DESC
+      LIMIT 10
+    `),
+    queryMySqlRows<HourRow[]>(`
+      SELECT
+        DATE_FORMAT(updated_at, '%H') AS hour,
+        COUNT(*) AS count
+      FROM media_ratings
+      WHERE is_viewed = 1
+      GROUP BY DATE_FORMAT(updated_at, '%H')
+      ORDER BY DATE_FORMAT(updated_at, '%H') ASC
+    `),
+    queryMySqlRows<JsonFieldRow[]>(`
+      SELECT custom_evaluation, category
+      FROM media_ratings
+      WHERE is_viewed = 1
+        AND (
+          (custom_evaluation IS NOT NULL AND TRIM(custom_evaluation) != '')
+          OR (category IS NOT NULL AND TRIM(category) != '')
+        )
+    `),
+    queryMySqlOne<CountRow>(`
+      SELECT COUNT(DISTINCT mr.file_path) AS count
+      FROM media_ratings mr
+      INNER JOIN (${creatorLinkSubquery}) linked ON linked.file_path = mr.file_path
+      WHERE mr.is_viewed = 1
+    `),
+    queryMySqlOne<CountRow>(`
+      SELECT COUNT(*) AS count
+      FROM media_ratings
+      WHERE is_viewed = 1
+        AND rating >= 4
+    `),
+  ])
+
+    const totalViewed = totalViewedRow?.count ?? 0
+    const imagesViewed = imagesViewedRow?.count ?? 0
+    const videosViewed = videosViewedRow?.count ?? 0
+    const groupsViewed = groupsViewedRow?.count ?? 0
+    const ratedCount = ratedCountRow?.count ?? 0
+    const avgRating = Number(avgRatingRow?.count ?? 0)
+    const activeDays30 = activeDays30Row?.count ?? 0
+    const recent30Total = recent30TotalRow?.count ?? 0
 
     const currentMonthMap = new Map(currentMonthDailyRows.map((row) => [row.day, row]))
     const weeklyTrend = calendarWeeks
@@ -235,19 +363,6 @@ export async function GET() {
 
     const currentWeekKey = weeklyTrend.find((week) => week.isCurrent)?.key ?? weeklyTrend[weeklyTrend.length - 1]?.key ?? ''
 
-    const monthlyRows = await queryMySqlRows<MonthlyRow[]>(`
-      SELECT
-        DATE_FORMAT(updated_at, '%Y-%m') AS month,
-        COUNT(*) AS total,
-        SUM(CASE WHEN file_type = 'image' THEN 1 ELSE 0 END) AS images,
-        SUM(CASE WHEN file_type = 'video' THEN 1 ELSE 0 END) AS videos
-      FROM media_ratings
-      WHERE is_viewed = 1
-        AND updated_at >= DATE_SUB(DATE_FORMAT(NOW(), '%Y-%m-01'), INTERVAL ${YEAR_MONTHS - 1} MONTH)
-      GROUP BY DATE_FORMAT(updated_at, '%Y-%m')
-      ORDER BY DATE_FORMAT(updated_at, '%Y-%m') ASC
-    `)
-
     const monthlyMap = new Map(monthlyRows.map((row) => [row.month, row]))
     const monthlyTrend = buildRecentMonths(YEAR_MONTHS).map((month) => {
       const row = monthlyMap.get(month)
@@ -259,81 +374,29 @@ export async function GET() {
       }
     })
 
-    const ratingDistribution = (await queryMySqlRows<RatingRow[]>(`
-      SELECT rating, COUNT(*) AS count
-      FROM media_ratings
-      WHERE is_viewed = 1 AND rating IS NOT NULL
-      GROUP BY rating
-      ORDER BY rating ASC
-    `)).map((row) => ({
+    const ratingDistribution = ratingDistributionRows.map((row) => ({
       rating: row.rating ?? 0,
       count: row.count,
     }))
 
-    const topCreators = (await queryMySqlRows<CreatorRow[]>(`
-      SELECT
-        linked.creator_id AS creatorId,
-        c.primary_name AS creatorName,
-        COUNT(DISTINCT mr.file_path) AS count,
-        ROUND(AVG(mr.rating), 2) AS avgRating
-      FROM media_ratings mr
-       INNER JOIN (${creatorLinkSubquery}) linked ON linked.file_path = mr.file_path
-       LEFT JOIN creators c ON linked.creator_id = c.id
-      WHERE mr.is_viewed = 1
-      GROUP BY linked.creator_id, c.primary_name
-      ORDER BY COUNT(DISTINCT mr.file_path) DESC, avgRating DESC
-      LIMIT 10
-    `)).map((row) => ({
+    const topCreators = topCreatorsRows.map((row) => ({
       creatorId: row.creatorId,
       creatorName: row.creatorName || `ID ${row.creatorId ?? '-'}`,
       count: row.count,
       avgRating: row.avgRating ?? 0,
     }))
 
-    const favoriteCreators = (await queryMySqlRows<CreatorRow[]>(`
-      SELECT
-        linked.creator_id AS creatorId,
-        c.primary_name AS creatorName,
-        COUNT(DISTINCT mr.file_path) AS count,
-        ROUND(AVG(mr.rating), 2) AS avgRating
-      FROM media_ratings mr
-       INNER JOIN (${creatorLinkSubquery}) linked ON linked.file_path = mr.file_path
-       LEFT JOIN creators c ON linked.creator_id = c.id
-      WHERE mr.is_viewed = 1
-        AND mr.rating IS NOT NULL
-      GROUP BY linked.creator_id, c.primary_name
-      HAVING COUNT(DISTINCT mr.file_path) >= 3
-      ORDER BY avgRating DESC, COUNT(DISTINCT mr.file_path) DESC
-      LIMIT 10
-    `)).map((row) => ({
+    const favoriteCreators = favoriteCreatorsRows.map((row) => ({
       creatorId: row.creatorId,
       creatorName: row.creatorName || `ID ${row.creatorId ?? '-'}`,
       count: row.count,
       avgRating: row.avgRating ?? 0,
     }))
 
-    const hourlyActivity = (await queryMySqlRows<HourRow[]>(`
-      SELECT
-        DATE_FORMAT(updated_at, '%H') AS hour,
-        COUNT(*) AS count
-      FROM media_ratings
-      WHERE is_viewed = 1
-      GROUP BY DATE_FORMAT(updated_at, '%H')
-      ORDER BY DATE_FORMAT(updated_at, '%H') ASC
-    `)).map((row) => ({
+    const hourlyActivity = hourlyActivityRows.map((row) => ({
       hour: row.hour,
       count: row.count,
     }))
-
-    const jsonFieldRows = await queryMySqlRows<JsonFieldRow[]>(`
-      SELECT custom_evaluation, category
-      FROM media_ratings
-      WHERE is_viewed = 1
-        AND (
-          (custom_evaluation IS NOT NULL AND TRIM(custom_evaluation) != '')
-          OR (category IS NOT NULL AND TRIM(category) != '')
-        )
-    `)
 
     const evaluationCounter = new Map<string, number>()
     const categoryCounter = new Map<string, number>()
@@ -359,19 +422,8 @@ export async function GET() {
       }
     })
 
-    const creatorLinkedCount = (await queryMySqlOne<CountRow>(`
-      SELECT COUNT(DISTINCT mr.file_path) AS count
-      FROM media_ratings mr
-      INNER JOIN (${creatorLinkSubquery}) linked ON linked.file_path = mr.file_path
-      WHERE mr.is_viewed = 1
-    `))?.count ?? 0
-
-    const highScoreCount = (await queryMySqlOne<CountRow>(`
-      SELECT COUNT(*) AS count
-      FROM media_ratings
-      WHERE is_viewed = 1
-        AND rating >= 4
-    `))?.count ?? 0
+    const creatorLinkedCount = creatorLinkedCountRow?.count ?? 0
+    const highScoreCount = highScoreCountRow?.count ?? 0
 
     const maxWeeklyDayViews = weeklyTrend.reduce(
       (max, week) => Math.max(max, ...week.items.map((item) => item.total), 0),
@@ -411,7 +463,7 @@ export async function GET() {
       insights.push(`最常用评价标签是“${topEvaluation.name}”，出现 ${topEvaluation.value} 次。`)
     }
 
-    return NextResponse.json({
+  return {
       generatedAt: new Date().toISOString(),
       summary: {
         totalViewed,
@@ -448,12 +500,5 @@ export async function GET() {
         maxMonthlyViews,
       },
       insights,
-    })
-  } catch (error: any) {
-    console.error('dashboard analytics error:', error)
-    return NextResponse.json(
-      { error: error.message || 'Failed to load dashboard data' },
-      { status: 500 }
-    )
-  }
+    }
 }
