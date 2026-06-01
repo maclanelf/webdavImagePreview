@@ -206,10 +206,10 @@ export async function GET() {
         SUM(CASE WHEN file_type = 'video' THEN 1 ELSE 0 END) AS videos
       FROM media_ratings
       WHERE is_viewed = 1
-        AND DATE(updated_at) >= ?
-        AND DATE(updated_at) <= ?
-      GROUP BY DATE(updated_at)
-      ORDER BY day ASC
+        AND updated_at >= ?
+        AND updated_at < DATE_ADD(?, INTERVAL 1 DAY)
+      GROUP BY DATE_FORMAT(updated_at, '%Y-%m-%d')
+      ORDER BY DATE_FORMAT(updated_at, '%Y-%m-%d') ASC
     `, [queryStart, queryEnd])
 
     const currentMonthMap = new Map(currentMonthDailyRows.map((row) => [row.day, row]))
