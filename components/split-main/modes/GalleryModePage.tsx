@@ -241,8 +241,18 @@ export default function GalleryModePage({
   const touchStartYRef = useRef<number | null>(null)
   const touchStartXRef = useRef<number | null>(null)
   const isSwipingRef = useRef(false)
+  const pinchZoomDetectedRef = useRef(false)
   const swipeThreshold = 50
   const hasAutoRatedRef = useRef(false)
+
+  const resetTouchGesture = useCallback((options?: { preservePinchZoom?: boolean }) => {
+    touchStartYRef.current = null
+    touchStartXRef.current = null
+    isSwipingRef.current = false
+    if (!options?.preservePinchZoom) {
+      pinchZoomDetectedRef.current = false
+    }
+  }, [])
 
   /**
    * 图组模式核心状态与行为入口。
@@ -491,9 +501,8 @@ export default function GalleryModePage({
     }
 
     if (event.touches.length > 1) {
-      touchStartYRef.current = null
-      touchStartXRef.current = null
-      isSwipingRef.current = false
+      pinchZoomDetectedRef.current = true
+      resetTouchGesture({ preservePinchZoom: true })
       return
     }
 
@@ -501,7 +510,8 @@ export default function GalleryModePage({
     touchStartYRef.current = touch.clientY
     touchStartXRef.current = touch.clientX
     isSwipingRef.current = false
-  }, [fullscreen, isMobile])
+    pinchZoomDetectedRef.current = false
+  }, [fullscreen, isMobile, resetTouchGesture])
 
   /** 图组模式全屏手势移动。 */
   const handleTouchMove = useCallback((event: ReactTouchEvent) => {
@@ -514,9 +524,8 @@ export default function GalleryModePage({
     }
 
     if (event.touches.length > 1) {
-      touchStartYRef.current = null
-      touchStartXRef.current = null
-      isSwipingRef.current = false
+      pinchZoomDetectedRef.current = true
+      resetTouchGesture({ preservePinchZoom: true })
       return
     }
 
@@ -528,7 +537,7 @@ export default function GalleryModePage({
       isSwipingRef.current = true
       event.preventDefault()
     }
-  }, [fullscreen, isMobile])
+  }, [fullscreen, isMobile, resetTouchGesture])
 
   /**
    * 图组模式全屏手势结束。
@@ -541,9 +550,12 @@ export default function GalleryModePage({
     }
 
     if (event.touches.length > 0) {
-      touchStartYRef.current = null
-      touchStartXRef.current = null
-      isSwipingRef.current = false
+      resetTouchGesture()
+      return
+    }
+
+    if (pinchZoomDetectedRef.current) {
+      resetTouchGesture()
       return
     }
 
@@ -551,9 +563,7 @@ export default function GalleryModePage({
     const isSwiping = isSwipingRef.current
 
     if (startY === null || !isSwiping) {
-      touchStartYRef.current = null
-      touchStartXRef.current = null
-      isSwipingRef.current = false
+      resetTouchGesture()
       return
     }
 
@@ -571,10 +581,12 @@ export default function GalleryModePage({
       }
     }
 
-    touchStartYRef.current = null
-    touchStartXRef.current = null
-    isSwipingRef.current = false
-  }, [fullscreen, isMobile, mobileVideoRef, nextInGroup, previousInGroup, setPlayIntent])
+    resetTouchGesture()
+  }, [fullscreen, isMobile, mobileVideoRef, nextInGroup, previousInGroup, resetTouchGesture, setPlayIntent])
+
+  const handleTouchCancel = useCallback(() => {
+    resetTouchGesture()
+  }, [resetTouchGesture])
 
   return (
     <>
@@ -593,6 +605,7 @@ export default function GalleryModePage({
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchCancel}
         mediaContent={
           <>
             {/* 图组模式图片预览。 */}

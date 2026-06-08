@@ -16,6 +16,7 @@ interface CommonPreviewSurfaceProps {
   onTouchStart: (event: TouchEvent) => void
   onTouchMove: (event: TouchEvent) => void
   onTouchEnd: (event: TouchEvent) => void
+  onTouchCancel?: (event: TouchEvent) => void
   mediaContent: ReactNode
   fullscreenOverlay?: ReactNode
   footerContent?: ReactNode
@@ -32,6 +33,7 @@ export default function CommonPreviewSurface({
   onTouchStart,
   onTouchMove,
   onTouchEnd,
+  onTouchCancel,
   mediaContent,
   fullscreenOverlay,
   footerContent,
@@ -77,6 +79,7 @@ export default function CommonPreviewSurface({
         onTouchStart={onTouchStart}
         onTouchMove={onTouchMove}
         onTouchEnd={onTouchEnd}
+        onTouchCancel={onTouchCancel}
         sx={{
           borderRadius: fullscreen ? 0 : 2,
           overflow: 'hidden',

@@ -217,7 +217,17 @@ export default function LargeVideoModePage({
   const touchStartYRef = useRef<number | null>(null)
   const touchStartXRef = useRef<number | null>(null)
   const isSwipingRef = useRef(false)
+  const pinchZoomDetectedRef = useRef(false)
   const swipeThreshold = 50
+
+  const resetTouchGesture = useCallback((options?: { preservePinchZoom?: boolean }) => {
+    touchStartYRef.current = null
+    touchStartXRef.current = null
+    isSwipingRef.current = false
+    if (!options?.preservePinchZoom) {
+      pinchZoomDetectedRef.current = false
+    }
+  }, [])
 
   useEffect(() => {
     if (mediaType === 'stream-video') {
@@ -466,9 +476,8 @@ export default function LargeVideoModePage({
   const handleTouchStart = useCallback((event: ReactTouchEvent) => {
     if (!isMobile || !fullscreen) return
     if (event.touches.length > 1) {
-      touchStartYRef.current = null
-      touchStartXRef.current = null
-      isSwipingRef.current = false
+      pinchZoomDetectedRef.current = true
+      resetTouchGesture({ preservePinchZoom: true })
       return
     }
 
@@ -476,7 +485,8 @@ export default function LargeVideoModePage({
     touchStartYRef.current = touch.clientY
     touchStartXRef.current = touch.clientX
     isSwipingRef.current = false
-  }, [fullscreen, isMobile])
+    pinchZoomDetectedRef.current = false
+  }, [fullscreen, isMobile, resetTouchGesture])
 
   /**
    * 大视频模式手势移动处理。
@@ -485,9 +495,8 @@ export default function LargeVideoModePage({
     if (!isMobile || !fullscreen) return
     if (touchStartYRef.current === null || touchStartXRef.current === null) return
     if (event.touches.length > 1) {
-      touchStartYRef.current = null
-      touchStartXRef.current = null
-      isSwipingRef.current = false
+      pinchZoomDetectedRef.current = true
+      resetTouchGesture({ preservePinchZoom: true })
       return
     }
 
@@ -499,7 +508,7 @@ export default function LargeVideoModePage({
       isSwipingRef.current = true
       event.preventDefault()
     }
-  }, [fullscreen, isMobile])
+  }, [fullscreen, isMobile, resetTouchGesture])
 
   /**
    * 大视频模式手势结束处理。
@@ -509,18 +518,19 @@ export default function LargeVideoModePage({
   const handleTouchEnd = useCallback((event: ReactTouchEvent) => {
     if (!isMobile || !fullscreen) return
     if (event.touches.length > 0) {
-      touchStartYRef.current = null
-      touchStartXRef.current = null
-      isSwipingRef.current = false
+      resetTouchGesture()
+      return
+    }
+
+    if (pinchZoomDetectedRef.current) {
+      resetTouchGesture()
       return
     }
 
     const startY = touchStartYRef.current
     const isSwiping = isSwipingRef.current
     if (startY === null || !isSwiping) {
-      touchStartYRef.current = null
-      touchStartXRef.current = null
-      isSwipingRef.current = false
+      resetTouchGesture()
       return
     }
 
@@ -538,10 +548,12 @@ export default function LargeVideoModePage({
       }
     }
 
-    touchStartYRef.current = null
-    touchStartXRef.current = null
-    isSwipingRef.current = false
-  }, [fullscreen, isMobile, loadLargeVideoMedia, setSnackbarMessage, setSnackbarOpen, setSnackbarSeverity])
+    resetTouchGesture()
+  }, [fullscreen, isMobile, loadLargeVideoMedia, resetTouchGesture, setSnackbarMessage, setSnackbarOpen, setSnackbarSeverity])
+
+  const handleTouchCancel = useCallback(() => {
+    resetTouchGesture()
+  }, [resetTouchGesture])
 
   return (
     <>
@@ -560,6 +572,7 @@ export default function LargeVideoModePage({
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchCancel}
         forceRender
         mediaContent={
           <Box

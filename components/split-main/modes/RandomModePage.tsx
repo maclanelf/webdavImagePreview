@@ -244,7 +244,17 @@ export default function RandomModePage({
   const touchStartYRef = useRef<number | null>(null)
   const touchStartXRef = useRef<number | null>(null)
   const isSwipingRef = useRef(false)
+  const pinchZoomDetectedRef = useRef(false)
   const swipeThreshold = 50
+
+  const resetTouchGesture = useCallback((options?: { preservePinchZoom?: boolean }) => {
+    touchStartYRef.current = null
+    touchStartXRef.current = null
+    isSwipingRef.current = false
+    if (!options?.preservePinchZoom) {
+      pinchZoomDetectedRef.current = false
+    }
+  }, [])
 
   /**
    * 随机模式核心状态与行为入口。
@@ -442,9 +452,8 @@ export default function RandomModePage({
   const handleTouchStart = useCallback((event: React.TouchEvent) => {
     if (!isMobile || !fullscreen) return
     if (event.touches.length > 1) {
-      touchStartYRef.current = null
-      touchStartXRef.current = null
-      isSwipingRef.current = false
+      pinchZoomDetectedRef.current = true
+      resetTouchGesture({ preservePinchZoom: true })
       return
     }
 
@@ -452,7 +461,8 @@ export default function RandomModePage({
     touchStartYRef.current = touch.clientY
     touchStartXRef.current = touch.clientX
     isSwipingRef.current = false
-  }, [fullscreen, isMobile])
+    pinchZoomDetectedRef.current = false
+  }, [fullscreen, isMobile, resetTouchGesture])
 
   /**
    * 随机模式手势移动处理。
@@ -461,9 +471,8 @@ export default function RandomModePage({
     if (!isMobile || !fullscreen) return
     if (touchStartYRef.current === null || touchStartXRef.current === null) return
     if (event.touches.length > 1) {
-      touchStartYRef.current = null
-      touchStartXRef.current = null
-      isSwipingRef.current = false
+      pinchZoomDetectedRef.current = true
+      resetTouchGesture({ preservePinchZoom: true })
       return
     }
 
@@ -475,7 +484,7 @@ export default function RandomModePage({
       isSwipingRef.current = true
       event.preventDefault()
     }
-  }, [fullscreen, isMobile])
+  }, [fullscreen, isMobile, resetTouchGesture])
 
   /**
    * 随机模式手势结束处理。
@@ -485,18 +494,19 @@ export default function RandomModePage({
   const handleTouchEnd = useCallback((event: React.TouchEvent) => {
     if (!isMobile || !fullscreen) return
     if (event.touches.length > 0) {
-      touchStartYRef.current = null
-      touchStartXRef.current = null
-      isSwipingRef.current = false
+      resetTouchGesture()
+      return
+    }
+
+    if (pinchZoomDetectedRef.current) {
+      resetTouchGesture()
       return
     }
 
     const startY = touchStartYRef.current
     const isSwiping = isSwipingRef.current
     if (startY === null || !isSwiping) {
-      touchStartYRef.current = null
-      touchStartXRef.current = null
-      isSwipingRef.current = false
+      resetTouchGesture()
       return
     }
 
@@ -532,9 +542,7 @@ export default function RandomModePage({
       }
     }
 
-    touchStartYRef.current = null
-    touchStartXRef.current = null
-    isSwipingRef.current = false
+    resetTouchGesture()
   }, [
     fullscreen,
     isMobile,
@@ -544,10 +552,15 @@ export default function RandomModePage({
     mobileVideoRef,
     randomHistory.length,
     randomHistoryIndex,
+    resetTouchGesture,
     setSnackbarMessage,
     setSnackbarOpen,
     setSnackbarSeverity,
   ])
+
+  const handleTouchCancel = useCallback(() => {
+    resetTouchGesture()
+  }, [resetTouchGesture])
 
   /**
    * 随机模式预览主体。
@@ -571,6 +584,7 @@ export default function RandomModePage({
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchCancel}
         mediaContent={
           <>
             {/* 图片预览：随机模式最基础的预览形态。 */}
