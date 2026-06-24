@@ -24,72 +24,13 @@ import {
   CircularProgress
 } from '@mui/material'
 import { Star, StarBorder } from '@mui/icons-material'
-
-type RatingDialogOptionCache = {
-  evaluations: string[] | null
-  categories: string[] | null
-  loadingPromise: Promise<{ evaluations: string[]; categories: string[] }> | null
-}
-
-const ratingDialogOptionCache: RatingDialogOptionCache = {
-  evaluations: null,
-  categories: null,
-  loadingPromise: null,
-}
-
-function updateRatingDialogOptionCache(data: { evaluations?: string[]; categories?: string[] }) {
-  if (data.evaluations) {
-    ratingDialogOptionCache.evaluations = [...data.evaluations]
-  }
-
-  if (data.categories) {
-    ratingDialogOptionCache.categories = [...data.categories]
-  }
-}
-
-async function loadRatingDialogOptions(): Promise<{ evaluations: string[]; categories: string[] }> {
-  if (ratingDialogOptionCache.evaluations && ratingDialogOptionCache.categories) {
-    return {
-      evaluations: [...ratingDialogOptionCache.evaluations],
-      categories: [...ratingDialogOptionCache.categories],
-    }
-  }
-
-  if (ratingDialogOptionCache.loadingPromise) {
-    return ratingDialogOptionCache.loadingPromise
-  }
-
-  ratingDialogOptionCache.loadingPromise = (async () => {
-    const [evaluationsRes, categoriesRes] = await Promise.all([
-      fetch('/api/ratings/evaluations'),
-      fetch('/api/ratings/categories'),
-    ])
-
-    const evaluationsData = await evaluationsRes.json()
-    const categoriesData = await categoriesRes.json()
-
-    const evaluations = evaluationsData.evaluations
-      ? evaluationsData.evaluations.map((e: any) => e.label)
-      : []
-
-    const categories = categoriesData.categories
-      ? categoriesData.categories.map((c: any) => c.name)
-      : []
-
-    updateRatingDialogOptionCache({ evaluations, categories })
-
-    return {
-      evaluations,
-      categories,
-    }
-  })()
-
-  try {
-    return await ratingDialogOptionCache.loadingPromise
-  } finally {
-    ratingDialogOptionCache.loadingPromise = null
-  }
-}
+import {
+  addCachedCategory,
+  addCachedEvaluation,
+  getCachedRatingOptions,
+  hasCachedRatingOptions,
+  loadRatingOptions,
+} from '@/lib/ratingOptionsCache'
 
 interface RatingData {
   rating?: number
@@ -141,15 +82,13 @@ export default function RatingDialog({
   // 加载可用的评价标签和分类
   useEffect(() => {
     if (open) {
-      if (ratingDialogOptionCache.evaluations) {
-        setAvailableEvaluations(ratingDialogOptionCache.evaluations)
-      }
+      const cachedOptions = getCachedRatingOptions()
+      setAvailableEvaluations(cachedOptions.evaluations)
+      setAvailableCategories(cachedOptions.categories)
 
-      if (ratingDialogOptionCache.categories) {
-        setAvailableCategories(ratingDialogOptionCache.categories)
+      if (!hasCachedRatingOptions()) {
+        void loadAvailableData()
       }
-
-      void loadAvailableData()
     }
   }, [open])
 
@@ -194,7 +133,7 @@ export default function RatingDialog({
 
   const loadAvailableData = async () => {
     try {
-      const { evaluations, categories } = await loadRatingDialogOptions()
+      const { evaluations, categories } = await loadRatingOptions()
       setAvailableEvaluations(evaluations)
       setAvailableCategories(categories)
     } catch (error) {
@@ -231,16 +170,18 @@ export default function RatingDialog({
   const handleAddEvaluation = async (newEvaluation: string) => {
     if (newEvaluation && !availableEvaluations.includes(newEvaluation)) {
       try {
-        await fetch('/api/ratings/evaluations', {
+        const response = await fetch('/api/ratings/evaluations', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ label: newEvaluation })
         })
-        setAvailableEvaluations(prev => {
-          const next = [...prev, newEvaluation]
-          updateRatingDialogOptionCache({ evaluations: next })
-          return next
-        })
+
+        if (!response.ok) {
+          console.error('添加评价标签失败:', await response.text())
+          return
+        }
+
+        setAvailableEvaluations(addCachedEvaluation(newEvaluation))
       } catch (error) {
         console.error('添加评价标签失败:', error)
       }
@@ -250,16 +191,18 @@ export default function RatingDialog({
   const handleAddCategory = async (newCategory: string) => {
     if (newCategory && !availableCategories.includes(newCategory)) {
       try {
-        await fetch('/api/ratings/categories', {
+        const response = await fetch('/api/ratings/categories', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: newCategory })
         })
-        setAvailableCategories(prev => {
-          const next = [...prev, newCategory]
-          updateRatingDialogOptionCache({ categories: next })
-          return next
-        })
+
+        if (!response.ok) {
+          console.error('添加分类失败:', await response.text())
+          return
+        }
+
+        setAvailableCategories(addCachedCategory(newCategory))
       } catch (error) {
         console.error('添加分类失败:', error)
       }

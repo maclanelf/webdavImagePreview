@@ -3,6 +3,7 @@
 import { useEffect, type MutableRefObject } from 'react'
 
 import { getErudaEnabled, initEruda } from '@/lib/erudaInit'
+import { loadRatingOptions } from '@/lib/ratingOptionsCache'
 import type {
   AdvancedFilters,
   ViewMode,
@@ -75,20 +76,9 @@ export function useSplitMainBootstrap({
   useEffect(() => {
     const loadAvailableFilters = async () => {
       try {
-        const [evalRes, catRes] = await Promise.all([
-          fetch('/api/ratings/evaluations'),
-          fetch('/api/ratings/categories'),
-        ])
-
-        if (evalRes.ok) {
-          const evalData = await evalRes.json()
-          setAvailableEvaluations(evalData.evaluations?.map((item: any) => item.label) || [])
-        }
-
-        if (catRes.ok) {
-          const catData = await catRes.json()
-          setAvailableCategories(catData.categories?.map((item: any) => item.name) || [])
-        }
+        const { evaluations, categories } = await loadRatingOptions()
+        setAvailableEvaluations(evaluations)
+        setAvailableCategories(categories)
       } catch (loadFiltersError) {
         console.error('加载评价标签和分类失败:', loadFiltersError)
       }
