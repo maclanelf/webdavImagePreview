@@ -348,47 +348,30 @@ async function queryFirstMediaByGroupPaths(options: {
 
   const rows = await queryMySqlRows<Array<any>>(`
     SELECT
-      ranked_media.filePath,
-      ranked_media.fileName,
-      ranked_media.fileType,
-      ranked_media.groupPath,
-      ranked_media.lastmod,
-      ranked_media.fileSize,
-      ranked_media.rating,
-      ranked_media.recommendationReason,
-      ranked_media.customEvaluation,
-      ranked_media.category,
-      ranked_media.isViewed,
-      ranked_media.creatorId
-    FROM (
-      SELECT
-        sf.filename AS filePath,
-        sf.basename AS fileName,
-        sf.file_type AS fileType,
-        sf.parent_path AS groupPath,
-        sf.lastmod,
-        sf.file_size AS fileSize,
-        mr.rating,
-        mr.recommendation_reason AS recommendationReason,
-        mr.custom_evaluation AS customEvaluation,
-        mr.category,
-        COALESCE(mr.is_viewed, sf.is_viewed, 0) AS isViewed,
-        COALESCE(sfc.creator_id, ?) AS creatorId,
-        ROW_NUMBER() OVER (
-          PARTITION BY sf.parent_path
-          ORDER BY COALESCE(mr.rating, 0) DESC, sf.basename ASC, sf.id ASC
-        ) AS row_number
-      FROM scan_files sf
-      LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
-      LEFT JOIN media_ratings mr ON mr.file_path = sf.filename
-      WHERE ${whereParts.join(' AND ')}
-    ) ranked_media
-    WHERE ranked_media.row_number = 1
+      sf.filename AS filePath,
+      sf.basename AS fileName,
+      sf.file_type AS fileType,
+      sf.parent_path AS groupPath,
+      sf.lastmod,
+      sf.file_size AS fileSize,
+      mr.rating,
+      mr.recommendation_reason AS recommendationReason,
+      mr.custom_evaluation AS customEvaluation,
+      mr.category,
+      COALESCE(mr.is_viewed, sf.is_viewed, 0) AS isViewed,
+      COALESCE(sfc.creator_id, ?) AS creatorId
+    FROM scan_files sf
+    LEFT JOIN scan_file_creators sfc ON sfc.file_path = sf.filename
+    LEFT JOIN media_ratings mr ON mr.file_path = sf.filename
+    WHERE ${whereParts.join(' AND ')}
+    ORDER BY sf.parent_path ASC, COALESCE(mr.rating, 0) DESC, sf.basename ASC, sf.id ASC
   `, [creatorId, ...params])
 
   const mediaMap = new Map<string, any>()
   rows.forEach((row) => {
-    mediaMap.set(row.groupPath, mapMediaRow(row, creatorId, defaultConfig))
+    if (!mediaMap.has(row.groupPath)) {
+      mediaMap.set(row.groupPath, mapMediaRow(row, creatorId, defaultConfig))
+    }
   })
 
   return mediaMap
