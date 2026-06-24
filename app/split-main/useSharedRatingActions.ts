@@ -22,7 +22,6 @@ interface UseSharedRatingActionsOptions {
   currentRating: MediaRating | GroupRating | null
   ratingType: 'media' | 'group'
   viewedFilter: ViewedFilter
-  optimisticUpdateEnabled: boolean
   autoMarkTimer: ReturnType<typeof setTimeout> | null
   setAutoMarkTimer: (timer: ReturnType<typeof setTimeout> | null) => void
   setCurrentRating: (rating: MediaRating | GroupRating | null) => void
@@ -75,7 +74,6 @@ export function useSharedRatingActions({
   currentRating,
   ratingType,
   viewedFilter,
-  optimisticUpdateEnabled,
   autoMarkTimer,
   setAutoMarkTimer,
   setCurrentRating,
@@ -374,7 +372,7 @@ export function useSharedRatingActions({
     const targetFile = effectiveRatingType === 'media' ? (file || currentFile) : null
 
     try {
-      if (optimistic && optimisticUpdateEnabled) {
+      if (optimistic) {
         if (effectiveRatingType === 'group') {
           await enqueueGroupRating(data as GroupRating)
           return
@@ -422,8 +420,7 @@ export function useSharedRatingActions({
 
       if (targetFile) {
         localRatingQueue.cancelMediaRecord(targetFile.filename)
-        const apiUrl = optimistic && optimisticUpdateEnabled ? '/api/ratings/optimistic' : '/api/ratings/media'
-        const response = await fetch(apiUrl, {
+        const response = await fetch('/api/ratings/media', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -457,7 +454,7 @@ export function useSharedRatingActions({
     } catch (saveRatingError: any) {
       throw new Error(saveRatingError.message)
     }
-  }, [currentFile, currentGroup, enqueueGroupRating, enqueueMediaRating, optimisticUpdateEnabled, patchGroupRatingSnapshot, patchMediaRatingSnapshot, ratingType, setCurrentRating])
+  }, [currentFile, currentGroup, enqueueGroupRating, enqueueMediaRating, patchGroupRatingSnapshot, patchMediaRatingSnapshot, ratingType, setCurrentRating])
 
   const saveRatingManual = useCallback(async (data: MediaRating | GroupRating, file?: MediaFile) => {
     await saveRating(data, file, true)

@@ -20,7 +20,6 @@ interface UseSplitMainBootstrapOptions {
   setViewedFilter: (filter: 'all' | 'viewed' | 'unviewed') => void
   setViewMode: (mode: ViewMode) => void
   setPreloadRandomness: (value: number) => void
-  setOptimisticUpdateEnabled: (enabled: boolean) => void
   setHighlightContinuousPlayEnabled: (enabled: boolean) => void
   setAvailableEvaluations: (values: string[]) => void
   setAvailableCategories: (values: string[]) => void
@@ -53,7 +52,6 @@ export function useSplitMainBootstrap({
   setViewedFilter,
   setViewMode,
   setPreloadRandomness,
-  setOptimisticUpdateEnabled,
   setHighlightContinuousPlayEnabled,
   setAvailableEvaluations,
   setAvailableCategories,
@@ -205,11 +203,6 @@ export function useSplitMainBootstrap({
       }
     }
 
-    const savedOptimistic = localStorage.getItem('optimistic_update_enabled')
-    if (savedOptimistic !== null) {
-      setOptimisticUpdateEnabled(savedOptimistic === 'true')
-    }
-
     const savedContinuousPlay = localStorage.getItem('highlight_continuous_play_enabled')
     if (savedContinuousPlay !== null) {
       setHighlightContinuousPlayEnabled(savedContinuousPlay === 'true')
@@ -223,7 +216,6 @@ export function useSplitMainBootstrap({
     setHighlightContinuousPlayEnabled,
     setLoading,
     setMediaFilter,
-    setOptimisticUpdateEnabled,
     setPreloadRandomness,
     setStats,
     setViewMode,

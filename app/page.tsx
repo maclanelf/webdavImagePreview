@@ -1,4 +1,4 @@
-﻿﻿'use client'
+﻿'use client'
 
 import {
   useState,
@@ -124,7 +124,6 @@ export default function HomePage() {
   const [fullscreen, setFullscreen] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('random')
   const [preloadStatus, setPreloadStatus] = useState<{ cacheSize: number; maxCacheSize: number } | null>(null)
-  const [optimisticUpdateEnabled, setOptimisticUpdateEnabled] = useState(true)
   const [erudaEnabled, setErudaEnabledState] = useState(false)
   const [cachePreloadProgress, setCachePreloadProgress] = useState<{ current: number; total: number } | null>(null)
   const [preloadInsufficient, setPreloadInsufficient] = useState(false)
@@ -286,7 +285,6 @@ export default function HomePage() {
     currentRating,
     ratingType,
     viewedFilter,
-    optimisticUpdateEnabled,
     autoMarkTimer,
     setAutoMarkTimer,
     setCurrentRating,
@@ -449,11 +447,6 @@ export default function HomePage() {
 
     rerunModePreload()
   }, [rerunModePreload, resetCurrentPreviewState, viewMode])
-
-  const handleOptimisticUpdateEnabledChange = useCallback((enabled: boolean) => {
-    setOptimisticUpdateEnabled(enabled)
-    localStorage.setItem('optimistic_update_enabled', enabled.toString())
-  }, [])
 
   const handleErudaEnabledChange = useCallback((enabled: boolean) => {
     setErudaEnabledState(enabled)
@@ -691,7 +684,6 @@ export default function HomePage() {
     setViewedFilter,
     setViewMode,
     setPreloadRandomness,
-    setOptimisticUpdateEnabled,
     setHighlightContinuousPlayEnabled,
     setAvailableEvaluations,
     setAvailableCategories,
@@ -1191,8 +1183,6 @@ export default function HomePage() {
         currentGroupIndex={currentGroupIndex}
         currentFile={currentFile}
         onOpenRatingDialog={openRatingDialog}
-        optimisticUpdateEnabled={optimisticUpdateEnabled}
-        onOptimisticUpdateEnabledChange={handleOptimisticUpdateEnabledChange}
         erudaEnabled={erudaEnabled}
         onErudaEnabledChange={handleErudaEnabledChange}
         preloadRandomness={preloadRandomness}

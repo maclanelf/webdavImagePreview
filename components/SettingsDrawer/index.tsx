@@ -21,8 +21,6 @@ interface SettingsDrawerProps {
   currentFile: MediaFile | null
   // 评分相关
   onOpenRatingDialog: (type: 'media' | 'group') => void
-  optimisticUpdateEnabled: boolean
-  onOptimisticUpdateEnabledChange: (enabled: boolean) => void
   erudaEnabled: boolean
   onErudaEnabledChange: (enabled: boolean) => void
   preloadRandomness: number
@@ -62,8 +60,6 @@ export default function SettingsDrawer({
   currentGroupIndex,
   currentFile,
   onOpenRatingDialog,
-  optimisticUpdateEnabled,
-  onOptimisticUpdateEnabledChange,
   erudaEnabled,
   onErudaEnabledChange,
   preloadRandomness,
@@ -136,8 +132,6 @@ export default function SettingsDrawer({
 
         {/* 预加载设置 */}
         <PreloadSection
-          optimisticUpdateEnabled={optimisticUpdateEnabled}
-          onOptimisticUpdateEnabledChange={onOptimisticUpdateEnabledChange}
           erudaEnabled={erudaEnabled}
           onErudaEnabledChange={onErudaEnabledChange}
           preloadRandomness={preloadRandomness}

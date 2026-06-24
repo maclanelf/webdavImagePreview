@@ -2,8 +2,6 @@ import { Box, Typography, Button, Stack, Paper, Slider } from '@mui/material'
 import { Speed as SpeedIcon, Download as DownloadIcon, Refresh as RefreshIcon } from '@mui/icons-material'
 
 interface PreloadSectionProps {
-  optimisticUpdateEnabled: boolean
-  onOptimisticUpdateEnabledChange: (enabled: boolean) => void
   erudaEnabled: boolean
   onErudaEnabledChange: (enabled: boolean) => void
   preloadRandomness: number
@@ -16,8 +14,6 @@ interface PreloadSectionProps {
 }
 
 export default function PreloadSection({
-  optimisticUpdateEnabled,
-  onOptimisticUpdateEnabledChange,
   erudaEnabled,
   onErudaEnabledChange,
   preloadRandomness,
@@ -49,23 +45,6 @@ export default function PreloadSection({
             当前项目默认始终启用预加载，随机模式与图组模式均依赖该能力。
           </Typography>
         </Paper>
-
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <Box>
-            <Typography variant="body2">乐观更新</Typography>
-            <Typography variant="caption" color="text.secondary" display="block">
-              评分立即显示，后台保存
-            </Typography>
-          </Box>
-          <Button
-            size="small"
-            variant={optimisticUpdateEnabled ? 'contained' : 'outlined'}
-            color="primary"
-            onClick={() => onOptimisticUpdateEnabledChange(!optimisticUpdateEnabled)}
-          >
-            {optimisticUpdateEnabled ? '已启用' : '已禁用'}
-          </Button>
-        </Box>
 
         {/* Eruda 调试工具开关 */}
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
