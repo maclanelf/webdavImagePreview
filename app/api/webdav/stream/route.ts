@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { buildFileUrl, normalizeFilePath, type SourceType } from '@/lib/urlBuilder'
 
-const UPSTREAM_FETCH_TIMEOUT_MS = 30_000
+const UPSTREAM_FETCH_TIMEOUT_MS = 15000
 
 function isExpectedAbortError(error: unknown): boolean {
   const name = error instanceof Error ? error.name : ''
