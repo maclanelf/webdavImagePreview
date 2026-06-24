@@ -311,8 +311,11 @@ export function useSplitMainPreload({
         return
       }
 
-      setPreloadInsufficient(false)
-      setActualFoundCount(0)
+      const actualFoundCount = Math.max(0, Number(result.actualCount) || 0)
+      const hasInsufficientMatches = actualFoundCount < preloadCount
+
+      setPreloadInsufficient(hasInsufficientMatches)
+      setActualFoundCount(hasInsufficientMatches ? actualFoundCount : 0)
 
       if (!result.hasData) {
         notify(result.message || '数据尚未迁移，请先执行迁移', 'warning')
@@ -335,12 +338,11 @@ export function useSplitMainPreload({
       setPreloadStatus(cacheStatus)
       setCachePreloadProgress({ current: cacheStatus.cacheSize, total: cacheStatus.maxCacheSize || preloadCount })
 
-      const clientInsufficient = cacheStatus.cacheSize < preloadCount
-      setPreloadInsufficient(clientInsufficient)
-      setActualFoundCount(cacheStatus.cacheSize)
+      setPreloadInsufficient(hasInsufficientMatches)
+      setActualFoundCount(hasInsufficientMatches ? actualFoundCount : 0)
 
-      if (clientInsufficient) {
-        notify(`仅找到 ${cacheStatus.cacheSize} 个可预加载文件，未达到预加载目标 ${preloadCount} 个`, 'warning')
+      if (hasInsufficientMatches) {
+        notify(`仅找到 ${actualFoundCount} 个符合条件的文件，未达到预加载目标 ${preloadCount} 个`, 'warning')
       }
     } catch (randomPreloadError) {
       console.warn('随机模式预加载失败:', randomPreloadError)

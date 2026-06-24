@@ -970,10 +970,13 @@ export function useRandomMode({
         return
       }
 
-      setPreloadInsufficient(false)
-      setActualFoundCount(0)
+      const actualFoundCount = Math.max(0, Number(result.actualCount) || 0)
+      const hasInsufficientMatches = actualFoundCount < preloadCount
 
-      console.log('[重新开始] API 返回，实际找到:', result.actualCount, '个文件')
+      setPreloadInsufficient(hasInsufficientMatches)
+      setActualFoundCount(hasInsufficientMatches ? actualFoundCount : 0)
+
+      console.log('[重新开始] API 返回，实际找到:', actualFoundCount, '个文件')
       let latestPoolStatus = result.poolStatus
 
       const prewarmData = await requestRandomFiles({
@@ -994,10 +997,8 @@ export function useRandomMode({
 
       updatePoolStatus(latestPoolStatus, preloadCount)
 
-      const clientCacheStatus = databasePreloadManager.getCacheStatus()
-      const clientInsufficient = clientCacheStatus.cacheSize < preloadCount
-      setPreloadInsufficient(clientInsufficient)
-      setActualFoundCount(clientCacheStatus.cacheSize)
+      setPreloadInsufficient(hasInsufficientMatches)
+      setActualFoundCount(hasInsufficientMatches ? actualFoundCount : 0)
 
       if (databasePreloadManager.getCachedFilepaths().length > 0 || (latestPoolStatus?.cacheSize || 0) > 0) {
         await loadRandomFile()
