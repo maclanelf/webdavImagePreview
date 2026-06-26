@@ -33,8 +33,8 @@ import {
 } from '@mui/icons-material'
 import { useRouter } from 'next/navigation'
 
-// 从日志中提取的测试URL（原始流）
-const DEFAULT_TEST_URL = '/api/webdav/instant-stream?url=http%3A%2F%2F192.168.133.131%3A19798%2Fdav&username=1341511873%40qq.com&password=ELF101711149&filepath=%2F115open%2F115%2F700%2B%E7%BD%91%E7%BA%A2%E5%A4%A7%E5%90%88%E9%9B%86%EF%BD%9E%EF%BD%9E%E5%BE%AE%E5%AF%86%E5%9C%88%EF%BC%8F%E8%A7%85%E5%9C%88%EF%BC%8F%E9%93%81%E7%B2%89%E7%A9%BA%E9%97%B4%E7%AD%89%E6%9C%BA%E6%9E%84%2F401-500%2F490%2F001%2F001%2F001%20%E9%87%91%E7%86%99%E5%AA%9B%20-%20%E4%BC%9A%E5%91%98%E4%B8%93%E5%B1%9E%20%E5%A4%A7%E9%95%BF%E8%85%BF%E7%B4%A7%E8%BA%AB%E8%A3%A4%20%5B15V%20757.6%20MB%5D%2F1%20%2815%29.avi'
+const EMPTY_TEST_URL = ''
+const DEFAULT_WEBDAV_SAMPLE_FILEPATH = '/115open/115/700+网红大合集～～微密圈／觅圈／铁粉空间等机构/401-500/490/001/001/001 金熙媛 - 会员专属 大长腿紧身裤 [15V 757.6 MB]/1 (15).avi'
 
 // OpenList 直链测试 URL 示例
 const DEFAULT_DIRECT_LINK_URL = '/d/115open/115/test/video.mp4'
@@ -76,7 +76,7 @@ const ERROR_CODE_MAP: Record<number, string> = {
 export default function StreamTestPage() {
   const router = useRouter()
   const videoRef = useRef<HTMLVideoElement>(null)
-  const [testUrl, setTestUrl] = useState(DEFAULT_TEST_URL)
+  const [testUrl, setTestUrl] = useState(EMPTY_TEST_URL)
   const [testMode, setTestMode] = useState<'webdav' | 'direct'>('webdav') // 测试模式：webdav 或 direct
   const [useTranscode, setUseTranscode] = useState(false)
   const [transcodeFormat, setTranscodeFormat] = useState<'mp4' | 'webm'>('mp4')
@@ -88,6 +88,7 @@ export default function StreamTestPage() {
   const [loading, setLoading] = useState(false)
   const [ffmpegStatus, setFfmpegStatus] = useState<any>(null)
   const [webdavConfig, setWebdavConfig] = useState<any>(null)
+  const [defaultWebdavTestUrl, setDefaultWebdavTestUrl] = useState(EMPTY_TEST_URL)
   const [mounted, setMounted] = useState(false)
 
   // 避免 hydration 不匹配
@@ -116,7 +117,12 @@ export default function StreamTestPage() {
       .then(res => res.json())
       .then(data => {
         if (data.url && data.username) {
+          const fallbackWebdavUrl = buildWebdavStreamUrlFromConfig(data, DEFAULT_WEBDAV_SAMPLE_FILEPATH)
           setWebdavConfig(data)
+          if (fallbackWebdavUrl) {
+            setDefaultWebdavTestUrl(fallbackWebdavUrl)
+            setTestUrl(currentUrl => currentUrl.trim() ? currentUrl : fallbackWebdavUrl)
+          }
           console.log('WebDAV 配置加载成功:', data)
         }
       })
@@ -124,6 +130,80 @@ export default function StreamTestPage() {
         console.error('加载 WebDAV 配置失败:', err)
       })
   }, [])
+
+  useEffect(() => {
+    if (!webdavConfig?.url || !webdavConfig?.username || !webdavConfig?.mediaPaths) {
+      return
+    }
+
+    let cancelled = false
+
+    const loadDefaultTestUrl = async () => {
+      try {
+        const response = await fetch('/api/scan-files/random', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            webdavUrl: webdavConfig.url,
+            webdavUsername: webdavConfig.username,
+            paths: webdavConfig.mediaPaths,
+            count: 1,
+            fileType: 'video',
+          }),
+        })
+
+        if (!response.ok) {
+          throw new Error('加载默认测试文件失败')
+        }
+
+        const data = await response.json()
+        const defaultFilepath = data?.files?.[0]?.filepath || data?.files?.[0]?.filename
+        if (!defaultFilepath) {
+          return
+        }
+
+        const nextDefaultUrl = buildWebdavStreamUrlFromConfig(webdavConfig, defaultFilepath)
+        if (!nextDefaultUrl || cancelled) {
+          return
+        }
+
+        setDefaultWebdavTestUrl(nextDefaultUrl)
+        setTestUrl(currentUrl => {
+          if (testMode !== 'webdav') {
+            return currentUrl
+          }
+
+          return currentUrl.trim() ? currentUrl : nextDefaultUrl
+        })
+      } catch (error: any) {
+        if (!cancelled) {
+          console.error('加载默认测试 URL 失败:', error)
+        }
+      }
+    }
+
+    void loadDefaultTestUrl()
+
+    return () => {
+      cancelled = true
+    }
+  }, [testMode, webdavConfig])
+
+  const buildWebdavStreamUrlFromConfig = (config: any, filepath: string): string | null => {
+    if (!config?.url || !config?.username || !filepath) {
+      return null
+    }
+
+    const params = new URLSearchParams({
+      url: config.url,
+      username: config.username,
+      password: config.password || '',
+      filepath,
+      sourceType: config.sourceType || 'clouddrive2',
+    })
+
+    return `/api/webdav/instant-stream?${params.toString().replace(/\+/g, '%20')}`
+  }
 
   // 规范化测试 URL：确保 filepath 参数被正确编码
   // 参考主页面的 buildVideoStreamUrl 函数
@@ -226,16 +306,10 @@ export default function StreamTestPage() {
     }
     
     try {
-      const params = new URLSearchParams({
-        url: webdavConfig.url,
-        username: webdavConfig.username,
-        password: webdavConfig.password,
-        filepath: filepath,
-        sourceType: webdavConfig.sourceType || 'clouddrive2',
-      })
-      
-      // 将 + 替换为 %20，确保路径中的 + 号不会被解码为空格
-      const webdavUrl = `/api/webdav/instant-stream?${params.toString().replace(/\+/g, '%20')}`
+      const webdavUrl = buildWebdavStreamUrlFromConfig(webdavConfig, filepath)
+      if (!webdavUrl) {
+        throw new Error('无法生成 WebDAV URL')
+      }
       
       addLog(`✅ 已转换为 WebDAV URL`)
       addLog(`📝 文件路径: ${filepath}`)
@@ -598,7 +672,7 @@ export default function StreamTestPage() {
                       if (v === 'direct') {
                         setTestUrl(DEFAULT_DIRECT_LINK_URL)
                       } else {
-                        setTestUrl(DEFAULT_TEST_URL)
+                        setTestUrl(currentUrl => defaultWebdavTestUrl || currentUrl)
                       }
                     }
                   }}

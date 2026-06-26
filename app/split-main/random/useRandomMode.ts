@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject, type SyntheticEvent } from 'react'
 
 import { scheduleStreamRequest } from '@/lib/clientRequestScheduler'
+import { fetchWithTimeout } from '@/lib/clientFetch'
 import { clearRandomPoolSession, initializeRandomPoolSession } from '@/lib/clientRandomPool'
 import databasePreloadManager from '@/lib/databasePreloadManager'
 import { getRandomPoolSessionId, peekRandomPoolSessionId, renewRandomPoolSessionId } from '@/lib/randomPoolSession'
@@ -644,7 +645,9 @@ export function useRandomMode({
         console.log(`使用预加载文件: ${fileToLoad.basename}`)
       } else {
         console.log('正在使用正常加载...')
-        const streamResponse = await scheduleStreamRequest(() => fetch('/api/webdav/stream', {
+        const streamResponse = await scheduleStreamRequest(() => fetchWithTimeout('/api/webdav/stream', {
+          timeoutMs: 15_000,
+          timeoutMessage: '获取文件流超时（15s）',
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

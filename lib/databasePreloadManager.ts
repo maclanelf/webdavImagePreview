@@ -81,7 +81,7 @@ class DatabasePreloadManager {
 
   // 单个预加载文件请求的总超时时间。
   // 目的不是限制正常下载速度，而是避免 /api/webdav/stream 长时间无响应时把智能预加载永久卡死。
-  private preloadRequestTimeoutMs = 45_000
+  private preloadRequestTimeoutMs = 15_000
 
   // 取消预加载控制
   private abortController: AbortController | null = null

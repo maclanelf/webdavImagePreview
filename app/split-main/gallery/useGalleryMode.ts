@@ -1,5 +1,6 @@
 import { useCallback, useState, type MutableRefObject } from 'react'
 
+import { fetchWithTimeout } from '@/lib/clientFetch'
 import databasePreloadManager from '@/lib/databasePreloadManager'
 import { scheduleStreamRequest } from '@/lib/clientRequestScheduler'
 import type { AdvancedFilters, CreatorSummary, MediaFile, MediaType, ViewedFilter, WebDAVConfig } from '@/types'
@@ -145,7 +146,9 @@ export function useGalleryMode({
           console.log(`[DEBUG] 图组模式预加载完成，使用缓存文件: ${file.basename}`)
         } else {
           console.log(`[DEBUG] 图组模式预加载等待超时，正常加载: ${file.basename}`)
-          const streamResponse = await scheduleStreamRequest(() => fetch('/api/webdav/stream', {
+          const streamResponse = await scheduleStreamRequest(() => fetchWithTimeout('/api/webdav/stream', {
+            timeoutMs: 15_000,
+            timeoutMessage: '获取文件流超时（15s）',
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -162,7 +165,9 @@ export function useGalleryMode({
         }
       } else {
         console.log(`[DEBUG] 图组模式文件不在预加载缓存中，正常加载: ${file.basename}`)
-        const streamResponse = await scheduleStreamRequest(() => fetch('/api/webdav/stream', {
+        const streamResponse = await scheduleStreamRequest(() => fetchWithTimeout('/api/webdav/stream', {
+          timeoutMs: 15_000,
+          timeoutMessage: '获取文件流超时（15s）',
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
