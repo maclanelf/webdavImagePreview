@@ -23,6 +23,8 @@ import { Star, StarBorder, SwapHoriz } from '@mui/icons-material'
 import { UNKNOWN_CREATOR_ID } from '@/lib/constants'
 import CreatorMergeDialog from './CreatorMergeDialog'
 
+import type { CreatorSummary } from '@/types'
+
 interface Creator {
   id: number
   primaryName: string
@@ -38,7 +40,11 @@ interface CreatorDialogProps {
   onClose: () => void
   filePath: string
   existingCreator?: Creator | null
-  onSuccess?: () => void
+  /**
+   * 普通保存时可能没有参数；
+   * 合并博主成功时会带回“目标博主 + 被合并掉的旧 ID 列表”。
+   */
+  onSuccess?: (result?: { creator: CreatorSummary | null; sourceIds: number[] }) => void
   onMarkUnknown?: () => void
   container?: Element | null
   initialMode?: 'view' | 'create' | 'edit'
@@ -675,10 +681,11 @@ export default function CreatorDialog({
         sourceCreator={existingCreator || null}
         container={container}
         onClose={() => setMergeDialogOpen(false)}
-        onSuccess={() => {
+        onSuccess={(result) => {
+          // 把合并结果原样透传给页面层，页面层再统一登记到会话映射。
           setMergeDialogOpen(false)
           onClose()
-          onSuccess?.()
+          onSuccess?.(result)
         }}
       />
       <Dialog

@@ -16,6 +16,8 @@ import {
   Typography
 } from '@mui/material'
 
+import type { CreatorSummary } from '@/types'
+
 interface Creator {
   id: number
   primaryName: string
@@ -26,7 +28,13 @@ interface CreatorMergeDialogProps {
   open: boolean
   sourceCreator: Creator | null
   onClose: () => void
-  onSuccess?: () => void
+  /**
+   * 返回合并结果给上层。
+   *
+   * `creator` 是合并后的目标博主，也就是最终保留的博主；
+   * `sourceIds` 是被合并掉的旧博主 ID 列表。
+   */
+  onSuccess?: (result: { creator: CreatorSummary | null; sourceIds: number[] }) => void
   container?: Element | null
 }
 
@@ -135,7 +143,12 @@ export default function CreatorMergeDialog({
       }
 
       onClose()
-      onSuccess?.()
+      // 注意：这里向上层返回的是“目标博主 + 被合并掉的旧 ID 列表”，
+      // 供页面层登记到会话映射里，而不是要求上层去逐个改缓存对象。
+      onSuccess?.({
+        creator: data.data?.creator || null,
+        sourceIds: Array.isArray(data.data?.sourceIds) ? data.data.sourceIds : [sourceCreator.id],
+      })
     } catch (err: any) {
       setError(err.message || '博主合并失败')
     } finally {

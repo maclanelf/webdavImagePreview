@@ -48,6 +48,7 @@ import GalleryModePage from '@/components/split-main/modes/GalleryModePage'
 import LargeVideoModePage from '@/components/split-main/modes/LargeVideoModePage'
 import RandomModePage from '@/components/split-main/modes/RandomModePage'
 import { clearRandomPoolSession } from '@/lib/clientRandomPool'
+import { clearMergedCreators, refreshMergedCreatorTarget, registerMergedCreators, resolveMergedCreator, resolveMergedMediaFile } from '@/lib/creatorMergeSession'
 import { buildGroupQueueKey, buildMediaQueueKey, localRatingQueue } from '@/lib/localRatingQueue'
 import databasePreloadManager from '@/lib/databasePreloadManager'
 import { setErudaEnabled } from '@/lib/erudaInit'
@@ -170,9 +171,12 @@ export default function HomePage() {
     viewMode: ViewMode
     advancedFilters: AdvancedFilters
   } | null>(null)
+  const creatorMergeSessionConfigKeyRef = useRef<string | null>(null)
   const randomModeCreatorMetadataPatchRef = useRef<(filePath: string, creator: CreatorSummary | null, creatorResolved: boolean) => void>(() => {})
   const randomModeRatingMetadataPatchRef = useRef<(filePath: string, rating: MediaFile['mediaRatingData']) => void>(() => {})
+  const randomModeCreatorSnapshotRefreshRef = useRef<() => void>(() => {})
   const galleryModeCreatorMetadataPatchRef = useRef<(filePath: string, creator: CreatorSummary | null, creatorResolved: boolean) => void>(() => {})
+  const galleryModeCreatorSnapshotRefreshRef = useRef<() => void>(() => {})
   const initialPreloadTriggeredRef = useRef(false)
   const viewModeRef = useRef<ViewMode>(viewMode)
   const hasAutoRatedRef = useRef(false)
@@ -263,6 +267,24 @@ export default function HomePage() {
     )))
 
     databasePreloadManager.patchGroupRatingMetadata(groupPath, rating)
+  }, [])
+
+  const refreshCreatorSnapshotsAcrossState = useCallback((updatedCreator: CreatorSummary | null, creatorResolved: boolean = true) => {
+    if (!updatedCreator?.id) {
+      return
+    }
+
+    refreshMergedCreatorTarget(updatedCreator, creatorResolved)
+
+    setCurrentFile((prev) => prev ? resolveMergedMediaFile(prev) : prev)
+    setCurrentGroup((prev) => prev.map(resolveMergedMediaFile))
+    randomModeCreatorSnapshotRefreshRef.current()
+    galleryModeCreatorSnapshotRefreshRef.current()
+    databasePreloadManager.refreshMergedCreatorSnapshots()
+
+    const resolvedCurrentCreator = resolveMergedCreator(updatedCreator, creatorResolved)
+    setCurrentCreator(resolvedCurrentCreator.creator)
+    setCreatorRefreshKey((prev) => prev + 1)
   }, [])
 
   const notify = useCallback((message: string, severity: SnackbarSeverity = 'info') => {
@@ -432,6 +454,7 @@ export default function HomePage() {
     databasePreloadManager.cancelAllPreloads()
     databasePreloadManager.clearCache()
     databasePreloadManager.clearNextGroupCache()
+    clearMergedCreators()
     setPreloadStatus(databasePreloadManager.getCacheStatus())
 
     if (newMode === 'gallery') {
@@ -459,6 +482,30 @@ export default function HomePage() {
     localStorage.setItem('preload_randomness', value.toString())
   }, [])
 
+  useEffect(() => {
+    if (!config) {
+      creatorMergeSessionConfigKeyRef.current = null
+      clearMergedCreators()
+      return
+    }
+
+    const nextConfigKey = JSON.stringify({
+      url: config.url,
+      username: config.username,
+      mediaPaths: config.mediaPaths,
+      sourceType: config.sourceType || 'clouddrive2',
+      directLinkUrl: config.directLinkUrl || '',
+      enableDirectLink: Boolean(config.enableDirectLink),
+    })
+
+    const previousConfigKey = creatorMergeSessionConfigKeyRef.current
+    creatorMergeSessionConfigKeyRef.current = nextConfigKey
+
+    if (previousConfigKey !== null && previousConfigKey !== nextConfigKey) {
+      clearMergedCreators()
+    }
+  }, [config])
+
   const handleClearCache = useCallback(() => {
     databasePreloadManager.cancelAllPreloads()
 
@@ -471,6 +518,7 @@ export default function HomePage() {
     databasePreloadManager.clearCache()
     databasePreloadManager.clearNextGroupCache()
     databasePreloadManager.clearGalleryRuntimeState()
+    clearMergedCreators()
     if (viewMode === 'random') {
       const preloadCount = config?.scanSettings?.preloadCount || 10
       setPreloadStatus({ cacheSize: 0, maxCacheSize: preloadCount })
@@ -1047,6 +1095,7 @@ export default function HomePage() {
             setSnackbarOpen={setSnackbarOpen}
             creatorMetadataPatchRef={randomModeCreatorMetadataPatchRef}
             ratingMetadataPatchRef={randomModeRatingMetadataPatchRef}
+            creatorSnapshotRefreshRef={randomModeCreatorSnapshotRefreshRef}
           />
         ) : viewMode === 'gallery' ? (
           <GalleryModePage
@@ -1114,6 +1163,7 @@ export default function HomePage() {
               setCurrentGroupIndex(index)
             }}
             creatorMetadataPatchRef={galleryModeCreatorMetadataPatchRef}
+            creatorSnapshotRefreshRef={galleryModeCreatorSnapshotRefreshRef}
           />
         ) : viewMode === 'large-video' ? (
           <LargeVideoModePage
@@ -1220,7 +1270,16 @@ export default function HomePage() {
           }
           setCreatorRefreshKey((prev) => prev + 1)
         }}
-        onSuccess={() => {
+        onSuccess={(result) => {
+          if (result?.creator && result.sourceIds.length > 0) {
+            // 这里登记的是“旧博主 ID -> 合并后的目标博主”。
+            // 例如 B 合并到 A，则 sourceIds=[B.id]，creator=A。
+            registerMergedCreators(result.sourceIds, result.creator, true)
+
+            refreshCreatorSnapshotsAcrossState(result.creator, true)
+            return
+          }
+
           if (currentFile) {
             setCurrentCreator(null)
             patchCreatorMetadataAcrossState(currentFile.filename, null, false)
@@ -1234,8 +1293,7 @@ export default function HomePage() {
         open={creatorDetailOpen}
         creator={currentCreator}
         onCreatorUpdated={(creator) => {
-          setCurrentCreator(creator)
-          setCreatorRefreshKey((prev) => prev + 1)
+          refreshCreatorSnapshotsAcrossState(creator, true)
         }}
         onError={(message) => notify(message, 'error')}
         onClose={() => {

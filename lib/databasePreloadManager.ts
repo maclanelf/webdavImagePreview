@@ -1,4 +1,5 @@
 import { scheduleStreamRequest } from '@/lib/clientRequestScheduler'
+import { resolveMergedCreator } from '@/lib/creatorMergeSession'
 import type { CreatorSummary, GroupRating, MediaRating } from '@/types'
 
 function getGroupPathFromFilepath(filepath: string): string {
@@ -928,6 +929,46 @@ class DatabasePreloadManager {
           }
         : file
     ))
+  }
+
+  refreshMergedCreatorSnapshots(): void {
+    this.cache.forEach((cached) => {
+      const resolved = resolveMergedCreator(cached.creator || null, Boolean(cached.creatorResolved))
+      cached.creator = resolved.creator
+      cached.creatorResolved = resolved.creatorResolved
+    })
+
+    this.nextGroupCache.forEach((cached) => {
+      const resolved = resolveMergedCreator(cached.creator || null, Boolean(cached.creatorResolved))
+      cached.creator = resolved.creator
+      cached.creatorResolved = resolved.creatorResolved
+    })
+
+    this.currentGroupFiles = this.currentGroupFiles.map((file) => {
+      const resolved = resolveMergedCreator(file.creator || null, Boolean(file.creatorResolved))
+      if (resolved.creator === file.creator && resolved.creatorResolved === Boolean(file.creatorResolved)) {
+        return file
+      }
+
+      return {
+        ...file,
+        creator: resolved.creator,
+        creatorResolved: resolved.creatorResolved,
+      }
+    })
+
+    this.nextGroupFiles = this.nextGroupFiles.map((file) => {
+      const resolved = resolveMergedCreator(file.creator || null, Boolean(file.creatorResolved))
+      if (resolved.creator === file.creator && resolved.creatorResolved === Boolean(file.creatorResolved)) {
+        return file
+      }
+
+      return {
+        ...file,
+        creator: resolved.creator,
+        creatorResolved: resolved.creatorResolved,
+      }
+    })
   }
 
   // 同步更新文件的媒体评分快照

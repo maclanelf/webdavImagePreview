@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject, type S
 import { scheduleStreamRequest } from '@/lib/clientRequestScheduler'
 import { fetchWithTimeout } from '@/lib/clientFetch'
 import { clearRandomPoolSession, initializeRandomPoolSession } from '@/lib/clientRandomPool'
+import { resolveMergedCreator, resolveMergedMediaFile } from '@/lib/creatorMergeSession'
 import databasePreloadManager from '@/lib/databasePreloadManager'
 import { getRandomPoolSessionId, peekRandomPoolSessionId, renewRandomPoolSessionId } from '@/lib/randomPoolSession'
 import type {
@@ -180,18 +181,29 @@ export function useRandomMode({
     })
   }, [buildCombinedPoolStatus, setCachePreloadProgress, setPreloadStatus])
 
-  const mapRandomApiFileToMediaFile = useCallback((dbFile: any): MediaFile => ({
-    id: Number.isFinite(Number(dbFile.id)) ? Number(dbFile.id) : undefined,
-    filename: dbFile.filename,
-    basename: dbFile.basename,
-    size: dbFile.file_size || dbFile.size || 0,
-    type: 'file',
-    lastmod: dbFile.lastmod || '',
-    mediaRatingData: dbFile.mediaRatingData ?? null,
-    groupRatingData: dbFile.groupRatingData ?? null,
-    creator: dbFile.creator || null,
-    creatorResolved: Boolean(dbFile.creatorResolved),
-  }), [])
+  /**
+   * 将随机接口/随机池返回的原始文件数据映射成页面使用的 MediaFile。
+   *
+   * 这里是随机模式最关键的“入口归一化”位置之一：
+   * 即使服务端随机池里还暂时带着旧博主数据，只要该旧博主在本会话里被合并过，
+   * 这里都会在进入前端状态前先把 creator 纠正成最新目标博主。
+   */
+  const mapRandomApiFileToMediaFile = useCallback((dbFile: any): MediaFile => {
+    const resolvedCreator = resolveMergedCreator(dbFile.creator || null, Boolean(dbFile.creatorResolved))
+
+    return {
+      id: Number.isFinite(Number(dbFile.id)) ? Number(dbFile.id) : undefined,
+      filename: dbFile.filename,
+      basename: dbFile.basename,
+      size: dbFile.file_size || dbFile.size || 0,
+      type: 'file',
+      lastmod: dbFile.lastmod || '',
+      mediaRatingData: dbFile.mediaRatingData ?? null,
+      groupRatingData: dbFile.groupRatingData ?? null,
+      creator: resolvedCreator.creator,
+      creatorResolved: resolvedCreator.creatorResolved,
+    }
+  }, [])
 
   const requestRandomFiles = useCallback(async ({
     count,
@@ -459,11 +471,13 @@ export function useRandomMode({
         return
       }
 
-      const normalizedFileToLoad = patchMediaFileCreatorMetadata(
+      // 历史回看优先用历史缓存里的 creator 快照，
+      // 然后再过一层会话合并映射，保证“旧缓存 + 新合并结果”也能显示正确。
+      const normalizedFileToLoad = resolveMergedMediaFile(patchMediaFileCreatorMetadata(
         fileToLoad,
         cachedData.creator,
         cachedData.creatorResolved,
-      )
+      ))
       const shouldEnterVideoFullscreen = handleMediaTypeChangeInFullscreenRef.current(normalizedFileToLoad)
 
       setCurrentFile(normalizedFileToLoad)
@@ -558,7 +572,9 @@ export function useRandomMode({
     if (cachedFilepath) {
       const cachedFile = databasePreloadManager.takePreloadedFile(cachedFilepath)
       if (cachedFile) {
-        fileToLoad = {
+        // 客户端预加载缓存里可能还是旧博主信息；
+        // 这里在真正装载前统一过一层会话映射即可，无需直接改缓存池内容。
+        fileToLoad = resolveMergedMediaFile({
           id: cachedFile.id,
           filename: cachedFile.filepath,
           basename: cachedFile.filepath.substring(cachedFile.filepath.lastIndexOf('/') + 1),
@@ -569,7 +585,7 @@ export function useRandomMode({
           groupRatingData: cachedFile.groupRatingData ?? null,
           creator: cachedFile.creator || null,
           creatorResolved: Boolean(cachedFile.creatorResolved),
-        }
+        })
         preloadedBlob = cachedFile.blob
         console.log(`[DEBUG] 从客户端预加载缓存中选择文件: ${fileToLoad.basename}`)
 
@@ -1068,6 +1084,23 @@ export function useRandomMode({
     }
   }, [])
 
+  const refreshRandomHistoryCreatorSnapshots = useCallback(() => {
+    setRandomHistory((prev) => prev.map(resolveMergedMediaFile))
+
+    randomHistoryCache.current.forEach((cached, filepath) => {
+      const resolved = resolveMergedCreator(cached.creator, cached.creatorResolved)
+      if (resolved.creator === cached.creator && resolved.creatorResolved === Boolean(cached.creatorResolved)) {
+        return
+      }
+
+      randomHistoryCache.current.set(filepath, {
+        ...cached,
+        creator: resolved.creator,
+        creatorResolved: resolved.creatorResolved,
+      })
+    })
+  }, [])
+
   const updateRandomHistoryRatingMetadata = useCallback((filepath: string, rating: MediaFile['mediaRatingData']) => {
     setRandomHistory((prev) => prev.map((file) => (
       file.filename === filepath
@@ -1103,6 +1136,7 @@ export function useRandomMode({
     handleRestartViewing,
     handleCancelRestart,
     updateRandomHistoryCreatorMetadata,
+    refreshRandomHistoryCreatorSnapshots,
     updateRandomHistoryRatingMetadata,
   }
 }

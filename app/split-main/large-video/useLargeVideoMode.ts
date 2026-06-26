@@ -1,6 +1,7 @@
 import { useCallback, type MutableRefObject } from 'react'
 
 import databasePreloadManager from '@/lib/databasePreloadManager'
+import { resolveMergedCreator } from '@/lib/creatorMergeSession'
 import { getPlaybackStrategy } from '@/lib/videoFormat'
 import type { AdvancedFilters, MediaFile, MediaType, ViewedFilter, WebDAVConfig } from '@/types'
 
@@ -167,6 +168,9 @@ export function useLargeVideoMode({
       }
 
       const dbFile = data.files[0]
+      // 大视频模式不走小文件预加载池，但服务端随机接口/预热结果仍可能带旧 creator。
+      // 因此这里在构造 fileToLoad 前，也统一通过会话映射拿到最新目标博主。
+      const resolvedCreator = resolveMergedCreator(dbFile.creator || null, Boolean(dbFile.creatorResolved))
       const fileToLoad: MediaFile = {
         id: Number.isFinite(Number(dbFile.id)) ? Number(dbFile.id) : undefined,
         filename: dbFile.filename,
@@ -176,8 +180,8 @@ export function useLargeVideoMode({
         lastmod: dbFile.lastmod || '',
         mediaRatingData: dbFile.mediaRatingData ?? null,
         groupRatingData: dbFile.groupRatingData ?? null,
-        creator: dbFile.creator || null,
-        creatorResolved: Boolean(dbFile.creatorResolved),
+        creator: resolvedCreator.creator,
+        creatorResolved: resolvedCreator.creatorResolved,
       }
 
       console.log(`[大视频模式] 从数据库获取: ${fileToLoad.basename}`)

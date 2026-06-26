@@ -139,6 +139,7 @@ interface GalleryModePageProps {
   stopAutoMarkTimer: () => void
   onGalleryStateChange: (group: MediaFile[], index: number) => void
   creatorMetadataPatchRef?: MutableRefObject<(filePath: string, creator: CreatorSummary | null, creatorResolved: boolean) => void>
+  creatorSnapshotRefreshRef?: MutableRefObject<() => void>
 }
 
 /**
@@ -215,6 +216,7 @@ export default function GalleryModePage({
   stopAutoMarkTimer,
   onGalleryStateChange,
   creatorMetadataPatchRef,
+  creatorSnapshotRefreshRef,
 }: GalleryModePageProps) {
   /**
    * 图组模式自己的播放器与切换状态。
@@ -266,6 +268,7 @@ export default function GalleryModePage({
     nextInGroup,
     previousInGroup,
     updateCurrentGroupCreatorMetadata,
+    refreshCurrentGroupCreatorSnapshots,
   } = useGalleryMode({
     config,
     currentFile,
@@ -317,6 +320,18 @@ export default function GalleryModePage({
       creatorMetadataPatchRef.current = () => {}
     }
   }, [creatorMetadataPatchRef, updateCurrentGroupCreatorMetadata])
+
+  useEffect(() => {
+    if (!creatorSnapshotRefreshRef) {
+      return
+    }
+
+    creatorSnapshotRefreshRef.current = refreshCurrentGroupCreatorSnapshots
+
+    return () => {
+      creatorSnapshotRefreshRef.current = () => {}
+    }
+  }, [creatorSnapshotRefreshRef, refreshCurrentGroupCreatorSnapshots])
 
   /**
    * 离开小视频形态时，清理图组模式自己维护的“直链播放按钮”显示状态。

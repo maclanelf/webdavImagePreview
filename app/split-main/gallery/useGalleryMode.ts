@@ -1,6 +1,7 @@
 import { useCallback, useState, type MutableRefObject } from 'react'
 
 import { fetchWithTimeout } from '@/lib/clientFetch'
+import { resolveMergedMediaFile } from '@/lib/creatorMergeSession'
 import databasePreloadManager from '@/lib/databasePreloadManager'
 import { scheduleStreamRequest } from '@/lib/clientRequestScheduler'
 import type { AdvancedFilters, CreatorSummary, MediaFile, MediaType, ViewedFilter, WebDAVConfig } from '@/types'
@@ -113,7 +114,9 @@ export function useGalleryMode({
       return
     }
 
-    const file = group[index]
+    // 图组里的文件可能来自前端缓存组、服务端预热组或上一轮已拿到的旧对象；
+    // 在真正切到当前文件之前统一做一次归一化，确保展示的是合并后的目标博主。
+    const file = resolveMergedMediaFile(group[index])
 
     hasAutoRatedRef.current = false
     videoStateRef.current = null
@@ -310,7 +313,9 @@ export function useGalleryMode({
     const galleryFilters = viewedFilter === 'viewed' ? advancedFilters : undefined
 
     if (databasePreloadManager.hasCurrentGroupCache() && currentGroup.length === 0) {
-      const currentGroupFromCache = databasePreloadManager.getCurrentGroup()
+      // 当前组缓存里的文件对象不要求被原地改写；
+      // 只要真正取出来进入页面状态时统一过一层会话映射即可。
+      const currentGroupFromCache = databasePreloadManager.getCurrentGroup().map(resolveMergedMediaFile)
       console.log('[DEBUG] 首次点击，使用预加载的当前图组')
       setCurrentGroup(currentGroupFromCache)
       setCurrentGroupIndex(0)
@@ -329,7 +334,8 @@ export function useGalleryMode({
         setCachePreloadProgress({ current: cacheStatus.cacheSize, total: preloadCount })
       }
 
-      const currentGroupFromManager = databasePreloadManager.getCurrentGroup()
+      // 下一组缓存同样可能还保留旧 creator，切组时统一归一化即可。
+      const currentGroupFromManager = databasePreloadManager.getCurrentGroup().map(resolveMergedMediaFile)
       setCurrentGroup(currentGroupFromManager)
       setCurrentGroupIndex(0)
       void loadFileFromGroup(currentGroupFromManager, 0)
@@ -366,7 +372,8 @@ export function useGalleryMode({
           galleryFilters,
         )
 
-        const loadedGroup = databasePreloadManager.getCurrentGroup()
+        // 首次/兜底加载图组后，也先做一次会话级 creator 归一化。
+        const loadedGroup = databasePreloadManager.getCurrentGroup().map(resolveMergedMediaFile)
         if (loadedGroup.length === 0) {
           setError(result.message || '未找到符合条件的图组')
           return
@@ -440,6 +447,10 @@ export function useGalleryMode({
     )))
   }, [])
 
+  const refreshCurrentGroupCreatorSnapshots = useCallback(() => {
+    setCurrentGroup((prev) => prev.map(resolveMergedMediaFile))
+  }, [])
+
   /**
    * 暴露图组模式页面所需的最小状态面：
    * - 当前图组
@@ -455,6 +466,7 @@ export function useGalleryMode({
     nextInGroup,
     previousInGroup,
     updateCurrentGroupCreatorMetadata,
+    refreshCurrentGroupCreatorSnapshots,
   }
 }
 
