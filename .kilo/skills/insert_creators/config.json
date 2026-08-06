@@ -1,0 +1,23 @@
+{
+  "name": "insert_creators",
+  "version": "1.0.0",
+  "description": "从 scan_files 提取新博主名并创建到 creators 表，通过排除已有博主名避免重复",
+  "author": "Your Name",
+  "main": "insert_creators.py",
+  "dependencies": {
+    "python": ">=3.7",
+    "requests": ">=2.25.0"
+  },
+  "configuration": {
+    "BASE_URL": {
+      "description": "服务器地址",
+      "default": "http://192.168.101.103:3001",
+      "required": true
+    },
+    "DEFAULT_BATCH_SIZE": {
+      "description": "默认每批处理的文件数量",
+      "default": 10,
+      "required": false
+    }
+  }
+}

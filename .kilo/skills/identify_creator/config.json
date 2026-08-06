@@ -1,0 +1,23 @@
+{
+  "name": "identify_creator",
+  "version": "1.2.0",
+  "description": "基于 scan_files.parent_path 按目录识别博主，并将结果写入 scan_file_creators",
+  "author": "Your Name",
+  "main": "identify_creator.py",
+  "dependencies": {
+    "python": ">=3.7",
+    "requests": ">=2.25.0"
+  },
+  "configuration": {
+    "BASE_URL": {
+      "description": "服务器地址",
+      "default": "http://192.168.101.103:3001",
+      "required": true
+    },
+    "UNKNOWN_CREATOR_ID": {
+      "description": "无法识别时的标记值",
+      "default": -1,
+      "required": false
+    }
+  }
+}

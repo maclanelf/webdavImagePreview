@@ -1,0 +1,14 @@
+{
+  "batch_count": 8,
+  "total_analyzed": 6953,
+  "total_identified": 100,
+  "last_processed_id": 447417,
+  "recent_batch_sizes": [
+    2000,
+    2000,
+    451,
+    1,
+    1
+  ],
+  "is_reduced_mode": false
+}
